@@ -1,0 +1,40 @@
+{
+  "episode_id": "ep01-iam-core",
+  "number": 1,
+  "stage": 1,
+  "title": "IAM Cốt Lõi (Users, Groups, Roles & Policies)",
+  "overall_status": "completed",
+  "current_stage": "done",
+  "updated_at": "2026-11-14T15:51:51.332Z",
+  "scripting": {
+    "status": "completed",
+    "phase": null,
+    "owner": "user-ui",
+    "started_at": "2026-11-14T10:31:32.064Z",
+    "completed_at": "2026-11-14T11:58:30.247Z",
+    "notes": "Zones and clean routing diagrams applied (0 errors, 0 warnings)"
+  },
+  "production": {
+    "status": "completed",
+    "phase": null,
+    "owner": "video-renderer",
+    "started_at": "2026-11-14T10:31:32.064Z",
+    "completed_at": "2026-11-14T15:43:50.538Z",
+    "tts_done": true,
+    "video_done": true,
+    "verified": true,
+    "notes": "Re-rendered ep01-iam-core.mp4 (1920x1080@60fps) after UI revision-tag fix and Option A packet_label fix",
+    "stale": false,
+    "stale_reason": null
+  },
+  "artifacts": {
+    "script": true,
+    "notes": true,
+    "audio_count": 8,
+    "subtitles": true,
+    "video_file": "ep01-iam-core.mp4"
+  },
+  "last_error": null,
+  "revisions": [],
+  "voice_override": null
+}

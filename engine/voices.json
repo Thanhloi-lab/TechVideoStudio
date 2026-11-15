@@ -1,0 +1,98 @@
+{
+  "default_profile": "auto-vi",
+  "voicestudio_base_url": "http://localhost:8000",
+  "profiles": [
+    {
+      "id": "auto-vi",
+      "label": "Mặc định Studio (Auto: Edge -> Google dự phòng)",
+      "provider": "auto",
+      "voice_id": "vi-VN-HoaiMyNeural",
+      "rate": "+6%",
+      "pitch": "+0Hz",
+      "language": "vi",
+      "gender": "female",
+      "response_format": "mp3",
+      "sample_text": "Xin chào, hôm nay chúng ta sẽ cùng khám phá kiến trúc hệ thống thực chiến.",
+      "notes": "Thử Edge Neural trước và tự động dự phòng sang Google TTS nếu Edge bị chặn"
+    },
+    {
+      "id": "edge-hoaimy",
+      "label": "Hoài My (Nữ · Chuẩn truyền cảm)",
+      "provider": "edge",
+      "voice_id": "vi-VN-HoaiMyNeural",
+      "rate": "+6%",
+      "pitch": "+0Hz",
+      "language": "vi",
+      "gender": "female",
+      "response_format": "mp3",
+      "sample_text": "Xin chào, hôm nay chúng ta sẽ cùng khám phá kiến trúc hệ thống thực chiến.",
+      "notes": "Mặc định rõ ràng, hợp tutorial công nghệ"
+    },
+    {
+      "id": "edge-hoaimy-calm",
+      "label": "Hoài My (Nữ · Chậm rãi dễ nghe)",
+      "provider": "edge",
+      "voice_id": "vi-VN-HoaiMyNeural",
+      "rate": "+0%",
+      "pitch": "-1Hz",
+      "language": "vi",
+      "gender": "female",
+      "response_format": "mp3",
+      "sample_text": "Xin chào, hôm nay chúng ta sẽ cùng khám phá kiến trúc hệ thống thực chiến.",
+      "notes": "Nhịp độ vừa phải, phù hợp giải thích khái niệm chuyên sâu"
+    },
+    {
+      "id": "edge-namminh",
+      "label": "Nam Minh (Nam · Kỹ thuật sắc nét)",
+      "provider": "edge",
+      "voice_id": "vi-VN-NamMinhNeural",
+      "rate": "+4%",
+      "pitch": "+0Hz",
+      "language": "vi",
+      "gender": "male",
+      "response_format": "mp3",
+      "sample_text": "Xin chào, hôm nay chúng ta sẽ cùng triển khai hạ tầng cloud chuẩn production.",
+      "notes": "Giọng nam rõ ràng, sắc nét cho bài giảng DevOps & kiến trúc"
+    },
+    {
+      "id": "edge-namminh-deep",
+      "label": "Nam Minh (Nam · Trầm ấm)",
+      "provider": "edge",
+      "voice_id": "vi-VN-NamMinhNeural",
+      "rate": "-2%",
+      "pitch": "-3Hz",
+      "language": "vi",
+      "gender": "male",
+      "response_format": "mp3",
+      "sample_text": "Xin chào, hôm nay chúng ta sẽ cùng phân tích những bẫy đề thi thường gặp.",
+      "notes": "Giọng nam trầm ấm, hợp phần tổng kết và mẹo thi chứng chỉ"
+    },
+    {
+      "id": "voicestudio-local",
+      "label": "VoiceStudio Local (Mặc định localhost:8000)",
+      "provider": "voicestudio",
+      "voice_id": "default",
+      "endpoint": "http://localhost:8000/v1/audio/speech",
+      "model": "tts-1",
+      "rate": "1.0",
+      "pitch": "+0Hz",
+      "language": "vi",
+      "response_format": "mp3",
+      "requires_local_server": true,
+      "sample_text": "Xin chào, đây là giọng nói tùy chỉnh từ VoiceStudio cục bộ.",
+      "notes": "Bật VoiceStudio ở cổng 8000 hoặc sửa endpoint/voice_id"
+    },
+    {
+      "id": "google-vi",
+      "label": "Google Translate TTS (Dự phòng)",
+      "provider": "google",
+      "voice_id": "vi",
+      "rate": "+0%",
+      "pitch": "+0Hz",
+      "language": "vi",
+      "response_format": "mp3",
+      "sample_text": "Xin chào, đây là giọng dự phòng của Google.",
+      "notes": "Dự phòng khi không thể kết nối Edge Neural TTS"
+    }
+  ]
+}

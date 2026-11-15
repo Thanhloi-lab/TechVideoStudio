@@ -1,0 +1,1385 @@
+{
+  "course_id": "AWS",
+  "episode_id": "ep01-iam-core",
+  "episode_number": 1,
+  "title": "IAM Cốt Lõi (Users, Groups, Roles & Policies) – Chìa Khóa Bảo Mật Đầu Tiên Trên AWS",
+  "subtitle": "Hiểu bản chất phân quyền, cách IAM Role kết hợp AWS STS, hướng dẫn tạo Role trên Console + CLI và bẫy đề thi DVA-C02",
+  "aspect_ratio": "16:9",
+  "language": "vi",
+  "tts_voice": "vi-VN-HoaiMyNeural",
+  "scenes": [
+    {
+      "id": "scene_01_hook",
+      "part": "problem",
+      "part_label": "Phần 1: Bài toán thực tế",
+      "title": "Thảm họa khi dùng Root Account & Hardcode Access Key",
+      "visual_type": "architecture",
+      "narration": "Chào mừng bạn đến với Tập 1 của lộ trình AWS Certified Developer. Hãy tưởng tượng bạn vừa đăng ký tài khoản AWS bằng email cá nhân, đây gọi là Root Account với toàn quyền tối cao. Bây giờ bạn thuê thêm một Developer viết ứng dụng chạy trên máy chủ EC2 để đọc ảnh từ kho lưu trữ S3. Nếu bạn đưa tài khoản Root cho Developer, hoặc gắn cứng Access Key vào mã nguồn đẩy lên GitHub, chỉ trong vài phút, bot của hacker sẽ quét được chìa khóa đó, tạo hàng loạt máy ảo đào coin và khiến hóa đơn AWS của bạn vọt lên hàng chục nghìn đô la. Để giải quyết triệt để bài toán này, AWS cung cấp dịch vụ trung tâm mang tên AWS IAM, viết tắt của Identity and Access Management.",
+      "key_points": [
+        "Không bao giờ dùng Root Account cho công việc hằng ngày",
+        "Không gắn cứng Access Key / Secret Key vào source code",
+        "AWS IAM là hệ thống quản lý danh tính và phân quyền toàn cầu"
+      ],
+      "visual_data": {
+        "zones": [
+          {
+            "id": "zone_users",
+            "label": "Users & Credentials",
+            "role": "client",
+            "node_ids": [
+              "root",
+              "dev"
+            ]
+          },
+          {
+            "id": "zone_compute",
+            "label": "App Server",
+            "role": "compute",
+            "node_ids": [
+              "ec2"
+            ]
+          },
+          {
+            "id": "zone_public_risk",
+            "label": "Public Internet (Risk)",
+            "role": "danger",
+            "node_ids": [
+              "github"
+            ]
+          },
+          {
+            "id": "zone_aws_data",
+            "label": "AWS Storage",
+            "role": "data",
+            "node_ids": [
+              "s3"
+            ]
+          }
+        ],
+        "nodes": [
+          {
+            "id": "root",
+            "label": "Root Account",
+            "sublabel": "Toàn quyền tối cao",
+            "icon": "user",
+            "x": 17,
+            "y": 30,
+            "tone": "red"
+          },
+          {
+            "id": "dev",
+            "label": "Developer",
+            "sublabel": "Viết code ứng dụng",
+            "icon": "iam-user",
+            "x": 17,
+            "y": 72,
+            "tone": "blue"
+          },
+          {
+            "id": "ec2",
+            "label": "EC2 Server",
+            "sublabel": "Chứa Access Key cứng",
+            "icon": "ec2",
+            "x": 50,
+            "y": 51,
+            "tone": "orange"
+          },
+          {
+            "id": "github",
+            "label": "Public GitHub",
+            "sublabel": "Lộ credentials!",
+            "icon": "hacker",
+            "x": 83,
+            "y": 30,
+            "tone": "red"
+          },
+          {
+            "id": "s3",
+            "label": "Amazon S3",
+            "sublabel": "Kho lưu trữ ảnh",
+            "icon": "s3",
+            "x": 83,
+            "y": 72,
+            "tone": "green"
+          }
+        ],
+        "edges": [
+          {
+            "id": "e_root_ec2",
+            "from": "root",
+            "to": "ec2",
+            "label": "Dùng chung Root",
+            "style": "danger",
+            "routing": "auto"
+          },
+          {
+            "id": "e_dev_ec2",
+            "from": "dev",
+            "to": "ec2",
+            "label": "Hardcode Key",
+            "style": "dashed",
+            "routing": "auto"
+          },
+          {
+            "id": "e_ec2_git",
+            "from": "ec2",
+            "to": "github",
+            "label": "Push lên Git!",
+            "style": "danger",
+            "routing": "auto"
+          },
+          {
+            "id": "e_ec2_s3",
+            "from": "ec2",
+            "to": "s3",
+            "label": "Đọc ảnh S3",
+            "style": "solid",
+            "routing": "auto"
+          }
+        ],
+        "flow_steps": [
+          {
+            "progress_start": 0.0,
+            "progress_end": 0.35,
+            "active_nodes": [
+              "root",
+              "dev"
+            ],
+            "active_edges": [
+              "e_root_ec2"
+            ],
+            "badge_text": "Root Account có toàn quyền: tuyệt đối không dùng để code hằng ngày!",
+            "packet_label": "Rủi ro cao"
+          },
+          {
+            "progress_start": 0.35,
+            "progress_end": 0.72,
+            "active_nodes": [
+              "dev",
+              "ec2",
+              "github"
+            ],
+            "active_edges": [
+              "e_dev_ec2",
+              "e_ec2_git"
+            ],
+            "badge_text": "Lộ Access Key lên GitHub -> Hacker chiếm quyền chỉ sau vài phút!",
+            "packet_label": "AKIA... leaked!"
+          },
+          {
+            "progress_start": 0.72,
+            "progress_end": 1.0,
+            "active_nodes": [
+              "ec2",
+              "s3"
+            ],
+            "active_edges": [
+              "e_ec2_s3"
+            ],
+            "badge_text": "Giải pháp chuẩn: Dùng AWS IAM để cấp quyền tối thiểu & an toàn",
+            "packet_label": "AWS IAM"
+          }
+        ]
+      },
+      "audio_file": "audio/scene_01_hook.mp3",
+      "duration_sec": 54.888,
+      "subtitles": [
+        {
+          "text": "Chào mừng bạn đến với Tập 1 của lộ trình AWS Certified Developer.",
+          "start_sec": 0.0,
+          "end_sec": 6.432
+        },
+        {
+          "text": "Hãy tưởng tượng bạn vừa đăng ký tài khoản AWS bằng email cá nhân, đây gọi là Root Account với toàn quyền tối cao.",
+          "start_sec": 6.432,
+          "end_sec": 15.576
+        },
+        {
+          "text": "Bây giờ bạn thuê thêm một Developer viết ứng dụng chạy trên máy chủ EC2 để đọc ảnh từ kho lưu trữ S3.",
+          "start_sec": 15.576,
+          "end_sec": 24.0
+        },
+        {
+          "text": "Nếu bạn đưa tài khoản Root cho Developer, hoặc gắn cứng Access Key vào mã nguồn đẩy lên GitHub, chỉ trong vài phút, bot của hacker sẽ quét được chìa khóa đó,",
+          "start_sec": 24.0,
+          "end_sec": 35.736
+        },
+        {
+          "text": "tạo hàng loạt máy ảo đào coin và khiến hóa đơn AWS của bạn vọt lên hàng chục nghìn đô la.",
+          "start_sec": 35.736,
+          "end_sec": 42.984
+        },
+        {
+          "text": "Để giải quyết triệt để bài toán này, AWS cung cấp dịch vụ trung tâm mang tên AWS IAM, viết tắt của Identity and Access Management.",
+          "start_sec": 42.984,
+          "end_sec": 54.888
+        }
+      ]
+    },
+    {
+      "id": "scene_02_iam_overview",
+      "part": "architecture",
+      "part_label": "Phần 2: Sơ đồ Kiến trúc & Luồng hoạt động",
+      "title": "4 Mảnh ghép cốt lõi của AWS IAM: User, Group, Policy & Role",
+      "visual_type": "architecture",
+      "narration": "Để làm chủ AWS IAM, bạn chỉ cần nhớ đúng 4 khái niệm cốt lõi. Thứ nhất là IAM User, đại diện cho một con người hoặc ứng dụng cụ thể có tên đăng nhập và mật khẩu riêng. Thứ hai là IAM Group, là một nhóm gom nhiều User có cùng vai trò như nhóm Developers hay nhóm Admins. Thay vì gắn quyền cho từng người rất dễ rối, ta gắn quyền trực tiếp vào Group. Thứ ba là IAM Policy, chính là một tài liệu định dạng JSON quy định rõ ai được phép làm hành động gì trên tài nguyên nào. Và cuối cùng là khái niệm quan trọng nhất cho Developer: IAM Role. Khác với User có mật khẩu cố định, IAM Role giống như một chiếc mũ cấp quyền tạm thời dành cho các dịch vụ AWS như EC2 hoặc Lambda đội lên khi cần gọi dịch vụ khác.",
+      "key_points": [
+        "IAM User: Danh tính dài hạn cho người thật",
+        "IAM Group: Gom nhiều User để quản lý quyền tập trung",
+        "IAM Policy: Tài liệu JSON định nghĩa quyền Allow / Deny",
+        "IAM Role: Quyền tạm thời cho dịch vụ AWS (EC2, Lambda, ECS)"
+      ],
+      "visual_data": {
+        "zones": [
+          {
+            "id": "zone_users",
+            "label": "IAM Users",
+            "role": "client",
+            "node_ids": [
+              "user1",
+              "user2"
+            ]
+          },
+          {
+            "id": "zone_aws_iam",
+            "label": "AWS IAM Control Plane",
+            "role": "security"
+          },
+          {
+            "id": "zone_group",
+            "label": "IAM Group",
+            "role": "network",
+            "parent_zone": "zone_aws_iam",
+            "node_ids": [
+              "group"
+            ]
+          },
+          {
+            "id": "zone_policy_role",
+            "label": "Policies & Roles",
+            "role": "compute",
+            "parent_zone": "zone_aws_iam",
+            "node_ids": [
+              "policy",
+              "role"
+            ]
+          }
+        ],
+        "nodes": [
+          {
+            "id": "user1",
+            "label": "IAM User (An)",
+            "sublabel": "Nhân sự Dev",
+            "icon": "iam-user",
+            "x": 17,
+            "y": 32,
+            "tone": "blue"
+          },
+          {
+            "id": "user2",
+            "label": "IAM User (Bình)",
+            "sublabel": "Nhân sự Dev",
+            "icon": "iam-user",
+            "x": 17,
+            "y": 74,
+            "tone": "blue"
+          },
+          {
+            "id": "group",
+            "label": "IAM Group",
+            "sublabel": "Nhóm Developers",
+            "icon": "iam-group",
+            "x": 49,
+            "y": 53,
+            "tone": "purple"
+          },
+          {
+            "id": "policy",
+            "label": "IAM Policy (JSON)",
+            "sublabel": "Tờ quy định quyền",
+            "icon": "iam-policy",
+            "x": 83,
+            "y": 32,
+            "tone": "orange"
+          },
+          {
+            "id": "role",
+            "label": "IAM Role",
+            "sublabel": "Thẻ tạm cho EC2/Lambda",
+            "icon": "iam-role",
+            "x": 83,
+            "y": 74,
+            "tone": "green"
+          }
+        ],
+        "edges": [
+          {
+            "id": "e_u1_g",
+            "from": "user1",
+            "to": "group",
+            "label": "Thuộc nhóm",
+            "style": "solid",
+            "routing": "auto"
+          },
+          {
+            "id": "e_u2_g",
+            "from": "user2",
+            "to": "group",
+            "label": "Thuộc nhóm",
+            "style": "solid",
+            "routing": "auto"
+          },
+          {
+            "id": "e_p_g",
+            "from": "policy",
+            "to": "group",
+            "label": "Gắn vào Group",
+            "style": "dashed",
+            "routing": "auto"
+          },
+          {
+            "id": "e_p_r",
+            "from": "policy",
+            "to": "role",
+            "label": "Gắn vào Role",
+            "style": "solid",
+            "routing": "straight"
+          }
+        ],
+        "flow_steps": [
+          {
+            "progress_start": 0.0,
+            "progress_end": 0.28,
+            "active_nodes": [
+              "user1",
+              "user2"
+            ],
+            "active_edges": [],
+            "badge_text": "1. IAM User: Danh tính riêng cho từng người (không chia sẻ tài khoản)",
+            "packet_label": "User"
+          },
+          {
+            "progress_start": 0.28,
+            "progress_end": 0.55,
+            "active_nodes": [
+              "user1",
+              "user2",
+              "group"
+            ],
+            "active_edges": [
+              "e_u1_g",
+              "e_u2_g"
+            ],
+            "badge_text": "2. IAM Group: Gom Users cùng phòng ban (Group không chứa Group khác)",
+            "packet_label": "Kế thừa quyền"
+          },
+          {
+            "progress_start": 0.55,
+            "progress_end": 0.78,
+            "active_nodes": [
+              "policy",
+              "group"
+            ],
+            "active_edges": [
+              "e_p_g"
+            ],
+            "badge_text": "3. IAM Policy: Văn bản JSON liệt kê Allow / Deny từng hành động cụ thể",
+            "packet_label": "JSON Policy"
+          },
+          {
+            "progress_start": 0.78,
+            "progress_end": 1.0,
+            "active_nodes": [
+              "role",
+              "policy"
+            ],
+            "active_edges": [
+              "e_p_r"
+            ],
+            "badge_text": "4. IAM Role: Chiếc thẻ tạm thời giúp EC2/Lambda truy cập AWS an toàn",
+            "packet_label": "Temp Token"
+          }
+        ]
+      },
+      "audio_file": "audio/scene_02_iam_overview.mp3",
+      "duration_sec": 59.208,
+      "subtitles": [
+        {
+          "text": "Để làm chủ AWS IAM, bạn chỉ cần nhớ đúng 4 khái niệm cốt lõi.",
+          "start_sec": 0.0,
+          "end_sec": 6.624
+        },
+        {
+          "text": "Thứ nhất là IAM User, đại diện cho một con người hoặc ứng dụng cụ thể có tên đăng nhập và mật khẩu riêng.",
+          "start_sec": 6.624,
+          "end_sec": 15.072
+        },
+        {
+          "text": "Thứ hai là IAM Group, là một nhóm gom nhiều User có cùng vai trò như nhóm Developers hay nhóm Admins.",
+          "start_sec": 15.072,
+          "end_sec": 23.664
+        },
+        {
+          "text": "Thay vì gắn quyền cho từng người rất dễ rối, ta gắn quyền trực tiếp vào Group.",
+          "start_sec": 23.664,
+          "end_sec": 29.952
+        },
+        {
+          "text": "Thứ ba là IAM Policy, chính là một tài liệu định dạng JSON quy định rõ ai được phép làm hành động gì trên tài nguyên nào.",
+          "start_sec": 29.952,
+          "end_sec": 39.864
+        },
+        {
+          "text": "Và cuối cùng là khái niệm quan trọng nhất cho Developer: IAM Role.",
+          "start_sec": 39.864,
+          "end_sec": 45.72
+        },
+        {
+          "text": "Khác với User có mật khẩu cố định, IAM Role giống như một chiếc mũ cấp quyền tạm thời dành cho các dịch vụ AWS như EC2 hoặc Lambda đội lên khi cần gọi dịch vụ khác.",
+          "start_sec": 45.72,
+          "end_sec": 59.208
+        }
+      ]
+    },
+    {
+      "id": "scene_03_policy_anatomy",
+      "part": "architecture",
+      "part_label": "Phần 2: Sơ đồ Kiến trúc & Luồng hoạt động",
+      "title": "Giải phẫu cấu trúc một IAM Policy JSON chuẩn AWS",
+      "visual_type": "code_cli",
+      "narration": "Bây giờ hãy cùng mổ xẻ một file IAM Policy chuẩn JSON để xem AWS hiểu quyền hạn như thế nào. Mỗi Policy luôn gồm phiên bản cú pháp Version và một mảng Statement chứa các câu lệnh phân quyền. Trong mỗi Statement, thành phần quan trọng nhất gồm bốn khóa. Đầu tiên là Effect, chỉ nhận một trong hai giá trị Allow nghĩa là cho phép, hoặc Deny nghĩa là từ chối. Thứ hai là Action, liệt kê chính xác API được gọi, ví dụ s3:GetObject để đọc file và s3:ListBucket để xem danh sách file. Thứ ba là Resource, sử dụng mã định danh duy nhất ARN để khoanh vùng đúng chiếc bucket tên là my-app-media-bucket thay vì mở toàn bộ dấu sao. Đặc biệt hãy nhớ nguyên tắc vàng: nếu có bất kỳ câu lệnh Explicit Deny nào khớp, nó sẽ ghi đè mọi Allow khác.",
+      "key_points": [
+        "Effect: Allow hoặc Deny (Explicit Deny luôn chiến thắng)",
+        "Action: Tên dịch vụ + thao tác API (VD: s3:GetObject)",
+        "Resource: ARN tài nguyên cụ thể theo nguyên tắc Least Privilege"
+      ],
+      "visual_data": {
+        "layout": "code",
+        "code_title": "s3-read-media-policy.json",
+        "code_language": "json",
+        "code_lines": [
+          "{",
+          "  \"Version\": \"2012-10-17\",",
+          "  \"Statement\": [",
+          "    {",
+          "      \"Sid\": \"AllowReadMediaObjects\",",
+          "      \"Effect\": \"Allow\",",
+          "      \"Action\": [",
+          "        \"s3:GetObject\",",
+          "        \"s3:ListBucket\"",
+          "      ],",
+          "      \"Resource\": [",
+          "        \"arn:aws:s3:::my-app-media-bucket\",",
+          "        \"arn:aws:s3:::my-app-media-bucket/*\"",
+          "      ]",
+          "    },",
+          "    {",
+          "      \"Sid\": \"ExplicitDenyDelete\",",
+          "      \"Effect\": \"Deny\",",
+          "      \"Action\": \"s3:DeleteObject\",",
+          "      \"Resource\": \"arn:aws:s3:::my-app-media-bucket/*\"",
+          "    }",
+          "  ]",
+          "}"
+        ],
+        "highlight_phases": [
+          {
+            "progress_start": 0.0,
+            "progress_end": 0.25,
+            "lines": [
+              2,
+              3
+            ],
+            "callout": "Version '2012-10-17' là chuẩn mới nhất & Statement chứa danh sách các quyền."
+          },
+          {
+            "progress_start": 0.25,
+            "progress_end": 0.52,
+            "lines": [
+              6,
+              7,
+              8,
+              9,
+              10
+            ],
+            "callout": "Effect: Allow + Action: Chỉ cho phép s3:GetObject và s3:ListBucket."
+          },
+          {
+            "progress_start": 0.52,
+            "progress_end": 0.78,
+            "lines": [
+              11,
+              12,
+              13,
+              14
+            ],
+            "callout": "Resource ARN: Giới hạn chặt vào đúng bucket thay vì dùng dấu '*' toàn bộ."
+          },
+          {
+            "progress_start": 0.78,
+            "progress_end": 1.0,
+            "lines": [
+              16,
+              17,
+              18,
+              19,
+              20
+            ],
+            "callout": "Explicit Deny luôn thắng mọi Allow — bẫy kinh điển trong đề thi DVA-C02!"
+          }
+        ],
+        "terminal_commands": []
+      },
+      "audio_file": "audio/scene_03_policy_anatomy.mp3",
+      "duration_sec": 61.368,
+      "subtitles": [
+        {
+          "text": "Bây giờ hãy cùng mổ xẻ một file IAM Policy chuẩn JSON để xem AWS hiểu quyền hạn như thế nào.",
+          "start_sec": 0.0,
+          "end_sec": 9.144
+        },
+        {
+          "text": "Mỗi Policy luôn gồm phiên bản cú pháp Version và một mảng Statement chứa các câu lệnh phân quyền.",
+          "start_sec": 9.144,
+          "end_sec": 16.464
+        },
+        {
+          "text": "Trong mỗi Statement, thành phần quan trọng nhất gồm bốn khóa.",
+          "start_sec": 16.464,
+          "end_sec": 21.504
+        },
+        {
+          "text": "Đầu tiên là Effect, chỉ nhận một trong hai giá trị Allow nghĩa là cho phép, hoặc Deny nghĩa là từ chối.",
+          "start_sec": 21.504,
+          "end_sec": 29.592
+        },
+        {
+          "text": "Thứ hai là Action, liệt kê chính xác API được gọi, ví dụ s3:GetObject để đọc file và s3:ListBucket để xem danh sách file.",
+          "start_sec": 29.592,
+          "end_sec": 41.568
+        },
+        {
+          "text": "Thứ ba là Resource, sử dụng mã định danh duy nhất ARN để khoanh vùng đúng chiếc bucket tên là my-app-media-bucket thay vì mở toàn bộ dấu sao.",
+          "start_sec": 41.568,
+          "end_sec": 52.272
+        },
+        {
+          "text": "Đặc biệt hãy nhớ nguyên tắc vàng: nếu có bất kỳ câu lệnh Explicit Deny nào khớp, nó sẽ ghi đè mọi Allow khác.",
+          "start_sec": 52.272,
+          "end_sec": 61.368
+        }
+      ]
+    },
+    {
+      "id": "scene_04_role_vs_user_flow",
+      "part": "architecture",
+      "part_label": "Phần 2: Sơ đồ Kiến trúc & Luồng hoạt động",
+      "title": "Cơ chế bên trong: EC2 dùng IAM Role & AWS STS gọi S3 thế nào?",
+      "visual_type": "architecture",
+      "narration": "Vậy tại sao EC2 có thể gọi S3 mà không cần lưu mật khẩu hay Access Key trong code? Bí mật nằm ở AWS STS, tức Security Token Service. Khi bạn gắn một IAM Role vào máy chủ EC2 thông qua vỏ bọc mang tên Instance Profile, ứng dụng bên trong EC2 dùng thư viện AWS SDK sẽ tự động gọi dịch vụ STS với hành động AssumeRole. Trước hết, IAM kiểm tra Trust Policy của Role để xác nhận dịch vụ EC2 có đáng tin cậy để đội chiếc mũ này hay không. Nếu hợp lệ, STS lập tức phát hành một bộ chứng chỉ tạm thời gồm AccessKeyId, SecretAccessKey và một SessionToken tự động hết hạn sau vài giờ. Cuối cùng, EC2 dùng token tạm thời này gửi request sang S3, và S3 đối chiếu Permissions Policy để trả về dữ liệu an toàn tuyệt đối.",
+      "key_points": [
+        "Trust Policy trả lời: Ai được phép đội chiếc Role này?",
+        "Permissions Policy trả lời: Đội Role xong thì làm được gì?",
+        "AWS STS cấp Temporary Credentials (tự xoay vòng, không lưu trong code)"
+      ],
+      "visual_data": {
+        "zones": [
+          {
+            "id": "zone_aws_cloud",
+            "label": "AWS Cloud",
+            "role": "network"
+          },
+          {
+            "id": "zone_compute",
+            "label": "VPC / EC2 Compute",
+            "role": "compute",
+            "parent_zone": "zone_aws_cloud",
+            "node_ids": [
+              "ec2"
+            ]
+          },
+          {
+            "id": "zone_security",
+            "label": "AWS IAM & STS Control Plane",
+            "role": "security",
+            "parent_zone": "zone_aws_cloud",
+            "node_ids": [
+              "iam",
+              "sts"
+            ]
+          },
+          {
+            "id": "zone_data",
+            "label": "AWS Cloud Storage",
+            "role": "data",
+            "parent_zone": "zone_aws_cloud",
+            "node_ids": [
+              "s3"
+            ]
+          }
+        ],
+        "nodes": [
+          {
+            "id": "ec2",
+            "label": "EC2 + App SDK",
+            "sublabel": "Instance Profile",
+            "icon": "ec2",
+            "x": 17,
+            "y": 78,
+            "tone": "orange"
+          },
+          {
+            "id": "iam",
+            "label": "IAM Role",
+            "sublabel": "Trust & Permissions Policy",
+            "icon": "iam-role",
+            "x": 50,
+            "y": 25,
+            "tone": "purple"
+          },
+          {
+            "id": "sts",
+            "label": "AWS STS",
+            "sublabel": "Security Token Service",
+            "icon": "sts",
+            "x": 50,
+            "y": 55,
+            "tone": "blue"
+          },
+          {
+            "id": "s3",
+            "label": "Amazon S3",
+            "sublabel": "my-app-media-bucket",
+            "icon": "s3",
+            "x": 83,
+            "y": 78,
+            "tone": "green"
+          }
+        ],
+        "edges": [
+          {
+            "id": "e_ec2_sts",
+            "from": "ec2",
+            "to": "sts",
+            "label": "1. AssumeRole",
+            "style": "solid",
+            "routing": "curved"
+          },
+          {
+            "id": "e_sts_iam",
+            "from": "sts",
+            "to": "iam",
+            "label": "2. Trust Policy",
+            "style": "dashed",
+            "routing": "straight"
+          },
+          {
+            "id": "e_sts_ec2",
+            "from": "sts",
+            "to": "ec2",
+            "label": "3. Temp Token",
+            "style": "solid",
+            "routing": "curved"
+          },
+          {
+            "id": "e_ec2_s3",
+            "from": "ec2",
+            "to": "s3",
+            "label": "4. s3:GetObject",
+            "style": "solid",
+            "routing": "orthogonal"
+          }
+        ],
+        "flow_steps": [
+          {
+            "progress_start": 0.0,
+            "progress_end": 0.3,
+            "active_nodes": [
+              "ec2",
+              "sts"
+            ],
+            "active_edges": [
+              "e_ec2_sts"
+            ],
+            "badge_text": "Bước 1: AWS SDK trên EC2 tự động xin quyền tạm từ AWS STS",
+            "packet_label": "AssumeRole"
+          },
+          {
+            "progress_start": 0.3,
+            "progress_end": 0.55,
+            "active_nodes": [
+              "sts",
+              "iam"
+            ],
+            "active_edges": [
+              "e_sts_iam"
+            ],
+            "badge_text": "Bước 2: IAM kiểm tra Trust Policy xem EC2 có được phép dùng Role không",
+            "packet_label": "Trust Check"
+          },
+          {
+            "progress_start": 0.55,
+            "progress_end": 0.78,
+            "active_nodes": [
+              "sts",
+              "ec2"
+            ],
+            "active_edges": [
+              "e_sts_ec2"
+            ],
+            "badge_text": "Bước 3: STS cấp AccessKeyId + SecretKey + SessionToken tự hết hạn",
+            "packet_label": "Temp Token"
+          },
+          {
+            "progress_start": 0.78,
+            "progress_end": 1.0,
+            "active_nodes": [
+              "ec2",
+              "s3",
+              "iam"
+            ],
+            "active_edges": [
+              "e_ec2_s3"
+            ],
+            "badge_text": "Bước 4: EC2 mang SessionToken gọi S3 theo Permissions Policy -> Thành công!",
+            "packet_label": "200 OK"
+          }
+        ]
+      },
+      "audio_file": "audio/scene_04_role_vs_user_flow.mp3",
+      "duration_sec": 63.288,
+      "subtitles": [
+        {
+          "text": "Vậy tại sao EC2 có thể gọi S3 mà không cần lưu mật khẩu hay Access Key trong code?",
+          "start_sec": 0.0,
+          "end_sec": 7.032
+        },
+        {
+          "text": "Bí mật nằm ở AWS STS, tức Security Token Service.",
+          "start_sec": 7.032,
+          "end_sec": 13.656
+        },
+        {
+          "text": "Khi bạn gắn một IAM Role vào máy chủ EC2 thông qua vỏ bọc mang tên Instance Profile,",
+          "start_sec": 13.656,
+          "end_sec": 21.168
+        },
+        {
+          "text": "ứng dụng bên trong EC2 dùng thư viện AWS SDK sẽ tự động gọi dịch vụ STS với hành động AssumeRole.",
+          "start_sec": 21.168,
+          "end_sec": 30.624
+        },
+        {
+          "text": "Trước hết, IAM kiểm tra Trust Policy của Role để xác nhận dịch vụ EC2 có đáng tin cậy để đội chiếc mũ này hay không.",
+          "start_sec": 30.624,
+          "end_sec": 40.032
+        },
+        {
+          "text": "Nếu hợp lệ, STS lập tức phát hành một bộ chứng chỉ tạm thời gồm AccessKeyId, SecretAccessKey và một SessionToken tự động hết hạn sau vài giờ.",
+          "start_sec": 40.032,
+          "end_sec": 51.936
+        },
+        {
+          "text": "Cuối cùng, EC2 dùng token tạm thời này gửi request sang S3, và S3 đối chiếu Permissions Policy để trả về dữ liệu an toàn tuyệt đối.",
+          "start_sec": 51.936,
+          "end_sec": 63.288
+        }
+      ]
+    },
+    {
+      "id": "scene_05_console_create_role",
+      "part": "setup",
+      "part_label": "Phần 3: Thực hành Setup & Code",
+      "title": "Hướng dẫn Setup từng bước: Tạo IAM Role cho EC2 trên AWS Console",
+      "visual_type": "console_setup",
+      "narration": "Bây giờ chúng ta sẽ thực hành thiết lập một IAM Role cho máy chủ EC2 ngay trên giao diện AWS Console. Tại mục IAM, bạn chọn menu Roles rồi bấm Create role. Ở bước 1, mục Trusted entity type, bạn chọn AWS service vì ta đang cấp quyền cho một dịch vụ bên trong AWS. Ngay bên dưới ở mục Use case, bạn chọn EC2. Hệ thống sẽ tự sinh Trust Policy cho phép dịch vụ ec2.amazonaws.com đảm nhận Role này. Sang bước 2, tại màn hình Add permissions, bạn tìm và tick chọn policy AmazonS3ReadOnlyAccess, hoặc policy tự viết theo nguyên tắc quyền tối thiểu. Cuối cùng ở bước 3, bạn đặt tên Role thật rõ ràng là ec2-s3-reader-role, kiểm tra lại hai phần Trust Policy và Permissions rồi bấm Create role là hoàn tất.",
+      "key_points": [
+        "Trusted entity type: AWS service -> Use case: EC2",
+        "Permissions policy: AmazonS3ReadOnlyAccess (hoặc Custom Policy)",
+        "Đặt tên rõ ràng: ec2-s3-reader-role"
+      ],
+      "visual_data": {
+        "url": "console.aws.amazon.com/iam/home#/roles/create",
+        "service_name": "AWS IAM Console",
+        "nav_items": [
+          "Dashboard",
+          "User groups",
+          "Users",
+          "Roles",
+          "Policies",
+          "Identity providers"
+        ],
+        "active_nav": "Roles",
+        "steps": [
+          {
+            "step_number": 1,
+            "progress_start": 0.0,
+            "progress_end": 0.36,
+            "heading": "Select trusted entity (Ai được dùng Role?)",
+            "fields": [
+              {
+                "label": "Trusted entity type",
+                "type": "radio",
+                "options": [
+                  "AWS service",
+                  "AWS account",
+                  "Web identity",
+                  "Custom trust policy"
+                ],
+                "selected": "AWS service",
+                "highlight": true
+              },
+              {
+                "label": "Use case (Dịch vụ sử dụng)",
+                "type": "text",
+                "value": "EC2 — Allows EC2 instances to call AWS services on your behalf",
+                "highlight": true
+              }
+            ],
+            "primary_button": "Next",
+            "highlight_button": true,
+            "tip": "Bước này tạo Trust Policy cho phép ec2.amazonaws.com gọi sts:AssumeRole."
+          },
+          {
+            "step_number": 2,
+            "progress_start": 0.36,
+            "progress_end": 0.7,
+            "heading": "Add permissions (Role được làm gì?)",
+            "fields": [
+              {
+                "label": "Filter policies",
+                "type": "text",
+                "value": "AmazonS3ReadOnlyAccess",
+                "highlight": false
+              },
+              {
+                "label": "Permissions policies selected",
+                "type": "checkbox_row",
+                "value": "AmazonS3ReadOnlyAccess (AWS managed policy — Read Only S3)",
+                "highlight": true
+              }
+            ],
+            "primary_button": "Next",
+            "highlight_button": true,
+            "tip": "Production nên dùng Custom Policy giới hạn đúng ARN bucket thay vì ReadOnly toàn tài khoản."
+          },
+          {
+            "step_number": 3,
+            "progress_start": 0.7,
+            "progress_end": 1.0,
+            "heading": "Name, review, and create",
+            "fields": [
+              {
+                "label": "Role name",
+                "type": "text",
+                "value": "ec2-s3-reader-role",
+                "highlight": true
+              },
+              {
+                "label": "Trusted entities + Permissions summary",
+                "type": "text",
+                "value": "Principal: ec2.amazonaws.com | Policy: AmazonS3ReadOnlyAccess",
+                "highlight": false
+              }
+            ],
+            "primary_button": "Create role",
+            "highlight_button": true,
+            "tip": "Sau khi tạo xong, vào EC2 Console > Actions > Security > Modify IAM role để gắn vào máy chủ!"
+          }
+        ]
+      },
+      "audio_file": "audio/scene_05_console_create_role.mp3",
+      "duration_sec": 64.752,
+      "subtitles": [
+        {
+          "text": "Bây giờ chúng ta sẽ thực hành thiết lập một IAM Role cho máy chủ EC2 ngay trên giao diện AWS Console.",
+          "start_sec": 0.0,
+          "end_sec": 8.856
+        },
+        {
+          "text": "Tại mục IAM, bạn chọn menu Roles rồi bấm Create role.",
+          "start_sec": 8.856,
+          "end_sec": 14.424
+        },
+        {
+          "text": "Ở bước 1, mục Trusted entity type, bạn chọn AWS service vì ta đang cấp quyền cho một dịch vụ bên trong AWS.",
+          "start_sec": 14.424,
+          "end_sec": 25.056
+        },
+        {
+          "text": "Ngay bên dưới ở mục Use case, bạn chọn EC2.",
+          "start_sec": 25.056,
+          "end_sec": 29.952
+        },
+        {
+          "text": "Hệ thống sẽ tự sinh Trust Policy cho phép dịch vụ ec2.amazonaws.com đảm nhận Role này.",
+          "start_sec": 29.952,
+          "end_sec": 39.936
+        },
+        {
+          "text": "Sang bước 2, tại màn hình Add permissions, bạn tìm và tick chọn policy AmazonS3ReadOnlyAccess, hoặc policy tự viết theo nguyên tắc quyền tối thiểu.",
+          "start_sec": 39.936,
+          "end_sec": 52.008
+        },
+        {
+          "text": "Cuối cùng ở bước 3, bạn đặt tên Role thật rõ ràng là ec2-s3-reader-role, kiểm tra lại hai phần Trust Policy và Permissions rồi bấm Create role là hoàn tất.",
+          "start_sec": 52.008,
+          "end_sec": 64.752
+        }
+      ]
+    },
+    {
+      "id": "scene_06_console_attach_and_cli",
+      "part": "setup",
+      "part_label": "Phần 3: Thực hành Setup & Code",
+      "title": "Code Python Boto3 & kiểm chứng IAM Role qua AWS CLI",
+      "visual_type": "code_cli",
+      "narration": "Sau khi gắn ec2-s3-reader-role vào máy chủ EC2, hãy xem code Python của chúng ta sạch sẽ đến mức nào. Với thư viện boto3, bạn chỉ cần gọi boto3.client('s3') và gọi hàm list_objects_v2 mà không hề có một dòng nào truyền aws_access_key_id hay aws_secret_access_key. Thư viện SDK sẽ tự động liên hệ dịch vụ Metadata của EC2 để lấy token tạm thời từ Role. Bạn cũng có thể SSH vào EC2 và chạy lệnh aws sts get-caller-identity để kiểm tra danh tính đang chạy, màn hình sẽ trả về đúng ARN của assumed-role ec2-s3-reader-role. Khi chạy aws s3 ls trên bucket ảnh thì thành công, nhưng nếu thử xóa file bằng aws s3 rm thì lập tức bị AccessDenied đúng như thiết kế.",
+      "key_points": [
+        "Code boto3 không cần truyền Access Key khi chạy trên EC2 đã gắn Role",
+        "Lệnh aws sts get-caller-identity giúp kiểm tra danh tính hiện tại ngay lập tức",
+        "Đảm bảo nguyên tắc Least Privilege: Đọc thành công, Xóa bị chặn"
+      ],
+      "visual_data": {
+        "layout": "split",
+        "code_title": "read_media.py (Boto3 SDK trên EC2)",
+        "code_language": "python",
+        "code_lines": [
+          "import boto3",
+          "",
+          "# KHÔNG truyền access_key hay secret_key!",
+          "# Boto3 tự lấy Temporary Credentials từ IAM Role",
+          "s3 = boto3.client(\"s3\", region_name=\"ap-southeast-1\")",
+          "",
+          "resp = s3.list_objects_v2(",
+          "    Bucket=\"my-app-media-bucket\",",
+          "    Prefix=\"avatars/\"",
+          ")",
+          "",
+          "for obj in resp.get(\"Contents\", []):",
+          "    print(obj[\"Key\"], obj[\"Size\"])"
+        ],
+        "highlight_phases": [
+          {
+            "progress_start": 0.0,
+            "progress_end": 0.45,
+            "lines": [
+              3,
+              4,
+              5
+            ],
+            "callout": "Không cần hardcode Key! SDK tự lấy SessionToken từ Instance Metadata."
+          },
+          {
+            "progress_start": 0.45,
+            "progress_end": 1.0,
+            "lines": [
+              7,
+              8,
+              9,
+              12,
+              13
+            ],
+            "callout": "Gọi thẳng API S3 an toàn; STS tự động gia hạn credentials ngầm."
+          }
+        ],
+        "terminal_title": "SSH Terminal @ EC2 Instance",
+        "terminal_commands": [
+          {
+            "progress_start": 0.38,
+            "command": "aws sts get-caller-identity",
+            "output_lines": [
+              "{",
+              "  \"Account\": \"123456789012\",",
+              "  \"Arn\": \"arn:aws:sts::123456789012:assumed-role/ec2-s3-reader-role/i-0a1b2c3d\"",
+              "}"
+            ]
+          },
+          {
+            "progress_start": 0.65,
+            "command": "aws s3 ls s3://my-app-media-bucket/avatars/",
+            "output_lines": [
+              "2026-11-14 09:10:22   48210 avatar_01.png"
+            ]
+          },
+          {
+            "progress_start": 0.82,
+            "command": "aws s3 rm s3://my-app-media-bucket/avatars/avatar_01.png",
+            "output_lines": [
+              "delete failed: An error occurred (AccessDenied) when calling DeleteObject"
+            ]
+          }
+        ]
+      },
+      "audio_file": "audio/scene_06_console_attach_and_cli.mp3",
+      "duration_sec": 62.064,
+      "subtitles": [
+        {
+          "text": "Sau khi gắn ec2-s3-reader-role vào máy chủ EC2, hãy xem code Python của chúng ta sạch sẽ đến mức nào.",
+          "start_sec": 0.0,
+          "end_sec": 9.072
+        },
+        {
+          "text": "Với thư viện boto3, bạn chỉ cần gọi boto3.client('s3') và gọi hàm list_objects_v2 mà không hề có một dòng nào truyền aws_access_key_id hay aws_secret_access_key.",
+          "start_sec": 9.072,
+          "end_sec": 27.912
+        },
+        {
+          "text": "Thư viện SDK sẽ tự động liên hệ dịch vụ Metadata của EC2 để lấy token tạm thời từ Role.",
+          "start_sec": 27.912,
+          "end_sec": 35.856
+        },
+        {
+          "text": "Bạn cũng có thể SSH vào EC2 và chạy lệnh aws sts get-caller-identity để kiểm tra danh tính đang chạy,",
+          "start_sec": 35.856,
+          "end_sec": 45.024
+        },
+        {
+          "text": "màn hình sẽ trả về đúng ARN của assumed-role ec2-s3-reader-role.",
+          "start_sec": 45.024,
+          "end_sec": 51.024
+        },
+        {
+          "text": "Khi chạy aws s3 ls trên bucket ảnh thì thành công, nhưng nếu thử xóa file bằng aws s3 rm thì lập tức bị AccessDenied đúng như thiết kế.",
+          "start_sec": 51.024,
+          "end_sec": 62.064
+        }
+      ]
+    },
+    {
+      "id": "scene_07_policy_evaluation",
+      "part": "architecture",
+      "part_label": "Phần 2: Sơ đồ Kiến trúc & Luồng hoạt động",
+      "title": "Quy trình AWS xét duyệt một Request (Policy Evaluation Logic)",
+      "visual_type": "architecture",
+      "narration": "Trước khi bước vào phần ôn thi, bạn cần hiểu cách AWS quyết định Cho phép hay Từ chối mỗi khi có một API Request gửi lên. Mặc định từ đầu, mọi hành động trên AWS đều bị từ chối ngầm định, gọi là Implicit Deny. Khi request đi vào bộ máy đánh giá IAM, bước đầu tiên AWS tìm xem có bất kỳ câu lệnh Explicit Deny nào trong mọi Policy áp dụng hay không. Nếu có dù chỉ một Explicit Deny, request lập tức bị chặn ngay không cần xét tiếp. Nếu không bị chặn cứng, AWS tiếp tục kiểm tra các lớp giới hạn như Organization SCP hoặc Permissions Boundary, rồi mới xét xem có câu lệnh Explicit Allow nào từ Identity Policy hoặc Resource Policy cho phép hành động đó không. Chỉ khi vượt qua tất cả và có ít nhất một Allow thì request mới thành công.",
+      "key_points": [
+        "Mặc định mọi request bị Implicit Deny (Từ chối ngầm định)",
+        "Explicit Deny luôn đánh bại mọi Explicit Allow",
+        "Cần có ít nhất 1 Explicit Allow và 0 Explicit Deny để thành công"
+      ],
+      "visual_data": {
+        "zones": [
+          {
+            "id": "zone_caller",
+            "label": "API Caller",
+            "role": "client",
+            "node_ids": [
+              "req"
+            ]
+          },
+          {
+            "id": "zone_iam_eval",
+            "label": "IAM Policy Engine",
+            "role": "security",
+            "node_ids": [
+              "exp_deny",
+              "exp_allow"
+            ]
+          },
+          {
+            "id": "zone_deny",
+            "label": "Blocked (403)",
+            "role": "danger",
+            "node_ids": [
+              "deny"
+            ]
+          },
+          {
+            "id": "zone_allow",
+            "label": "Permitted (200)",
+            "role": "data",
+            "node_ids": [
+              "allow"
+            ]
+          }
+        ],
+        "nodes": [
+          {
+            "id": "req",
+            "label": "API Request",
+            "sublabel": "Mặc định: Implicit Deny",
+            "icon": "code",
+            "x": 16,
+            "y": 32,
+            "tone": "slate"
+          },
+          {
+            "id": "exp_deny",
+            "label": "Explicit Deny?",
+            "sublabel": "SCP / IAM / Resource",
+            "icon": "deny",
+            "x": 50,
+            "y": 32,
+            "tone": "red"
+          },
+          {
+            "id": "exp_allow",
+            "label": "Explicit Allow?",
+            "sublabel": "Identity / Bucket Policy",
+            "icon": "iam-policy",
+            "x": 50,
+            "y": 74,
+            "tone": "blue"
+          },
+          {
+            "id": "allow",
+            "label": "ALLOWED",
+            "sublabel": "Thực thi API thành công",
+            "icon": "check",
+            "x": 84,
+            "y": 74,
+            "tone": "green"
+          },
+          {
+            "id": "deny",
+            "label": "DENIED",
+            "sublabel": "AccessDenied (403)",
+            "icon": "shield",
+            "x": 84,
+            "y": 32,
+            "tone": "red"
+          }
+        ],
+        "edges": [
+          {
+            "id": "e_r_d",
+            "from": "req",
+            "to": "exp_deny",
+            "label": "1. Check Deny",
+            "style": "solid",
+            "routing": "straight"
+          },
+          {
+            "id": "e_d_deny",
+            "from": "exp_deny",
+            "to": "deny",
+            "label": "Có Deny!",
+            "style": "danger",
+            "routing": "auto"
+          },
+          {
+            "id": "e_d_a",
+            "from": "exp_deny",
+            "to": "exp_allow",
+            "label": "Không Deny",
+            "style": "solid",
+            "routing": "auto"
+          },
+          {
+            "id": "e_a_ok",
+            "from": "exp_allow",
+            "to": "allow",
+            "label": "Có Allow",
+            "style": "solid",
+            "routing": "auto"
+          },
+          {
+            "id": "e_a_no",
+            "from": "exp_allow",
+            "to": "deny",
+            "label": "Implicit Deny",
+            "style": "dashed",
+            "routing": "orthogonal"
+          }
+        ],
+        "flow_steps": [
+          {
+            "progress_start": 0.0,
+            "progress_end": 0.35,
+            "active_nodes": [
+              "req",
+              "exp_deny",
+              "deny"
+            ],
+            "active_edges": [
+              "e_r_d",
+              "e_d_deny"
+            ],
+            "badge_text": "Quy tắc 1: Có bất kỳ Explicit Deny nào -> Bị chặn tức thì!",
+            "packet_label": "DENY!"
+          },
+          {
+            "progress_start": 0.35,
+            "progress_end": 0.68,
+            "active_nodes": [
+              "exp_deny",
+              "exp_allow",
+              "allow"
+            ],
+            "active_edges": [
+              "e_d_a",
+              "e_a_ok"
+            ],
+            "badge_text": "Quy tắc 2: Không có Deny + Có ít nhất 1 Allow -> Thành công!",
+            "packet_label": "ALLOW"
+          },
+          {
+            "progress_start": 0.68,
+            "progress_end": 1.0,
+            "active_nodes": [
+              "exp_allow",
+              "deny"
+            ],
+            "active_edges": [
+              "e_a_no"
+            ],
+            "badge_text": "Quy tắc 3: Không có Allow -> Tự động rơi về Implicit Deny (403)",
+            "packet_label": "Implicit Deny"
+          }
+        ]
+      },
+      "audio_file": "audio/scene_07_policy_evaluation.mp3",
+      "duration_sec": 63.456,
+      "subtitles": [
+        {
+          "text": "Trước khi bước vào phần ôn thi, bạn cần hiểu cách AWS quyết định Cho phép hay Từ chối mỗi khi có một API Request gửi lên.",
+          "start_sec": 0.0,
+          "end_sec": 10.368
+        },
+        {
+          "text": "Mặc định từ đầu, mọi hành động trên AWS đều bị từ chối ngầm định, gọi là Implicit Deny.",
+          "start_sec": 10.368,
+          "end_sec": 18.36
+        },
+        {
+          "text": "Khi request đi vào bộ máy đánh giá IAM, bước đầu tiên AWS tìm xem có bất kỳ câu lệnh Explicit Deny nào trong mọi Policy áp dụng hay không.",
+          "start_sec": 18.36,
+          "end_sec": 30.504
+        },
+        {
+          "text": "Nếu có dù chỉ một Explicit Deny, request lập tức bị chặn ngay không cần xét tiếp.",
+          "start_sec": 30.504,
+          "end_sec": 37.608
+        },
+        {
+          "text": "Nếu không bị chặn cứng, AWS tiếp tục kiểm tra các lớp giới hạn như Organization SCP hoặc Permissions Boundary,",
+          "start_sec": 37.608,
+          "end_sec": 47.496
+        },
+        {
+          "text": "rồi mới xét xem có câu lệnh Explicit Allow nào từ Identity Policy hoặc Resource Policy cho phép hành động đó không.",
+          "start_sec": 47.496,
+          "end_sec": 57.288
+        },
+        {
+          "text": "Chỉ khi vượt qua tất cả và có ít nhất một Allow thì request mới thành công.",
+          "start_sec": 57.288,
+          "end_sec": 63.456
+        }
+      ]
+    },
+    {
+      "id": "scene_08_exam_tips",
+      "part": "exam_tips",
+      "part_label": "Phần 4: Bẫy đề thi & Thực chiến",
+      "title": "4 Bẫy Kinh Điển Trong Đề Thi AWS DVA-C02 Về IAM",
+      "visual_type": "exam_tips",
+      "narration": "Để chốt hạ Tập 1, hãy ghi nhớ bốn quy tắc giúp bạn chọn đúng đáp án chỉ trong năm giây khi làm bài thi DVA-C02. Bẫy thứ nhất: Khi đề bài hỏi cách cấp quyền an toàn nhất cho ứng dụng chạy trên EC2, Lambda hay ECS truy cập S3 hoặc DynamoDB, đáp án luôn là IAM Role, tuyệt đối loại ngay các phương án tạo IAM User, lưu Access Key vào file cấu hình hay biến môi trường. Bẫy thứ hai: Phân biệt Trust Policy dùng để định nghĩa ai được phép Assume Role, còn Permissions Policy mới là thứ quy định Role đó làm được gì. Bẫy thứ ba: Explicit Deny luôn chiến thắng mọi Allow. Và bẫy thứ tư: Tuân thủ nguyên tắc Least Privilege, chỉ cấp đúng hành động và tài nguyên cần thiết. Hãy thử trả lời ngay câu hỏi trắc nghiệm hiển thị trên màn hình và xem file notes.md để luyện thêm ba câu hỏi chuẩn đề thi nhé!",
+      "key_points": [
+        "App trên EC2 / Lambda / ECS -> Luôn chọn IAM Role",
+        "Trust Policy (Ai được đội Role) vs Permissions Policy (Làm được gì)",
+        "Explicit Deny luôn thắng mọi Allow",
+        "Least Privilege: Tránh Action: '*' và Resource: '*'"
+      ],
+      "visual_data": {
+        "badge": "DVA-C02 Exam Mastery — IAM Core",
+        "comparisons": [
+          {
+            "title": "1. Cấp quyền cho App trên EC2/Lambda",
+            "wrong": "Tạo IAM User, lưu Access Key vào biến môi trường hoặc file .env trên EC2.",
+            "right": "Gắn IAM Role (qua Instance Profile / Execution Role) để AWS STS cấp token tạm.",
+            "progress_start": 0.0
+          },
+          {
+            "title": "2. Trust Policy vs Permissions Policy",
+            "wrong": "Nhầm lẫn gắn quyền S3 vào Trust Policy của Role.",
+            "right": "Trust Policy xác định Principal được AssumeRole; Permissions Policy cấp quyền API.",
+            "progress_start": 0.22
+          },
+          {
+            "title": "3. Xung đột Allow và Deny",
+            "wrong": "Nghĩ rằng gắn thêm AdministratorAccess sẽ ghi đè được lệnh Deny.",
+            "right": "Explicit Deny luôn ghi đè mọi Explicit Allow ở tất cả các tầng Policy.",
+            "progress_start": 0.42
+          },
+          {
+            "title": "4. Quản lý quyền nhiều Developer",
+            "wrong": "Gắn Inline Policy trực tiếp cho từng IAM User riêng lẻ.",
+            "right": "Gom Users vào IAM Group theo vai trò và áp dụng Least Privilege Policy.",
+            "progress_start": 0.56
+          }
+        ],
+        "quiz": {
+          "show_at_progress": 0.68,
+          "question": "Một ứng dụng Python chạy trên EC2 cần đọc dữ liệu từ DynamoDB. Cách nào bảo mật nhất theo khuyến nghị AWS?",
+          "options": [
+            {
+              "key": "A",
+              "text": "Lưu Access Key vào EC2 User Data"
+            },
+            {
+              "key": "B",
+              "text": "Tạo IAM Role gắn quyền DynamoDB và attach vào EC2"
+            },
+            {
+              "key": "C",
+              "text": "Dùng Root Account credentials trong biến môi trường"
+            },
+            {
+              "key": "D",
+              "text": "Mở quyền Public Read cho bảng DynamoDB"
+            }
+          ],
+          "correct_key": "B",
+          "explanation": "IAM Role kết hợp Instance Profile giúp AWS SDK trên EC2 tự lấy Temporary Security Credentials từ STS mà không lưu key tĩnh."
+        }
+      },
+      "audio_file": "audio/scene_08_exam_tips.mp3",
+      "duration_sec": 64.248,
+      "subtitles": [
+        {
+          "text": "Để chốt hạ Tập 1, hãy ghi nhớ bốn quy tắc giúp bạn chọn đúng đáp án chỉ trong năm giây khi làm bài thi DVA-C02.",
+          "start_sec": 0.0,
+          "end_sec": 9.36
+        },
+        {
+          "text": "Bẫy thứ nhất: Khi đề bài hỏi cách cấp quyền an toàn nhất cho ứng dụng chạy trên EC2, Lambda hay ECS truy cập S3 hoặc DynamoDB, đáp án luôn là IAM Role,",
+          "start_sec": 9.36,
+          "end_sec": 22.8
+        },
+        {
+          "text": "tuyệt đối loại ngay các phương án tạo IAM User, lưu Access Key vào file cấu hình hay biến môi trường.",
+          "start_sec": 22.8,
+          "end_sec": 30.84
+        },
+        {
+          "text": "Bẫy thứ hai: Phân biệt Trust Policy dùng để định nghĩa ai được phép Assume Role, còn Permissions Policy mới là thứ quy định Role đó làm được gì.",
+          "start_sec": 30.84,
+          "end_sec": 41.856
+        },
+        {
+          "text": "Bẫy thứ ba: Explicit Deny luôn chiến thắng mọi Allow.",
+          "start_sec": 41.856,
+          "end_sec": 46.8
+        },
+        {
+          "text": "Và bẫy thứ tư: Tuân thủ nguyên tắc Least Privilege, chỉ cấp đúng hành động và tài nguyên cần thiết.",
+          "start_sec": 46.8,
+          "end_sec": 54.168
+        },
+        {
+          "text": "Hãy thử trả lời ngay câu hỏi trắc nghiệm hiển thị trên màn hình và xem file notes.md để luyện thêm ba câu hỏi chuẩn đề thi nhé!",
+          "start_sec": 54.168,
+          "end_sec": 64.248
+        }
+      ]
+    }
+  ],
+  "total_duration_sec": 493.272,
+  "tts_provider_used": [
+    "google"
+  ],
+  "tts_profile": "auto-vi",
+  "tts_rate": "+6%"
+}

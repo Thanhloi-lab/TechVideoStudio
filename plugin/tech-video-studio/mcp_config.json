@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "tech-video-studio": {
+      "command": "node",
+      "args": [
+        "{{MCP_SERVER_PATH}}"
+      ],
+      "env": {
+        "VIDEO_MAKER_PORT": "3030"
+      }
+    }
+  }
+}

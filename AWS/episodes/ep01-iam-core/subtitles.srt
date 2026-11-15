@@ -1,0 +1,215 @@
+1
+00:00:00,000 --> 00:00:06,432
+Chào mừng bạn đến với Tập 1 của lộ trình AWS Certified Developer.
+
+2
+00:00:06,432 --> 00:00:15,576
+Hãy tưởng tượng bạn vừa đăng ký tài khoản AWS bằng email cá nhân, đây gọi là Root Account với toàn quyền tối cao.
+
+3
+00:00:15,576 --> 00:00:24,000
+Bây giờ bạn thuê thêm một Developer viết ứng dụng chạy trên máy chủ EC2 để đọc ảnh từ kho lưu trữ S3.
+
+4
+00:00:24,000 --> 00:00:35,736
+Nếu bạn đưa tài khoản Root cho Developer, hoặc gắn cứng Access Key vào mã nguồn đẩy lên GitHub, chỉ trong vài phút, bot của hacker sẽ quét được chìa khóa đó,
+
+5
+00:00:35,736 --> 00:00:42,984
+tạo hàng loạt máy ảo đào coin và khiến hóa đơn AWS của bạn vọt lên hàng chục nghìn đô la.
+
+6
+00:00:42,984 --> 00:00:54,888
+Để giải quyết triệt để bài toán này, AWS cung cấp dịch vụ trung tâm mang tên AWS IAM, viết tắt của Identity and Access Management.
+
+7
+00:00:54,888 --> 00:01:01,512
+Để làm chủ AWS IAM, bạn chỉ cần nhớ đúng 4 khái niệm cốt lõi.
+
+8
+00:01:01,512 --> 00:01:09,960
+Thứ nhất là IAM User, đại diện cho một con người hoặc ứng dụng cụ thể có tên đăng nhập và mật khẩu riêng.
+
+9
+00:01:09,960 --> 00:01:18,552
+Thứ hai là IAM Group, là một nhóm gom nhiều User có cùng vai trò như nhóm Developers hay nhóm Admins.
+
+10
+00:01:18,552 --> 00:01:24,840
+Thay vì gắn quyền cho từng người rất dễ rối, ta gắn quyền trực tiếp vào Group.
+
+11
+00:01:24,840 --> 00:01:34,752
+Thứ ba là IAM Policy, chính là một tài liệu định dạng JSON quy định rõ ai được phép làm hành động gì trên tài nguyên nào.
+
+12
+00:01:34,752 --> 00:01:40,608
+Và cuối cùng là khái niệm quan trọng nhất cho Developer: IAM Role.
+
+13
+00:01:40,608 --> 00:01:54,096
+Khác với User có mật khẩu cố định, IAM Role giống như một chiếc mũ cấp quyền tạm thời dành cho các dịch vụ AWS như EC2 hoặc Lambda đội lên khi cần gọi dịch vụ khác.
+
+14
+00:01:54,096 --> 00:02:03,240
+Bây giờ hãy cùng mổ xẻ một file IAM Policy chuẩn JSON để xem AWS hiểu quyền hạn như thế nào.
+
+15
+00:02:03,240 --> 00:02:10,560
+Mỗi Policy luôn gồm phiên bản cú pháp Version và một mảng Statement chứa các câu lệnh phân quyền.
+
+16
+00:02:10,560 --> 00:02:15,600
+Trong mỗi Statement, thành phần quan trọng nhất gồm bốn khóa.
+
+17
+00:02:15,600 --> 00:02:23,688
+Đầu tiên là Effect, chỉ nhận một trong hai giá trị Allow nghĩa là cho phép, hoặc Deny nghĩa là từ chối.
+
+18
+00:02:23,688 --> 00:02:35,664
+Thứ hai là Action, liệt kê chính xác API được gọi, ví dụ s3:GetObject để đọc file và s3:ListBucket để xem danh sách file.
+
+19
+00:02:35,664 --> 00:02:46,368
+Thứ ba là Resource, sử dụng mã định danh duy nhất ARN để khoanh vùng đúng chiếc bucket tên là my-app-media-bucket thay vì mở toàn bộ dấu sao.
+
+20
+00:02:46,368 --> 00:02:55,464
+Đặc biệt hãy nhớ nguyên tắc vàng: nếu có bất kỳ câu lệnh Explicit Deny nào khớp, nó sẽ ghi đè mọi Allow khác.
+
+21
+00:02:55,464 --> 00:03:02,496
+Vậy tại sao EC2 có thể gọi S3 mà không cần lưu mật khẩu hay Access Key trong code?
+
+22
+00:03:02,496 --> 00:03:09,120
+Bí mật nằm ở AWS STS, tức Security Token Service.
+
+23
+00:03:09,120 --> 00:03:16,632
+Khi bạn gắn một IAM Role vào máy chủ EC2 thông qua vỏ bọc mang tên Instance Profile,
+
+24
+00:03:16,632 --> 00:03:26,088
+ứng dụng bên trong EC2 dùng thư viện AWS SDK sẽ tự động gọi dịch vụ STS với hành động AssumeRole.
+
+25
+00:03:26,088 --> 00:03:35,496
+Trước hết, IAM kiểm tra Trust Policy của Role để xác nhận dịch vụ EC2 có đáng tin cậy để đội chiếc mũ này hay không.
+
+26
+00:03:35,496 --> 00:03:47,400
+Nếu hợp lệ, STS lập tức phát hành một bộ chứng chỉ tạm thời gồm AccessKeyId, SecretAccessKey và một SessionToken tự động hết hạn sau vài giờ.
+
+27
+00:03:47,400 --> 00:03:58,752
+Cuối cùng, EC2 dùng token tạm thời này gửi request sang S3, và S3 đối chiếu Permissions Policy để trả về dữ liệu an toàn tuyệt đối.
+
+28
+00:03:58,752 --> 00:04:07,608
+Bây giờ chúng ta sẽ thực hành thiết lập một IAM Role cho máy chủ EC2 ngay trên giao diện AWS Console.
+
+29
+00:04:07,608 --> 00:04:13,176
+Tại mục IAM, bạn chọn menu Roles rồi bấm Create role.
+
+30
+00:04:13,176 --> 00:04:23,808
+Ở bước 1, mục Trusted entity type, bạn chọn AWS service vì ta đang cấp quyền cho một dịch vụ bên trong AWS.
+
+31
+00:04:23,808 --> 00:04:28,704
+Ngay bên dưới ở mục Use case, bạn chọn EC2.
+
+32
+00:04:28,704 --> 00:04:38,688
+Hệ thống sẽ tự sinh Trust Policy cho phép dịch vụ ec2.amazonaws.com đảm nhận Role này.
+
+33
+00:04:38,688 --> 00:04:50,760
+Sang bước 2, tại màn hình Add permissions, bạn tìm và tick chọn policy AmazonS3ReadOnlyAccess, hoặc policy tự viết theo nguyên tắc quyền tối thiểu.
+
+34
+00:04:50,760 --> 00:05:03,504
+Cuối cùng ở bước 3, bạn đặt tên Role thật rõ ràng là ec2-s3-reader-role, kiểm tra lại hai phần Trust Policy và Permissions rồi bấm Create role là hoàn tất.
+
+35
+00:05:03,504 --> 00:05:12,576
+Sau khi gắn ec2-s3-reader-role vào máy chủ EC2, hãy xem code Python của chúng ta sạch sẽ đến mức nào.
+
+36
+00:05:12,576 --> 00:05:31,416
+Với thư viện boto3, bạn chỉ cần gọi boto3.client('s3') và gọi hàm list_objects_v2 mà không hề có một dòng nào truyền aws_access_key_id hay aws_secret_access_key.
+
+37
+00:05:31,416 --> 00:05:39,360
+Thư viện SDK sẽ tự động liên hệ dịch vụ Metadata của EC2 để lấy token tạm thời từ Role.
+
+38
+00:05:39,360 --> 00:05:48,528
+Bạn cũng có thể SSH vào EC2 và chạy lệnh aws sts get-caller-identity để kiểm tra danh tính đang chạy,
+
+39
+00:05:48,528 --> 00:05:54,528
+màn hình sẽ trả về đúng ARN của assumed-role ec2-s3-reader-role.
+
+40
+00:05:54,528 --> 00:06:05,568
+Khi chạy aws s3 ls trên bucket ảnh thì thành công, nhưng nếu thử xóa file bằng aws s3 rm thì lập tức bị AccessDenied đúng như thiết kế.
+
+41
+00:06:05,568 --> 00:06:15,936
+Trước khi bước vào phần ôn thi, bạn cần hiểu cách AWS quyết định Cho phép hay Từ chối mỗi khi có một API Request gửi lên.
+
+42
+00:06:15,936 --> 00:06:23,928
+Mặc định từ đầu, mọi hành động trên AWS đều bị từ chối ngầm định, gọi là Implicit Deny.
+
+43
+00:06:23,928 --> 00:06:36,072
+Khi request đi vào bộ máy đánh giá IAM, bước đầu tiên AWS tìm xem có bất kỳ câu lệnh Explicit Deny nào trong mọi Policy áp dụng hay không.
+
+44
+00:06:36,072 --> 00:06:43,176
+Nếu có dù chỉ một Explicit Deny, request lập tức bị chặn ngay không cần xét tiếp.
+
+45
+00:06:43,176 --> 00:06:53,064
+Nếu không bị chặn cứng, AWS tiếp tục kiểm tra các lớp giới hạn như Organization SCP hoặc Permissions Boundary,
+
+46
+00:06:53,064 --> 00:07:02,856
+rồi mới xét xem có câu lệnh Explicit Allow nào từ Identity Policy hoặc Resource Policy cho phép hành động đó không.
+
+47
+00:07:02,856 --> 00:07:09,024
+Chỉ khi vượt qua tất cả và có ít nhất một Allow thì request mới thành công.
+
+48
+00:07:09,024 --> 00:07:18,384
+Để chốt hạ Tập 1, hãy ghi nhớ bốn quy tắc giúp bạn chọn đúng đáp án chỉ trong năm giây khi làm bài thi DVA-C02.
+
+49
+00:07:18,384 --> 00:07:31,824
+Bẫy thứ nhất: Khi đề bài hỏi cách cấp quyền an toàn nhất cho ứng dụng chạy trên EC2, Lambda hay ECS truy cập S3 hoặc DynamoDB, đáp án luôn là IAM Role,
+
+50
+00:07:31,824 --> 00:07:39,864
+tuyệt đối loại ngay các phương án tạo IAM User, lưu Access Key vào file cấu hình hay biến môi trường.
+
+51
+00:07:39,864 --> 00:07:50,880
+Bẫy thứ hai: Phân biệt Trust Policy dùng để định nghĩa ai được phép Assume Role, còn Permissions Policy mới là thứ quy định Role đó làm được gì.
+
+52
+00:07:50,880 --> 00:07:55,824
+Bẫy thứ ba: Explicit Deny luôn chiến thắng mọi Allow.
+
+53
+00:07:55,824 --> 00:08:03,192
+Và bẫy thứ tư: Tuân thủ nguyên tắc Least Privilege, chỉ cấp đúng hành động và tài nguyên cần thiết.
+
+54
+00:08:03,192 --> 00:08:13,272
+Hãy thử trả lời ngay câu hỏi trắc nghiệm hiển thị trên màn hình và xem file notes.md để luyện thêm ba câu hỏi chuẩn đề thi nhé!

@@ -1,0 +1,40 @@
+{
+  "episode_id": "ep05-ec2-dev-essentials",
+  "number": 5,
+  "stage": 2,
+  "title": "EC2 cho Developer: User Data, Metadata IMDSv2 & Security Groups",
+  "overall_status": "planned",
+  "current_stage": "curriculum",
+  "updated_at": "2026-11-14T12:49:21.972Z",
+  "scripting": {
+    "status": "pending",
+    "phase": null,
+    "owner": null,
+    "started_at": null,
+    "completed_at": null,
+    "notes": ""
+  },
+  "production": {
+    "status": "pending",
+    "phase": null,
+    "owner": null,
+    "started_at": null,
+    "completed_at": null,
+    "tts_done": false,
+    "video_done": false,
+    "verified": false,
+    "notes": "",
+    "stale": false,
+    "stale_reason": null
+  },
+  "artifacts": {
+    "script": false,
+    "notes": false,
+    "audio_count": 0,
+    "subtitles": false,
+    "video_file": null
+  },
+  "last_error": null,
+  "revisions": [],
+  "voice_override": null
+}

@@ -1,0 +1,12 @@
+{
+  "name": "tech-video-studio",
+  "displayName": "Tech Course Video Studio",
+  "version": "1.0.0",
+  "description": "Multi-agent studio to design learning roadmaps, write scripts, synthesize Vietnamese/English voiceovers, and render animated architecture & console setup tutorial videos for any technology (AWS, Kubernetes, Docker, System Design).",
+  "logo": "assets/logo.svg",
+  "suggestedPrompts": [
+    "Tạo lộ trình và tập video tiếp theo cho khóa học AWS Certified Developer (DVA-C02)",
+    "Tạo khóa học video mới về Kubernetes (CKA) tại {{WORKSPACE_ROOT}}/K8S",
+    "Khởi động Tech Video Studio để xem và xuất video các tập đã tạo"
+  ]
+}

@@ -1,0 +1,40 @@
+{
+  "episode_id": "ep27-cognito-pools",
+  "number": 27,
+  "stage": 6,
+  "title": "Amazon Cognito: User Pools vs Identity Pools (JWT -> AWS Credentials)",
+  "overall_status": "planned",
+  "current_stage": "curriculum",
+  "updated_at": "2026-11-14T12:49:21.972Z",
+  "scripting": {
+    "status": "pending",
+    "phase": null,
+    "owner": null,
+    "started_at": null,
+    "completed_at": null,
+    "notes": ""
+  },
+  "production": {
+    "status": "pending",
+    "phase": null,
+    "owner": null,
+    "started_at": null,
+    "completed_at": null,
+    "tts_done": false,
+    "video_done": false,
+    "verified": false,
+    "notes": "",
+    "stale": false,
+    "stale_reason": null
+  },
+  "artifacts": {
+    "script": false,
+    "notes": false,
+    "audio_count": 0,
+    "subtitles": false,
+    "video_file": null
+  },
+  "last_error": null,
+  "revisions": [],
+  "voice_override": null
+}

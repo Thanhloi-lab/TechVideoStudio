@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="tvsGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FF9900" />
+      <stop offset="50%" stop-color="#3B82F6" />
+      <stop offset="100%" stop-color="#10B981" />
+    </linearGradient>
+    <linearGradient id="cardGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0F172A" />
+      <stop offset="100%" stop-color="#1E293B" />
+    </linearGradient>
+  </defs>
+  <!-- 10% empty margin baked in: main frame sits inside 14..114 -->
+  <rect x="14" y="18" width="100" height="92" rx="18" fill="url(#cardGrad)" stroke="url(#tvsGrad)" stroke-width="5" />
+  <!-- Architecture nodes & links top/bottom -->
+  <circle cx="34" cy="40" r="6" fill="#FF9900" />
+  <circle cx="94" cy="40" r="6" fill="#3B82F6" />
+  <circle cx="94" cy="88" r="6" fill="#10B981" />
+  <line x1="40" y1="40" x2="88" y2="40" stroke="#475569" stroke-width="3" stroke-dasharray="4 3" />
+  <line x1="94" y1="46" x2="94" y2="82" stroke="#475569" stroke-width="3" stroke-dasharray="4 3" />
+  <!-- Center Play Triangle -->
+  <polygon points="52,48 52,80 80,64" fill="#F8FAFC" stroke="#FF9900" stroke-width="2.5" stroke-linejoin="round" />
+  <!-- Small CLI badge -->
+  <rect x="26" y="80" width="22" height="14" rx="4" fill="#334155" stroke="#94A3B8" stroke-width="1.5" />
+  <path d="M31 85 L35 87 L31 89 M37 90 L42 90" stroke="#38BDF8" stroke-width="1.8" stroke-linecap="round" fill="none" />
+</svg>
