@@ -10,7 +10,7 @@ import { KpiMetricsCard } from "./components/KpiMetricsCard.mjs";
 import { ProjectDashboard, SseStatusBadge } from "./components/ProjectDashboard.mjs";
 import { EpisodeRoadmap } from "./components/EpisodeRoadmap.mjs";
 import { HeaderJobsTray } from "./components/HeaderJobsTray.mjs";
-import { RevisionModal } from "./components/RevisionModal.mjs";
+import { AiScriptModal } from "./components/AiScriptModal.mjs";
 import { RevisionPanel } from "./components/RevisionPanel.mjs";
 import { VoiceStudioModal } from "./components/VoiceStudioModal.mjs";
 import { ParticleStage } from "./motion/ParticleStage.mjs";
@@ -150,6 +150,272 @@ function formatTime(sec) {
   return `${String(m).padStart(2, "0")}:${String(rem).padStart(2, "0")}`;
 }
 
+function clamp01(val) {
+  const n = Number(val);
+  if (!Number.isFinite(n)) return 0;
+  return Math.max(0, Math.min(1, n));
+}
+
+function round4(val) {
+  return Math.round(clamp01(val) * 10000) / 10000;
+}
+
+function cloneVisualData(vd) {
+  try {
+    return JSON.parse(JSON.stringify(vd || {}));
+  } catch {
+    return {};
+  }
+}
+
+function formatShortVoiceLabel(trackId, track) {
+  const raw = String(track?.tts_profile || trackId || "").trim();
+  if (!raw) return "Voice";
+  const cleaned = raw.replace(/^(edge-|voicestudio-|openai-|google-)/i, "");
+  return cleaned || raw;
+}
+
+function extractCalibratableItems(visualType, visualData) {
+  const vd = visualData || {};
+  const items = [];
+  const pushArrayItems = (group, arr, getLabel, forceMark = false) => {
+    if (!Array.isArray(arr) || arr.length === 0) return;
+    const n = arr.length;
+    for (let i = 0; i < n; i++) {
+      const it = arr[i] || {};
+      const hasRange = !forceMark && (it.progress_start !== undefined || it.progress_end !== undefined);
+      const start = clamp01(
+        it.progress_start ?? it.progress_at ?? (i / Math.max(1, n))
+      );
+      const end =
+        it.progress_end !== undefined
+          ? clamp01(it.progress_end)
+          : hasRange
+            ? clamp01((i + 1) / Math.max(1, n))
+            : null;
+      items.push({
+        id: `${group}:${i}`,
+        group,
+        index: i,
+        stepNum: items.length + 1,
+        kind: end !== null && !forceMark ? "range" : "mark",
+        label: String(getLabel(it, i) || `Bước ${i + 1}`).slice(0, 64),
+        start,
+        end,
+      });
+    }
+  };
+
+  if (visualType === "architecture") {
+    pushArrayItems(
+      "flow_steps",
+      vd.flow_steps,
+      (s, i) => s.label || s.badge_text || s.callout || s.cue_text || `Bước ${i + 1}`
+    );
+  } else if (visualType === "console_setup") {
+    pushArrayItems(
+      "steps",
+      vd.steps,
+      (s, i) => s.label || s.action || s.title || s.cue_text || `Bước ${i + 1}`
+    );
+  } else if (visualType === "code_cli") {
+    pushArrayItems(
+      "highlight_phases",
+      vd.highlight_phases,
+      (p, i) => p.label || p.explanation || p.cue_text || `Phase ${i + 1}`
+    );
+    pushArrayItems(
+      "terminal_commands",
+      vd.terminal_commands,
+      (c, i) => c.cmd || c.cue_text || `Lệnh ${i + 1}`,
+      true
+    );
+  } else if (visualType === "timeline_flow") {
+    pushArrayItems(
+      "milestones",
+      vd.milestones,
+      (m, i) => m.title || m.label || m.cue_text || `Mốc ${i + 1}`
+    );
+    if (vd.callout && typeof vd.callout === "object") {
+      items.push({
+        id: "callout:0",
+        group: "callout",
+        index: 0,
+        stepNum: items.length + 1,
+        kind: "mark",
+        label: vd.callout.title || "Callout tổng kết",
+        start: clamp01(vd.callout.show_at_progress ?? 0.8),
+        end: null,
+      });
+    }
+  } else if (visualType === "comparison_matrix") {
+    pushArrayItems(
+      "rows",
+      vd.rows,
+      (r, i) => r.label || r.feature || r.name || r.cue_text || `Hàng ${i + 1}`,
+      !Array.isArray(vd.rows) || vd.rows.every((r) => r?.progress_end === undefined)
+    );
+    if (vd.takeaway && typeof vd.takeaway === "object") {
+      items.push({
+        id: "takeaway:0",
+        group: "takeaway",
+        index: 0,
+        stepNum: items.length + 1,
+        kind: "mark",
+        label: "Kết luận (Takeaway)",
+        start: clamp01(vd.takeaway.show_at_progress ?? 0.78),
+        end: null,
+      });
+    }
+  } else if (visualType === "exam_tips") {
+    pushArrayItems(
+      "comparisons",
+      vd.comparisons,
+      (c, i) => c.label || c.title || c.wrong || c.right || `So sánh ${i + 1}`,
+      !Array.isArray(vd.comparisons) || vd.comparisons.every((c) => c?.progress_end === undefined)
+    );
+    if (vd.quiz && typeof vd.quiz === "object") {
+      items.push({
+        id: "quiz:0",
+        group: "quiz",
+        index: 0,
+        stepNum: items.length + 1,
+        kind: "mark",
+        label: "Quiz Show",
+        start: clamp01(vd.quiz.show_at_progress ?? 0.68),
+        end: null,
+      });
+    }
+  } else if (visualType === "kpi_metrics") {
+    const kpiField = Array.isArray(vd.cards) && vd.cards.length
+      ? "cards"
+      : Array.isArray(vd.metrics) && vd.metrics.length
+        ? "metrics"
+        : Array.isArray(vd.bars) && vd.bars.length
+          ? "bars"
+          : "cards";
+    pushArrayItems(
+      kpiField,
+      vd[kpiField],
+      (c, i) => c.label || c.title || c.name || `Chỉ số ${i + 1}`,
+      !Array.isArray(vd[kpiField]) || vd[kpiField].every((c) => c?.progress_end === undefined)
+    );
+    if (vd.chart && typeof vd.chart === "object") {
+      items.push({
+        id: "chart:0",
+        group: "chart",
+        index: 0,
+        stepNum: items.length + 1,
+        kind: "mark",
+        label: "Biểu đồ (Chart)",
+        start: clamp01(vd.chart.show_at_progress ?? 0.4),
+        end: null,
+      });
+    }
+    if (vd.alert_stamp && typeof vd.alert_stamp === "object") {
+      items.push({
+        id: "alert_stamp:0",
+        group: "alert_stamp",
+        index: 0,
+        stepNum: items.length + 1,
+        kind: "mark",
+        label: "Alert Stamp",
+        start: clamp01(vd.alert_stamp.show_at_progress ?? 0.72),
+        end: null,
+      });
+    }
+  }
+
+  return items;
+}
+
+function applyPlayheadToVisualData(visualData, item, playheadProgress) {
+  const next = cloneVisualData(visualData);
+  const p = clamp01(playheadProgress);
+  if (
+    item.group === "quiz" ||
+    item.group === "callout" ||
+    item.group === "takeaway" ||
+    item.group === "chart" ||
+    item.group === "alert_stamp"
+  ) {
+    if (!next[item.group] || typeof next[item.group] !== "object") {
+      next[item.group] = {};
+    }
+    next[item.group].show_at_progress = round4(Math.min(0.98, p));
+    return next;
+  }
+
+  const arr = Array.isArray(next[item.group]) ? next[item.group] : null;
+  if (!arr || !arr[item.index]) return next;
+
+  const idx = item.index;
+  if (item.kind === "range") {
+    const prevStart = idx > 0 ? clamp01(arr[idx - 1].progress_start ?? 0) : -0.02;
+    const minBound = idx > 0 ? Math.min(0.96, prevStart + 0.02) : 0;
+    const curEnd = clamp01(arr[idx].progress_end ?? ((idx + 1) / Math.max(1, arr.length)));
+    const maxBound = Math.max(minBound, Math.min(0.98, curEnd - 0.02));
+    const clampedP = Math.max(minBound, Math.min(maxBound, p));
+    arr[idx].progress_start = round4(clampedP);
+    if (arr[idx].progress_at !== undefined) {
+      arr[idx].progress_at = round4(clampedP);
+    }
+    if (idx > 0) {
+      arr[idx - 1].progress_end = round4(clampedP);
+    }
+  } else {
+    const prevVal = idx > 0 ? clamp01(arr[idx - 1].progress_start ?? arr[idx - 1].progress_at ?? 0) : -0.01;
+    const nextVal =
+      idx + 1 < arr.length
+        ? clamp01(arr[idx + 1].progress_start ?? arr[idx + 1].progress_at ?? 0.99)
+        : 0.99;
+    const minBound = idx > 0 ? Math.min(0.97, prevVal + 0.01) : 0;
+    const maxBound = Math.max(minBound, Math.min(0.98, nextVal - 0.01));
+    const clampedP = Math.max(minBound, Math.min(maxBound, p));
+    if (arr[idx].progress_start !== undefined || arr[idx].progress_at === undefined) {
+      arr[idx].progress_start = round4(clampedP);
+    }
+    if (arr[idx].progress_at !== undefined) {
+      arr[idx].progress_at = round4(clampedP);
+    }
+  }
+  return next;
+}
+
+function extractTimingsPayload(visualData) {
+  const vd = visualData || {};
+  const timings = {};
+  const arrayKeys = [
+    "flow_steps",
+    "highlight_phases",
+    "terminal_commands",
+    "steps",
+    "milestones",
+    "rows",
+    "comparisons",
+    "cards",
+    "metrics",
+    "bars",
+  ];
+  for (const key of arrayKeys) {
+    if (Array.isArray(vd[key]) && vd[key].length > 0) {
+      timings[key] = vd[key].map((item) => {
+        const entry = {};
+        if (item.progress_start !== undefined) entry.progress_start = round4(item.progress_start);
+        if (item.progress_end !== undefined) entry.progress_end = round4(item.progress_end);
+        if (item.progress_at !== undefined) entry.progress_at = round4(item.progress_at);
+        return entry;
+      });
+    }
+  }
+  for (const objKey of ["quiz", "callout", "takeaway", "chart", "alert_stamp"]) {
+    if (vd[objKey] && typeof vd[objKey] === "object" && vd[objKey].show_at_progress !== undefined) {
+      timings[objKey] = { show_at_progress: round4(vd[objKey].show_at_progress) };
+    }
+  }
+  return timings;
+}
+
 function getInitialRouteParams() {
   const params = new URLSearchParams(window.location.search);
   const course = params.get("course") || "";
@@ -195,8 +461,14 @@ function StudioApp() {
   const [activeTab, setActiveTab] = useState("scenes"); // "scenes" | "notes" | "revisions" | "curriculum"
   const [exportStatus, setExportStatus] = useState(null);
   const [exportSeekActive, setExportSeekActive] = useState(false);
-  const [revisionModalOpen, setRevisionModalOpen] = useState(false);
+  const [playerAiModalOpen, setPlayerAiModalOpen] = useState(false);
   const [voiceModalOpen, setVoiceModalOpen] = useState(false);
+  const [voiceTrackBusy, setVoiceTrackBusy] = useState(false);
+  const [calibratorOpen, setCalibratorOpen] = useState(true);
+  const [timingDraft, setTimingDraft] = useState(null); // { sceneId, visualData }
+  const [timingDraftDirty, setTimingDraftDirty] = useState(false);
+  const [timingSaving, setTimingSaving] = useState(false);
+  const [timingAutoAligning, setTimingAutoAligning] = useState(false);
   const [jobsList, setJobsList] = useState([]);
   const [aiJobsList, setAiJobsList] = useState([]);
   const [workerStatus, setWorkerStatus] = useState({
@@ -205,9 +477,12 @@ function StudioApp() {
     primary_worker: null,
     workers: [],
   });
+  const [providersData, setProvidersData] = useState(null);
+  const [pendingResumeJob, setPendingResumeJob] = useState(null);
   const [trayHighlightSignal, setTrayHighlightSignal] = useState(0);
   const [renderPrefs, setRenderPrefs] = useState(loadInitialRenderPrefs);
-  const [renderSettingsOpen, setRenderSettingsOpen] = useState(false);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
+  const [includeTtsBeforeExport, setIncludeTtsBeforeExport] = useState(false);
   const [guardrailNote, setGuardrailNote] = useState("");
   const [audioVersion, setAudioVersion] = useState(1);
   const [revisionToast, setRevisionToast] = useState(null);
@@ -235,15 +510,15 @@ function StudioApp() {
   }, [renderPrefs]);
 
   useEffect(() => {
-    if (!renderSettingsOpen) return undefined;
+    if (!exportMenuOpen) return undefined;
     const onMouseDown = (e) => {
       if (renderSettingsRef.current && !renderSettingsRef.current.contains(e.target)) {
-        setRenderSettingsOpen(false);
+        setExportMenuOpen(false);
       }
     };
     const onKeyDown = (e) => {
       if (e.key === "Escape") {
-        setRenderSettingsOpen(false);
+        setExportMenuOpen(false);
       }
     };
     document.addEventListener("mousedown", onMouseDown);
@@ -252,7 +527,7 @@ function StudioApp() {
       document.removeEventListener("mousedown", onMouseDown);
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [renderSettingsOpen]);
+  }, [exportMenuOpen]);
 
   const updateRenderPrefs = useCallback((patch) => {
     setRenderPrefs((prev) => {
@@ -401,14 +676,29 @@ function StudioApp() {
     }
   }, [initialRoute.headless]);
 
+  const fetchAiProviders = useCallback(async () => {
+    if (initialRoute.headless) return;
+    try {
+      const r = await fetch("/api/ai/providers");
+      if (!r.ok) return;
+      const data = await r.json();
+      if (data && Array.isArray(data.providers || data.brands)) {
+        setProvidersData(data);
+      }
+    } catch {
+      // Ignore transient errors
+    }
+  }, [initialRoute.headless]);
+
   useEffect(() => {
     fetchCourses();
     fetchJobs();
     if (!initialRoute.headless) {
       fetchAiStatus();
       fetchAiJobs();
+      fetchAiProviders();
     }
-  }, [fetchCourses, fetchJobs, fetchAiStatus, fetchAiJobs, initialRoute.headless]);
+  }, [fetchCourses, fetchJobs, fetchAiStatus, fetchAiJobs, fetchAiProviders, initialRoute.headless]);
 
   useEffect(() => {
     if (selectedCourseId) {
@@ -491,6 +781,7 @@ function StudioApp() {
         const parsed = JSON.parse(ev.data || "{}");
         if (parsed && typeof parsed.online === "boolean") {
           setWorkerStatus(parsed);
+          fetchAiProviders();
         }
       } catch {
         // Ignore malformed worker_status payload
@@ -504,7 +795,9 @@ function StudioApp() {
         if (!job || !job.id) return;
         upsertAiJob(job);
 
-        const notifyKey = `ai:${job.id}:${job.status}`;
+        const doneCount = Array.isArray(job.completed_episodes) ? job.completed_episodes.length : 0;
+        const totalCount = Array.isArray(job.episode_ids) ? job.episode_ids.length : 1;
+        const notifyKey = `ai:${job.id}:${job.status}:${doneCount}`;
         const alreadyNotified = notifiedJobStatesRef.current.has(notifyKey);
         if (job.status === "completed") {
           scheduleRefresh();
@@ -516,6 +809,28 @@ function StudioApp() {
                 job.auto_produce ? " và đẩy sang hàng đợi TTS/Render." : " (script_ready)."
               }`
             );
+          }
+        } else if (job.status === "paused") {
+          scheduleRefresh();
+          fetchAiProviders();
+          if (!alreadyNotified) {
+            notifiedJobStatesRef.current.add(notifyKey);
+            if (job.pause_reason === "quota_exhausted") {
+              showToast(
+                false,
+                `⏸️ AI tạm dừng do hết Quota (${doneCount}/${totalCount} tập đã xong) — Bấm "Tiếp tục" để đổi Model.`
+              );
+            } else if (job.pause_reason === "server_interrupted") {
+              showToast(
+                false,
+                `⏸️ AI tạm dừng do Server khởi động lại (${doneCount}/${totalCount} tập đã xong) — Bấm "Tiếp tục" để chạy nốt.`
+              );
+            } else {
+              showToast(
+                false,
+                `⏸️ AI tạm dừng (${doneCount}/${totalCount} tập đã xong): ${job.error || "Bấm Tiếp tục để chạy lại"}`
+              );
+            }
           }
         } else if (job.status === "failed") {
           scheduleRefresh();
@@ -556,6 +871,7 @@ function StudioApp() {
       if (!initialRoute.headless) {
         fetchAiStatus();
         fetchAiJobs();
+        fetchAiProviders();
       }
     };
     es.onopen = markLive;
@@ -582,7 +898,7 @@ function StudioApp() {
       es.removeEventListener("ai_jobs_cleared", handleAiJobsCleared);
       es.close();
     };
-  }, [fetchCourses, fetchEvents, fetchJobs, fetchAiStatus, fetchAiJobs, initialRoute.headless, showToast, upsertJob, upsertAiJob]);
+  }, [fetchCourses, fetchEvents, fetchJobs, fetchAiStatus, fetchAiJobs, fetchAiProviders, initialRoute.headless, showToast, upsertJob, upsertAiJob]);
 
   // Sync URL query params (when not in headless export mode)
   useEffect(() => {
@@ -617,6 +933,36 @@ function StudioApp() {
 
   const scenes = currentEpisode?.script?.scenes || [];
   const currentScene = scenes[sceneIdx] || null;
+  const effectiveScene = useMemo(() => {
+    if (!currentScene) return null;
+    if (timingDraft && timingDraft.sceneId === currentScene.id && timingDraft.visualData) {
+      return { ...currentScene, visual_data: timingDraft.visualData };
+    }
+    return currentScene;
+  }, [currentScene, timingDraft]);
+
+  const voiceTracks = currentEpisode?.script?.voice_tracks || {};
+  const voiceTrackKeys = Object.keys(voiceTracks);
+  const activeVoiceTrackId =
+    currentEpisode?.script?.active_voice_track ||
+    (voiceTrackKeys.length === 1 ? voiceTrackKeys[0] : "");
+  const activeTrackObj = activeVoiceTrackId ? voiceTracks[activeVoiceTrackId] || null : null;
+  const currentTrackHasAudio = Boolean(
+    activeTrackObj
+      ? Object.keys(activeTrackObj.scene_data || {}).length > 0
+      : currentEpisode?.has_audio
+  );
+  const isEpStaleVal = Boolean(currentEpisode?.state?.production?.stale);
+
+  useEffect(() => {
+    setTimingDraft(null);
+    setTimingDraftDirty(false);
+  }, [currentEpisode?.id, currentScene?.id, activeVoiceTrackId]);
+
+  useEffect(() => {
+    setIncludeTtsBeforeExport(!currentTrackHasAudio || isEpStaleVal);
+  }, [currentEpisode?.id, currentTrackHasAudio, isEpStaleVal, activeVoiceTrackId]);
+
   const isStoryboardMode = Boolean(
     currentEpisode &&
       currentScene &&
@@ -929,11 +1275,14 @@ function StudioApp() {
         }
         setTrayHighlightSignal((n) => n + 1);
         const epCount = data.job?.episode_ids?.length || 1;
+        const modelLabel =
+          data.job?.model ||
+          data.job?.provider_id ||
+          data.worker_status?.primary_worker?.model ||
+          "AI";
         showToast(
           true,
-          `✍️ Đã gửi lệnh biên kịch ${epCount} tập cho Antigravity Worker (${
-            data.worker_status?.primary_worker?.model || "Argon"
-          }).`
+          `✍️ Đã bắt đầu biên kịch ${epCount} tập (${modelLabel}).`
         );
         return data;
       } catch (err) {
@@ -943,6 +1292,50 @@ function StudioApp() {
     },
     [showToast, upsertAiJob]
   );
+
+  const handleResumeAiJob = useCallback(
+    async (payload) => {
+      try {
+        const res = await fetch("/api/ai/jobs/resume", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (data.worker_status) {
+          setWorkerStatus(data.worker_status);
+        }
+        if (!res.ok || data.ok === false) {
+          throw new Error(data.error || `HTTP ${res.status}`);
+        }
+        if (data.job) {
+          upsertAiJob(data.job);
+        }
+        setTrayHighlightSignal((n) => n + 1);
+        fetchAiProviders();
+        showToast(
+          true,
+          `▶ Đã tiếp tục đợt biên kịch ${data.job?.id || payload.job_id} (${
+            data.job?.model || payload.model || payload.provider_id || "AI"
+          }).`
+        );
+        return data;
+      } catch (err) {
+        showToast(false, `⚠️ Không thể tiếp tục job: ${err.message}`);
+        throw err;
+      }
+    },
+    [fetchAiProviders, showToast, upsertAiJob]
+  );
+
+  const handleOpenResumeFromTray = useCallback((job) => {
+    if (!job) return;
+    if (job.course) {
+      setSelectedCourseId(job.course);
+    }
+    setPendingResumeJob(job);
+    setView("roadmap");
+  }, []);
 
   const handleCancelJob = useCallback(
     async (jobId) => {
@@ -1085,19 +1478,20 @@ function StudioApp() {
     [playbackRate, renderPrefs, showToast, upsertJob]
   );
 
-  const handleServerExport = useCallback(async () => {
+  const handleUnifiedExport = useCallback(async () => {
     if (!currentCourse || !currentEpisode) return;
     if (isPlaying) {
       if (audioRef.current) audioRef.current.pause();
       setIsPlaying(false);
     }
     setExportStatus(null);
+    setExportMenuOpen(false);
     const { format, codec } = splitFormatCodec(renderPrefs.formatCodec);
     try {
       await handleRunProduction({
         course: currentCourse.id,
         episode: currentEpisode.id,
-        mode: "render_only",
+        mode: includeTtsBeforeExport ? "tts_and_render" : "render_only",
         format,
         codec,
         hardware: renderPrefs.hardware,
@@ -1108,7 +1502,170 @@ function StudioApp() {
     } catch {
       // Error toast is already surfaced by handleRunProduction
     }
-  }, [currentCourse, currentEpisode, handleRunProduction, isPlaying, playbackRate, renderPrefs]);
+  }, [
+    currentCourse,
+    currentEpisode,
+    handleRunProduction,
+    includeTtsBeforeExport,
+    isPlaying,
+    playbackRate,
+    renderPrefs,
+  ]);
+
+  const handleActivateVoiceTrack = useCallback(
+    async (profileId) => {
+      if (!currentCourse || !currentEpisode || !profileId || voiceTrackBusy) return;
+      if (profileId === activeVoiceTrackId) return;
+      if (audioRef.current && !audioRef.current.paused) {
+        audioRef.current.pause();
+      }
+      setIsPlaying(false);
+      setVoiceTrackBusy(true);
+      try {
+        const res = await fetch("/api/episodes/voice-track/activate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            course: currentCourse.id,
+            episode: currentEpisode.id,
+            profile_id: profileId,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok || data.ok === false) {
+          throw new Error(data.error || `HTTP ${res.status}`);
+        }
+        setTimingDraft(null);
+        setTimingDraftDirty(false);
+        virtualTimeRef.current = 0;
+        setSceneTime(0);
+        setAudioVersion((v) => v + 1);
+        await fetchCourses();
+        await fetchEvents(currentCourse.id);
+        showToast(true, `🎙️ Đã chuyển sang track giọng "${profileId}" (0s switch).`);
+      } catch (err) {
+        showToast(false, `⚠️ Không thể đổi track giọng: ${err.message}`);
+      } finally {
+        setVoiceTrackBusy(false);
+      }
+    },
+    [activeVoiceTrackId, currentCourse, currentEpisode, fetchCourses, fetchEvents, showToast, voiceTrackBusy]
+  );
+
+  const handleDeleteVoiceTrack = useCallback(
+    async (profileId) => {
+      if (!currentCourse || !currentEpisode || !profileId || voiceTrackBusy) return;
+      if (!window.confirm(`Xóa track giọng đọc "${profileId}" và các file audio của track này?`)) {
+        return;
+      }
+      setVoiceTrackBusy(true);
+      try {
+        const res = await fetch("/api/episodes/voice-track/delete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            course: currentCourse.id,
+            episode: currentEpisode.id,
+            profile_id: profileId,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok || data.ok === false) {
+          throw new Error(data.error || `HTTP ${res.status}`);
+        }
+        await fetchCourses();
+        await fetchEvents(currentCourse.id);
+        showToast(true, `🗑️ Đã xóa track giọng "${profileId}".`);
+      } catch (err) {
+        showToast(false, `⚠️ Không thể xóa track giọng: ${err.message}`);
+      } finally {
+        setVoiceTrackBusy(false);
+      }
+    },
+    [currentCourse, currentEpisode, fetchCourses, fetchEvents, showToast, voiceTrackBusy]
+  );
+
+  const handleCalibrateStepStart = useCallback(
+    (item) => {
+      if (!currentScene || !item) return;
+      const dur = Math.max(0.1, currentSceneDuration || 24);
+      const p = clamp01(sceneTime / dur);
+      const baseVd =
+        timingDraft && timingDraft.sceneId === currentScene.id && timingDraft.visualData
+          ? timingDraft.visualData
+          : currentScene.visual_data;
+      const updatedVd = applyPlayheadToVisualData(baseVd, item, p);
+      setTimingDraft({ sceneId: currentScene.id, visualData: updatedVd });
+      setTimingDraftDirty(true);
+    },
+    [currentScene, currentSceneDuration, sceneTime, timingDraft]
+  );
+
+  const handleSaveTimings = useCallback(async () => {
+    if (!currentCourse || !currentEpisode || !currentScene || timingSaving) return;
+    const vd =
+      timingDraft && timingDraft.sceneId === currentScene.id && timingDraft.visualData
+        ? timingDraft.visualData
+        : currentScene.visual_data;
+    const timings = extractTimingsPayload(vd);
+    setTimingSaving(true);
+    try {
+      const res = await fetch("/api/episodes/scene-timings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          course: currentCourse.id,
+          episode: currentEpisode.id,
+          scene_id: currentScene.id,
+          action: "save",
+          timings,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.ok === false) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      setTimingDraft(null);
+      setTimingDraftDirty(false);
+      await fetchCourses();
+      await fetchEvents(currentCourse.id);
+      showToast(true, `💾 Đã lưu timing animation cho ${currentScene.id}.`);
+    } catch (err) {
+      showToast(false, `⚠️ Lỗi lưu timing: ${err.message}`);
+    } finally {
+      setTimingSaving(false);
+    }
+  }, [currentCourse, currentEpisode, currentScene, fetchCourses, fetchEvents, showToast, timingDraft, timingSaving]);
+
+  const handleAutoAlignTimings = useCallback(async () => {
+    if (!currentCourse || !currentEpisode || !currentScene || timingAutoAligning) return;
+    setTimingAutoAligning(true);
+    try {
+      const res = await fetch("/api/episodes/scene-timings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          course: currentCourse.id,
+          episode: currentEpisode.id,
+          scene_id: currentScene.id,
+          action: "auto_align",
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.ok === false) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      setTimingDraft(null);
+      setTimingDraftDirty(false);
+      await fetchCourses();
+      await fetchEvents(currentCourse.id);
+      showToast(true, `⚡ Đã tự căn lại timing theo phụ đề cho ${currentScene.id}.`);
+    } catch (err) {
+      showToast(false, `⚠️ Không thể tự căn timing: ${err.message}`);
+    } finally {
+      setTimingAutoAligning(false);
+    }
+  }, [currentCourse, currentEpisode, currentScene, fetchCourses, fetchEvents, showToast, timingAutoAligning]);
 
   // Navigation handlers across the 3 screens
   const stopPlayback = () => {
@@ -1185,8 +1742,8 @@ function StudioApp() {
     : 0;
 
   const burstInfo = useMemo(
-    () => getSceneBurstInfo(currentScene, sceneProgress, 1, 1, sceneIdx),
-    [currentScene, sceneProgress, sceneIdx]
+    () => getSceneBurstInfo(effectiveScene, sceneProgress, 1, 1, sceneIdx),
+    [effectiveScene, sceneProgress, sceneIdx]
   );
 
   const particleTriggerKey = currentScene
@@ -1202,6 +1759,14 @@ function StudioApp() {
     }
     return computeSceneEnvelope(sceneTime, currentSceneDuration);
   }, [currentScene, isPlaying, sceneTime, exportSeekActive, currentSceneDuration]);
+
+  const calibratableItems = useMemo(
+    () =>
+      effectiveScene
+        ? extractCalibratableItems(effectiveScene.visual_type, effectiveScene.visual_data)
+        : [],
+    [effectiveScene]
+  );
 
   if (loading) {
     return h("div", { className: "studio-loading" }, "Đang tải Tech Course Video Studio...");
@@ -1223,25 +1788,41 @@ function StudioApp() {
 
   // Screen 2: Episode Roadmap & Live Monitor
   if (view === "roadmap" && currentCourse) {
-    return h(EpisodeRoadmap, {
-      course: currentCourse,
-      events,
-      sseStatus,
-      onBack: openProjectsView,
-      onOpenEpisode: openPlayerForEpisode,
-      onOpenLatestEpisode: openLatestPlayableEpisode,
-      onStateAction: handleStateAction,
-      onRefreshCourses: fetchCourses,
-      jobs: combinedJobs,
-      aiJobs: aiJobsList,
-      workerStatus,
-      onStartAiScript: handleStartAiScript,
-      renderPrefs,
-      onCancelJob: handleCancelJob,
-      onClearFinishedJobs: handleClearFinishedJobs,
-      onNavigateToPlayer: handleNavigateToPlayer,
-      trayHighlightSignal,
-    });
+    return h(
+      React.Fragment,
+      null,
+      revisionToast
+        ? h(
+            "div",
+            { className: `roadmap-toast studio-global-toast ${revisionToast.ok ? "is-ok" : "is-err"}` },
+            revisionToast.msg
+          )
+        : null,
+      h(EpisodeRoadmap, {
+        course: currentCourse,
+        events,
+        sseStatus,
+        onBack: openProjectsView,
+        onOpenEpisode: openPlayerForEpisode,
+        onOpenLatestEpisode: openLatestPlayableEpisode,
+        onStateAction: handleStateAction,
+        onRefreshCourses: fetchCourses,
+        jobs: combinedJobs,
+        aiJobs: aiJobsList,
+        workerStatus,
+        providersData,
+        onProvidersLoaded: setProvidersData,
+        onStartAiScript: handleStartAiScript,
+        onResumeAiJob: handleResumeAiJob,
+        pendingResumeJob,
+        onClearPendingResume: () => setPendingResumeJob(null),
+        renderPrefs,
+        onCancelJob: handleCancelJob,
+        onClearFinishedJobs: handleClearFinishedJobs,
+        onNavigateToPlayer: handleNavigateToPlayer,
+        trayHighlightSignal,
+      })
+    );
   }
 
   // Screen 3: Studio Player
@@ -1258,11 +1839,13 @@ function StudioApp() {
   }
   const isEpStale = Boolean(currentEpisode?.state?.production?.stale);
   const activeEpVoice =
+    activeVoiceTrackId ||
     currentEpisode?.state?.voice_override?.tts_profile ||
     currentEpisode?.tts_profile ||
     currentCourse?.meta?.tts_profile ||
     currentCourse?.meta?.tts_voice ||
     "edge-hoaimy";
+  const voiceTrackEntries = Object.entries(voiceTracks);
   const epJobKey =
     currentCourse && currentEpisode ? `${currentCourse.id}:${currentEpisode.id}` : "";
   const activeEpJob = epJobKey ? jobsMap[epJobKey] || null : null;
@@ -1271,6 +1854,13 @@ function StudioApp() {
   );
   const activeFormatSpec = splitFormatCodec(renderPrefs.formatCodec);
   const renderSettingsSummary = formatRenderPrefsPill(renderPrefs, playbackRate);
+  const existingVideoDownloadUrl =
+    currentCourse && currentEpisode && currentEpisode.has_video
+      ? `/api/download-video?${new URLSearchParams({
+          course: currentCourse.id,
+          ep: currentEpisode.id,
+        }).toString()}`
+      : "";
 
   return h(
     "div",
@@ -1335,6 +1925,7 @@ function StudioApp() {
           onCancelJob: handleCancelJob,
           onClearFinishedJobs: handleClearFinishedJobs,
           onNavigateToPlayer: handleNavigateToPlayer,
+          onResumeAiJob: handleOpenResumeFromTray,
           highlightSignal: trayHighlightSignal,
         }),
         h(SseStatusBadge, { sseStatus }),
@@ -1392,6 +1983,61 @@ function StudioApp() {
               `🎙️ ${activeEpVoice}`
             )
           : null,
+        currentEpisode && voiceTrackEntries.length >= 1
+          ? h(
+              "div",
+              {
+                className: "voice-ab-switcher",
+                role: "group",
+                "aria-label": "Chuyển nhanh track giọng đọc (A/B Switcher)",
+              },
+              ...voiceTrackEntries.map(([trackId, track]) => {
+                const isActiveTrack =
+                  trackId === activeVoiceTrackId ||
+                  (voiceTrackEntries.length === 1 && !activeVoiceTrackId);
+                const shortLabel = formatShortVoiceLabel(trackId, track);
+                const durSec = Math.round(Number(track?.total_duration_sec) || 0);
+                return h(
+                  "div",
+                  {
+                    key: trackId,
+                    className: `voice-ab-chip ${isActiveTrack ? "is-active" : ""}`,
+                  },
+                  h(
+                    "button",
+                    {
+                      type: "button",
+                      className: `voice-ab-pill ${isActiveTrack ? "is-active" : ""}`,
+                      disabled: voiceTrackBusy || isEpJobRunning,
+                      onClick: () => handleActivateVoiceTrack(trackId),
+                      title: isActiveTrack
+                        ? `Track đang phát: ${track?.tts_profile || trackId} (${durSec}s)`
+                        : `Chuyển ngay sang track "${track?.tts_profile || trackId}" (${durSec}s) — không cần tạo lại TTS`,
+                    },
+                    h("span", null, isActiveTrack ? `● ${shortLabel}` : shortLabel),
+                    durSec > 0 ? h("span", { className: "voice-ab-dur" }, `${durSec}s`) : null
+                  ),
+                  voiceTrackEntries.length >= 2 && !isActiveTrack
+                    ? h(
+                        "button",
+                        {
+                          type: "button",
+                          className: "voice-ab-del-btn",
+                          disabled: voiceTrackBusy || isEpJobRunning,
+                          onClick: (e) => {
+                            e.stopPropagation();
+                            handleDeleteVoiceTrack(trackId);
+                          },
+                          title: `Xóa track giọng "${trackId}"`,
+                          "aria-label": `Xóa track giọng ${trackId}`,
+                        },
+                        "🗑️"
+                      )
+                    : null
+                );
+              })
+            )
+          : null,
         currentEpisode?.has_script
           ? h(
               "button",
@@ -1404,6 +2050,7 @@ function StudioApp() {
                     course: currentCourse.id,
                     episode: currentEpisode.id,
                     mode: "tts_only",
+                    profile_id: activeEpVoice,
                   }),
                 title: "Tạo lại file audio TTS ngay trên server",
               },
@@ -1411,7 +2058,7 @@ function StudioApp() {
             )
           : null,
 
-        // Compact Render Settings Pill + Floating Popover
+        // Unified Export Button + Popover Menu (Quality, TTS Toggle, CTA, Existing Video Download)
         h(
           "div",
           { className: "render-settings-wrap", ref: renderSettingsRef },
@@ -1419,36 +2066,58 @@ function StudioApp() {
             "button",
             {
               type: "button",
-              className: `btn-render-settings ${renderSettingsOpen ? "is-open" : ""}`,
-              onClick: () => setRenderSettingsOpen((v) => !v),
-              "aria-expanded": renderSettingsOpen,
+              className: `btn-export-unified ${exportMenuOpen ? "is-open" : ""}`,
+              disabled: !currentEpisode?.has_script && !currentEpisode?.has_video,
+              onClick: () => setExportMenuOpen((v) => !v),
+              "aria-expanded": exportMenuOpen,
               "aria-haspopup": "dialog",
-              title: "Cấu hình xuất Video (Hardware / Định dạng / Độ phân giải / FPS / Tốc độ)",
+              title: `Xuất Video (${renderSettingsSummary})`,
             },
-            h("span", null, "⚙️"),
-            h("span", { className: "render-settings-summary" }, renderSettingsSummary)
+            isEpJobRunning && activeEpJob?.mode !== "tts_only"
+              ? "⏳ Đang xuất..."
+              : "🎬 Xuất Video ▾"
           ),
-          renderSettingsOpen
+          exportMenuOpen
             ? h(
                 "div",
                 {
-                  className: "render-settings-popover",
+                  className: "render-settings-popover export-menu-popover",
                   role: "dialog",
-                  "aria-label": "Cấu hình Render Video",
+                  "aria-label": "Xuất Video & Cấu hình Render",
                 },
                 h(
                   "div",
                   { className: "render-pop-head" },
-                  h("span", { className: "render-pop-title" }, "Cấu hình Xuất Video"),
+                  h(
+                    "div",
+                    null,
+                    h("div", { className: "render-pop-title" }, "🎬 Xuất Video"),
+                    h("div", { className: "render-settings-summary" }, renderSettingsSummary)
+                  ),
                   h(
                     "button",
                     {
                       type: "button",
                       className: "jobs-popover-close",
-                      onClick: () => setRenderSettingsOpen(false),
+                      onClick: () => setExportMenuOpen(false),
                       "aria-label": "Đóng",
                     },
                     "✕"
+                  )
+                ),
+
+                h(
+                  "label",
+                  { className: "export-tts-check-row" },
+                  h("input", {
+                    type: "checkbox",
+                    checked: includeTtsBeforeExport,
+                    onChange: (e) => setIncludeTtsBeforeExport(e.target.checked),
+                  }),
+                  h(
+                    "span",
+                    null,
+                    "🎙️ Tạo lại Audio (TTS) cho giọng hiện tại trước khi xuất"
                   )
                 ),
 
@@ -1571,60 +2240,37 @@ function StudioApp() {
                       "div",
                       { className: "render-compat-hint" },
                       "GPU encode hỗ trợ MP4 H.264 / HEVC; WebM VP9 & CPU mode dùng bộ mã hóa phần mềm."
-                    )
+                    ),
+
+                h(
+                  "div",
+                  { className: "export-pop-actions" },
+                  h(
+                    "button",
+                    {
+                      type: "button",
+                      className: "export-cta-btn",
+                      disabled: !currentEpisode?.has_script || isEpJobRunning,
+                      onClick: handleUnifiedExport,
+                    },
+                    isEpJobRunning
+                      ? "⏳ Đang xử lý trên Server..."
+                      : "🚀 Bắt đầu Xuất Video"
+                  ),
+                  existingVideoDownloadUrl
+                    ? h(
+                        "a",
+                        {
+                          className: "export-download-link",
+                          href: existingVideoDownloadUrl,
+                          download: true,
+                        },
+                        "⬇ Tải video hiện có"
+                      )
+                    : null
+                )
               )
             : null
-        ),
-
-        currentEpisode?.has_script
-          ? h(
-              "button",
-              {
-                type: "button",
-                className: "btn-render-direct",
-                disabled: isEpJobRunning,
-                onClick: () =>
-                  handleRunProduction({
-                    course: currentCourse.id,
-                    episode: currentEpisode.id,
-                    mode: "tts_and_render",
-                    format: activeFormatSpec.format,
-                    codec: activeFormatSpec.codec,
-                    hardware: renderPrefs.hardware,
-                    resolution: renderPrefs.resolution,
-                    fps: renderPrefs.fps,
-                    speed: playbackRate,
-                  }),
-                title: `Chạy TTS + Render Video (${renderSettingsSummary}) trên server`,
-              },
-              isEpJobRunning && activeEpJob?.mode === "tts_and_render"
-                ? "⏳ Rendering..."
-                : "🎬 Tạo Audio & Render Video"
-            )
-          : null,
-        (currentEpisode?.has_script || currentEpisode?.has_video)
-          ? h(
-              "button",
-              {
-                type: "button",
-                className: "btn-revision-topbar",
-                onClick: () => setRevisionModalOpen(true),
-              },
-              "⚠️ Yêu cầu sửa"
-            )
-          : null,
-        h(
-          "button",
-          {
-            type: "button",
-            className: "btn-export",
-            onClick: handleServerExport,
-            disabled: !currentEpisode?.has_script || isEpJobRunning,
-            title: `Xuất Video ngầm trên Server (${renderSettingsSummary}) — đóng trình duyệt vẫn chạy tiếp`,
-          },
-          isEpJobRunning && activeEpJob?.mode === "render_only"
-            ? "⏳ Đang xuất..."
-            : `⬇ Xuất Video (.${activeFormatSpec.format})`
         )
       )
     ),
@@ -1701,8 +2347,8 @@ function StudioApp() {
                 ),
 
                 // Dynamic Visual Scene Component across all 7 templates
-                h(SCENE_COMPONENTS[currentScene.visual_type] || ArchitectureDiagram, {
-                  scene: currentScene,
+                h(SCENE_COMPONENTS[effectiveScene?.visual_type || currentScene.visual_type] || ArchitectureDiagram, {
+                  scene: effectiveScene || currentScene,
                   progress: sceneProgress,
                 })
               ),
@@ -1954,34 +2600,175 @@ function StudioApp() {
           activeTab === "scenes"
             ? h(
                 "div",
-                { className: "scenes-list" },
-                ...scenes.map((sc, idx) => {
-                  const scRevCount = openSceneRevCounts[sc.id] || 0;
-                  return h(
-                    "button",
-                    {
-                      key: sc.id,
-                      type: "button",
-                      className: `scene-item ${idx === sceneIdx ? "is-active" : ""}`,
-                      onClick: () => jumpToScene(idx, true),
-                    },
-                    h(
+                { className: "scenes-tab-wrap" },
+                currentScene
+                  ? h(
                       "div",
-                      { className: "scene-item-top" },
-                      h("span", { className: "scene-item-num" }, `Cảnh ${idx + 1}`),
+                      { className: `timing-calibrator ${calibratorOpen ? "is-open" : ""}` },
                       h(
-                        "span",
-                        { className: "scene-item-right-tags" },
-                        scRevCount > 0
-                          ? h("span", { className: "scene-rev-dot" }, `⚠️ ${scRevCount}`)
-                          : null,
-                        h("span", { className: "scene-item-dur" }, `${Math.round(sc.duration_sec || 24)}s`)
-                      )
-                    ),
-                    h("div", { className: "scene-item-title" }, sc.title),
-                    h("div", { className: "scene-item-part" }, sc.part_label)
-                  );
-                })
+                        "button",
+                        {
+                          type: "button",
+                          className: "timing-calibrator-head",
+                          onClick: () => setCalibratorOpen((v) => !v),
+                          "aria-expanded": calibratorOpen,
+                        },
+                        h(
+                          "span",
+                          { className: "timing-calibrator-title" },
+                          `⏱️ Khớp nhịp Animation · Cảnh ${sceneIdx + 1}`
+                        ),
+                        h(
+                          "span",
+                          { className: "timing-calibrator-meta" },
+                          timingDraftDirty
+                            ? "Chưa lưu"
+                            : `${sceneTime.toFixed(1)}s / ${currentSceneDuration.toFixed(1)}s`,
+                          " ",
+                          calibratorOpen ? "▾" : "▸"
+                        )
+                      ),
+                      calibratorOpen
+                        ? h(
+                            "div",
+                            { className: "timing-calibrator-body" },
+                            h(
+                              "div",
+                              { className: "timing-calibrator-playhead" },
+                              h(
+                                "span",
+                                null,
+                                `Playhead: ${sceneTime.toFixed(1)}s (${Math.round(sceneProgress * 100)}%)`
+                              ),
+                              h(
+                                "button",
+                                {
+                                  type: "button",
+                                  className: "timing-auto-btn",
+                                  disabled: timingAutoAligning || timingSaving,
+                                  onClick: handleAutoAlignTimings,
+                                  title: "Tự căn chỉnh lại các bước theo phụ đề hiện tại",
+                                },
+                                timingAutoAligning ? "⏳ Đang căn..." : "⚡ Tự căn lại theo phụ đề"
+                              )
+                            ),
+                            calibratableItems.length === 0
+                              ? h(
+                                  "div",
+                                  { className: "timing-empty-note" },
+                                  "Cảnh này chưa có danh sách bước/phase để căn chỉnh."
+                                )
+                              : h(
+                                  "div",
+                                  { className: "timing-steps-list" },
+                                  ...calibratableItems.map((item) => {
+                                    const startSec = (item.start * currentSceneDuration).toFixed(1);
+                                    const endSec =
+                                      item.end !== null
+                                        ? (item.end * currentSceneDuration).toFixed(1)
+                                        : null;
+                                    const startPct = Math.round(item.start * 100);
+                                    const endPct =
+                                      item.end !== null ? Math.round(item.end * 100) : null;
+                                    return h(
+                                      "div",
+                                      { key: item.id, className: "timing-step-row" },
+                                      h(
+                                        "div",
+                                        { className: "timing-step-info" },
+                                        h(
+                                          "span",
+                                          { className: "timing-step-label", title: item.label },
+                                          `${item.stepNum}. ${item.label}`
+                                        ),
+                                        h(
+                                          "span",
+                                          { className: "timing-step-range" },
+                                          endSec !== null
+                                            ? `${startSec}s → ${endSec}s (${startPct}%–${endPct}%)`
+                                            : `@ ${startSec}s (${startPct}%)`
+                                        )
+                                      ),
+                                      h(
+                                        "button",
+                                        {
+                                          type: "button",
+                                          className: "timing-stamp-btn",
+                                          disabled: timingSaving || timingAutoAligning,
+                                          onClick: () => handleCalibrateStepStart(item),
+                                          title: `Đặt đầu Bước ${item.stepNum} tại vị trí playhead hiện tại (${sceneTime.toFixed(1)}s)`,
+                                        },
+                                        `📍 Đặt đầu Bước ${item.stepNum} tại đây (${sceneTime.toFixed(1)}s)`
+                                      )
+                                    );
+                                  })
+                                ),
+                            calibratableItems.length > 0
+                              ? h(
+                                  "div",
+                                  { className: "timing-calibrator-footer" },
+                                  h(
+                                    "button",
+                                    {
+                                      type: "button",
+                                      className: "timing-save-btn",
+                                      disabled: timingSaving || timingAutoAligning,
+                                      onClick: handleSaveTimings,
+                                    },
+                                    timingSaving ? "⏳ Đang lưu..." : "💾 Lưu Timing"
+                                  ),
+                                  timingDraftDirty
+                                    ? h(
+                                        "button",
+                                        {
+                                          type: "button",
+                                          className: "timing-reset-btn",
+                                          disabled: timingSaving || timingAutoAligning,
+                                          onClick: () => {
+                                            setTimingDraft(null);
+                                            setTimingDraftDirty(false);
+                                          },
+                                        },
+                                        "Hoàn tác"
+                                      )
+                                    : null
+                                )
+                              : null
+                          )
+                        : null
+                    )
+                  : null,
+                h(
+                  "div",
+                  { className: "scenes-list" },
+                  ...scenes.map((sc, idx) => {
+                    const scRevCount = openSceneRevCounts[sc.id] || 0;
+                    return h(
+                      "button",
+                      {
+                        key: sc.id,
+                        type: "button",
+                        className: `scene-item ${idx === sceneIdx ? "is-active" : ""}`,
+                        onClick: () => jumpToScene(idx, true),
+                      },
+                      h(
+                        "div",
+                        { className: "scene-item-top" },
+                        h("span", { className: "scene-item-num" }, `Cảnh ${idx + 1}`),
+                        h(
+                          "span",
+                          { className: "scene-item-right-tags" },
+                          scRevCount > 0
+                            ? h("span", { className: "scene-rev-dot" }, `⚠️ ${scRevCount}`)
+                            : null,
+                          h("span", { className: "scene-item-dur" }, `${Math.round(sc.duration_sec || 24)}s`)
+                        )
+                      ),
+                      h("div", { className: "scene-item-title" }, sc.title),
+                      h("div", { className: "scene-item-part" }, sc.part_label)
+                    );
+                  })
+                )
               )
             : activeTab === "notes"
               ? h("div", {
@@ -1995,6 +2782,9 @@ function StudioApp() {
                     mode: "episode",
                     courseId: currentCourse?.id || "",
                     episode: currentEpisode,
+                    currentSceneId: currentScene?.id || "",
+                    scenes: scenes.map((s, idx) => ({ id: s.id, title: s.title, index: idx })),
+                    onOpenAiRewrite: () => setPlayerAiModalOpen(true),
                     onJumpToTicket: (_epId, targetSceneId) => {
                       if (!targetSceneId) return;
                       const idx = scenes.findIndex((s) => s.id === targetSceneId);
@@ -2004,7 +2794,6 @@ function StudioApp() {
                     },
                     onStateAction: handleStateAction,
                     onTriggerProduction: handleRunProduction,
-                    onCreateRevision: () => setRevisionModalOpen(true),
                     activeJob: activeEpJob,
                   })
                 : h("div", {
@@ -2017,18 +2806,24 @@ function StudioApp() {
       )
     ),
 
-    // Revision Ticket Modal (Pre-selects currently playing scene)
-    h(RevisionModal, {
-      isOpen: revisionModalOpen,
-      courseId: currentCourse?.id || "",
-      episode: currentEpisode,
-      defaultSceneId: currentScene?.id || "",
-      onClose: () => setRevisionModalOpen(false),
-      onSubmitted: async (data) => {
+    // AI Rewrite / Scripting Modal directly inside Studio Player
+    h(AiScriptModal, {
+      isOpen: playerAiModalOpen,
+      mode: "single",
+      course: currentCourse,
+      targetEpisode: currentEpisode,
+      providersData,
+      onProvidersLoaded: setProvidersData,
+      renderPrefs,
+      onClose: () => setPlayerAiModalOpen(false),
+      onSubmitJob: async (payload) => {
+        await handleStartAiScript(payload);
+      },
+      onManualCompleted: async (_data, epId) => {
         await fetchCourses();
         if (currentCourse?.id) await fetchEvents(currentCourse.id);
-        setActiveTab("revisions");
-        showToast(true, `Đã tạo ticket ${data?.ticket?.id || ""} cho ${currentEpisode?.id || "tập"}.`);
+        setAudioVersion((v) => v + 1);
+        showToast(true, `✅ Đã lưu kịch bản thủ công cho ${epId}.`);
       },
     }),
 
@@ -2038,6 +2833,7 @@ function StudioApp() {
       mode: "episode",
       course: currentCourse,
       episode: currentEpisode,
+      script: currentEpisode?.script || null,
       onClose: () => setVoiceModalOpen(false),
       onAssigned: async (_data, info) => {
         await fetchCourses();

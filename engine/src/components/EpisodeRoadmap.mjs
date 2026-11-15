@@ -1,7 +1,9 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { renderMarkdownToHtml } from "../markdown.mjs";
 import { computeCourseStats, SseStatusBadge } from "./ProjectDashboard.mjs";
 import { AiScriptModal } from "./AiScriptModal.mjs";
+import { BrandHealthGrid, isProviderReady } from "./ai/BrandHealthGrid.mjs";
+import { FloatingBatchBar } from "./ai/FloatingBatchBar.mjs";
 import { HeaderJobsTray } from "./HeaderJobsTray.mjs";
 import { RevisionPanel } from "./RevisionPanel.mjs";
 import { VoiceStudioModal } from "./VoiceStudioModal.mjs";
@@ -92,7 +94,12 @@ export function EpisodeRoadmap({
   jobs = [],
   aiJobs = [],
   workerStatus = { online: false },
+  providersData = null,
+  onProvidersLoaded = null,
   onStartAiScript,
+  onResumeAiJob,
+  pendingResumeJob = null,
+  onClearPendingResume = null,
   renderPrefs = null,
   onCancelJob,
   onClearFinishedJobs,
@@ -103,13 +110,51 @@ export function EpisodeRoadmap({
   const [rightTab, setRightTab] = useState("feed"); // "feed" | "revisions" | "curriculum"
   const [curriculumCollapsed, setCurriculumCollapsed] = useState(false);
   const [voiceModalOpen, setVoiceModalOpen] = useState(false);
-  const [aiModal, setAiModal] = useState({ open: false, mode: "single", episode: null });
-  const [workerGuideOpen, setWorkerGuideOpen] = useState(false);
-  const [copiedWorkerCmd, setCopiedWorkerCmd] = useState(false);
+  const [aiModal, setAiModal] = useState({
+    open: false,
+    mode: "single",
+    episode: null,
+    initialSelectedIds: null,
+    resumeJob: null,
+  });
+  const [providerPanelOpen, setProviderPanelOpen] = useState(false);
+  const [multiSelectMode, setMultiSelectMode] = useState(false);
+  const [selectedEpIds, setSelectedEpIds] = useState([]);
   const [actionToast, setActionToast] = useState(null);
 
   const workerOnline = Boolean(workerStatus?.online);
   const primaryWorker = workerStatus?.primary_worker || null;
+  const providersList = useMemo(() => {
+    const arr = providersData?.providers || providersData?.brands || [];
+    return Array.isArray(arr) ? arr : [];
+  }, [providersData]);
+  const readyBrandsCount = useMemo(
+    () => providersList.filter(isProviderReady).length,
+    [providersList]
+  );
+
+  useEffect(() => {
+    setSelectedEpIds([]);
+    setMultiSelectMode(false);
+  }, [course?.id]);
+
+  useEffect(() => {
+    if (!pendingResumeJob) return;
+    setAiModal({
+      open: true,
+      mode: "resume",
+      episode: null,
+      initialSelectedIds: null,
+      resumeJob: pendingResumeJob,
+    });
+    onClearPendingResume && onClearPendingResume();
+  }, [pendingResumeJob, onClearPendingResume]);
+
+  const pausedCourseJobs = useMemo(
+    () => (aiJobs || []).filter((j) => j && j.course === course?.id && j.status === "paused"),
+    [aiJobs, course?.id]
+  );
+
   const activeAiJobByEpId = useMemo(() => {
     const map = new Map();
     for (const job of aiJobs || []) {
@@ -122,14 +167,10 @@ export function EpisodeRoadmap({
     return map;
   }, [aiJobs, course?.id]);
 
-  const handleCopyWorkerCommand = async () => {
-    try {
-      await navigator.clipboard.writeText("Bật VideoMaker Worker");
-      setCopiedWorkerCmd(true);
-      setTimeout(() => setCopiedWorkerCmd(false), 1800);
-    } catch {
-      // ignore clipboard restriction
-    }
+  const toggleSelectEp = (epId) => {
+    setSelectedEpIds((prev) =>
+      prev.includes(epId) ? prev.filter((id) => id !== epId) : [...prev, epId]
+    );
   };
 
   const meta = course?.meta || {};
@@ -275,26 +316,34 @@ export function EpisodeRoadmap({
           onCancelJob,
           onClearFinishedJobs,
           onNavigateToPlayer,
+          onResumeAiJob: (job) =>
+            setAiModal({
+              open: true,
+              mode: "resume",
+              episode: null,
+              initialSelectedIds: null,
+              resumeJob: job,
+            }),
           highlightSignal: trayHighlightSignal,
         }),
         h(
           "button",
           {
             type: "button",
-            className: `worker-status-pill ${workerOnline ? "is-online" : "is-offline"}`,
-            onClick: () => setWorkerGuideOpen((v) => !v),
+            className: `worker-status-pill ${
+              workerOnline || readyBrandsCount > 0 ? "is-online" : "is-standby"
+            } ${providerPanelOpen ? "is-open" : ""}`,
+            onClick: () => setProviderPanelOpen((v) => !v),
             title: workerOnline
-              ? `Antigravity Worker Online · ${primaryWorker?.model || "Gemini 4 Argon"} · Heartbeat: ${primaryWorker?.last_heartbeat_iso || ""}`
-              : "Antigravity Worker Offline — Bấm để xem hướng dẫn bật Worker",
+              ? `Antigravity Worker Online (${primaryWorker?.model || "Worker"}) · ${readyBrandsCount} AI Providers sẵn sàng`
+              : `${readyBrandsCount} AI Providers sẵn sàng — Bấm để cấu hình API Key / Local AI / Worker`,
           },
-          h("span", { className: `worker-dot ${workerOnline ? "is-online" : "is-offline"}` }),
+          h("span", {
+            className: `worker-dot ${workerOnline || readyBrandsCount > 0 ? "is-online" : "is-standby"}`,
+          }),
           workerOnline
-            ? `Worker: ${
-                String(primaryWorker?.model || "Argon").toLowerCase().includes("hydrogen")
-                  ? "Hydrogen"
-                  : "Argon"
-              } (Online)`
-            : "Worker: Offline"
+            ? `🤖 AI Worker & Models · Online (${readyBrandsCount})`
+            : `🤖 AI Worker & Models (${readyBrandsCount} sẵn sàng)`
         ),
         h(SseStatusBadge, { sseStatus }),
         h(
@@ -371,70 +420,117 @@ export function EpisodeRoadmap({
           )
         ),
         h(
-          "button",
-          {
-            type: "button",
-            className: `btn-ai-batch ${!workerOnline ? "is-disabled-offline" : ""}`,
-            disabled: !workerOnline,
-            title: workerOnline
-              ? "Biên kịch tự động một đợt 3–5 tập qua Antigravity Worker (Argon)"
-              : "Cần bật VideoMaker Worker trong Antigravity IDE trước khi biên kịch",
-            onClick: () => setAiModal({ open: true, mode: "batch", episode: null }),
-          },
-          "✍️ Biên kịch Đợt (3–5 tập)"
+          "div",
+          { className: "toolbar-batch-actions" },
+          h(
+            "button",
+            {
+              type: "button",
+              className: `btn-select-multi ${multiSelectMode ? "is-active" : ""}`,
+              onClick: () => setMultiSelectMode((v) => !v),
+              title: "Bật/tắt chế độ chọn nhiều tập để biên kịch hàng loạt",
+            },
+            multiSelectMode && selectedEpIds.length > 0
+              ? `☑️ Chọn nhiều (${selectedEpIds.length})`
+              : "☑️ Chọn nhiều"
+          ),
+          h(
+            "button",
+            {
+              type: "button",
+              className: "btn-ai-batch",
+              title: "Biên kịch hàng loạt bằng 1 Brand & Model AI đã chọn (không giới hạn số tập)",
+              onClick: () =>
+                setAiModal({
+                  open: true,
+                  mode: "batch",
+                  episode: null,
+                  initialSelectedIds: selectedEpIds.length > 0 ? selectedEpIds : null,
+                  resumeJob: null,
+                }),
+            },
+            "✍️ Biên kịch Đợt / Hàng loạt"
+          )
         )
       )
     ),
 
-    (!workerOnline || workerGuideOpen)
+    providerPanelOpen
       ? h(
           "div",
-          { className: `worker-offline-banner ${workerOnline ? "is-guide-online" : ""}` },
+          { className: "provider-drawer-panel" },
           h(
             "div",
-            { className: "worker-offline-msg" },
-            workerOnline
-              ? h(
-                  "span",
-                  null,
-                  `🟢 Worker đang trực (${primaryWorker?.model || "Gemini 4 Argon"} · ID: `,
-                  h("code", null, primaryWorker?.worker_id || "argon-worker"),
-                  `). Sẵn sàng nhận lệnh biên kịch tức thì từ giao diện.`
-                )
-              : h(
-                  "span",
-                  null,
-                  h("strong", null, "🔴 Worker Offline: "),
-                  "Để kích hoạt nút Biên kịch trên UI, hãy mở Antigravity IDE (chat Gemini 4 Argon) và chạy lệnh:"
-                )
-          ),
-          h(
-            "div",
-            { className: "worker-offline-actions" },
-            h("code", { className: "worker-cmd-chip" }, "Bật VideoMaker Worker"),
+            { className: "provider-drawer-head" },
+            h(
+              "span",
+              { className: "provider-drawer-title" },
+              "🔌 Quản lý AI Providers, API Keys & Local Models (BYOK / Antigravity / Web $0)"
+            ),
             h(
               "button",
               {
                 type: "button",
                 className: "btn-secondary btn-xs",
-                onClick: handleCopyWorkerCommand,
+                onClick: () => setProviderPanelOpen(false),
               },
-              copiedWorkerCmd ? "✅ Đã copy" : "📋 Copy"
-            ),
-            workerOnline
-              ? h(
-                  "button",
-                  {
-                    type: "button",
-                    className: "btn-secondary btn-xs",
-                    onClick: () => setWorkerGuideOpen(false),
-                  },
-                  "Ẩn"
-                )
-              : null
-          )
+              "Ẩn"
+            )
+          ),
+          h(BrandHealthGrid, {
+            providersData,
+            onProvidersLoaded,
+            compact: true,
+          })
         )
       : null,
+
+    ...pausedCourseJobs.map((pJob) => {
+      const doneCount = Array.isArray(pJob.completed_episodes) ? pJob.completed_episodes.length : 0;
+      const totalCount = Array.isArray(pJob.episode_ids) ? pJob.episode_ids.length : 1;
+      const reasonText =
+        pJob.pause_reason === "quota_exhausted"
+          ? "Hết Quota / Rate Limit"
+          : pJob.pause_reason === "server_interrupted"
+            ? "Server khởi động lại giữa chừng"
+            : pJob.pause_reason || "Tạm dừng giữa chừng";
+      return h(
+        "div",
+        { key: pJob.id, className: "paused-resume-banner" },
+        h(
+          "div",
+          { className: "paused-resume-info" },
+          h(
+            "div",
+            { className: "paused-resume-title" },
+            `⏸️ Đợt biên kịch ${pJob.id} đang tạm dừng (${doneCount}/${totalCount} tập đã xong) — Lý do: ${reasonText}`
+          ),
+          h(
+            "div",
+            { className: "paused-resume-sub" },
+            `${pJob.provider_id || "AI"} · ${pJob.model || pJob.claimed_model || ""}${
+              pJob.error ? ` · ${pJob.error}` : ""
+            }`
+          )
+        ),
+        h(
+          "button",
+          {
+            type: "button",
+            className: "btn-export paused-resume-btn",
+            onClick: () =>
+              setAiModal({
+                open: true,
+                mode: "resume",
+                episode: null,
+                initialSelectedIds: null,
+                resumeJob: pJob,
+              }),
+          },
+          "▶ Tiếp tục (Resume / Đổi Model)"
+        )
+      );
+    }),
 
     actionToast
       ? h(
@@ -514,6 +610,10 @@ export function EpisodeRoadmap({
                           ? ep.state?.production?.phase
                           : null;
 
+                    const isEpSelected = selectedEpIds.includes(ep.id);
+                    const isCompletedEp = overall === "completed";
+                    const isScriptedEp = Boolean(ep.has_script || isCompletedEp);
+
                     return h(
                       "div",
                       {
@@ -523,25 +623,40 @@ export function EpisodeRoadmap({
                           `status-${overall}`,
                           isLive ? "is-live" : "",
                           canPlay ? "is-clickable" : "is-locked",
+                          isEpSelected ? "is-selected" : "",
                         ]
                           .filter(Boolean)
                           .join(" "),
                         onClick: () => {
+                          if (multiSelectMode) {
+                            toggleSelectEp(ep.id);
+                            return;
+                          }
                           if (canPlay && onOpenEpisode) {
                             onOpenEpisode(ep.id);
                           }
                         },
-                        title: canPlay
-                          ? "Bấm để mở trong Studio Player"
-                          : "Chưa có script.json — chưa thể xem preview",
+                        title: multiSelectMode
+                          ? "Bấm để chọn / bỏ chọn tập này"
+                          : canPlay
+                            ? "Bấm để mở trong Studio Player"
+                            : "Chưa có script.json — chưa thể xem preview",
                       },
-                      // Card Header: Number + Duration + Live Owner Badge
+                      // Card Header: Checkbox + Number + Duration + Live Owner Badge
                       h(
                         "div",
                         { className: "episode-card-top" },
                         h(
                           "div",
                           { className: "ep-num-group" },
+                          h("input", {
+                            type: "checkbox",
+                            className: `ep-select-checkbox ${multiSelectMode || isEpSelected ? "is-visible" : ""}`,
+                            checked: isEpSelected,
+                            "aria-label": `Chọn ${ep.title || ep.id}`,
+                            onClick: (e) => e.stopPropagation(),
+                            onChange: () => toggleSelectEp(ep.id),
+                          }),
                           h(
                             "span",
                             { className: "ep-num-badge" },
@@ -573,8 +688,20 @@ export function EpisodeRoadmap({
                           : null
                       ),
 
-                      // Episode Title
-                      h("div", { className: "episode-card-title" }, ep.title || ep.id),
+                      // Episode Title (fixed 2-line clamp + non-clipped hover tooltip)
+                      h(
+                        "div",
+                        {
+                          className: "episode-title-wrap",
+                          title: ep.title || ep.id,
+                        },
+                        h("div", { className: "episode-card-title" }, ep.title || ep.id),
+                        h(
+                          "span",
+                          { className: "ep-title-tooltip", role: "tooltip" },
+                          ep.title || ep.id
+                        )
+                      ),
                       activePhase
                         ? h("div", { className: "episode-phase-note" }, `Phase: ${activePhase}`)
                         : null,
@@ -597,124 +724,110 @@ export function EpisodeRoadmap({
                             )
                           : null,
 
-                      // Dual-Pipeline Status Row
+                      // Fixed-bottom card footer (Dual-Pipeline Status Row + Card Actions)
                       h(
                         "div",
-                        { className: "dual-pipeline-row" },
+                        { className: "episode-card-footer" },
                         h(
-                          "span",
-                          { className: `pipeline-pill ${scBadge.cls}`, title: "Scripting Pipeline" },
-                          `${scBadge.icon} ${scBadge.label}`
+                          "div",
+                          { className: "dual-pipeline-row" },
+                          h(
+                            "span",
+                            { className: `pipeline-pill ${scBadge.cls}`, title: "Scripting Pipeline" },
+                            `${scBadge.icon} ${scBadge.label}`
+                          ),
+                          h(
+                            "span",
+                            { className: `pipeline-pill ${prBadge.cls}`, title: "Video Production Pipeline" },
+                            `${prBadge.icon} ${prBadge.label}`
+                          )
                         ),
-                        h(
-                          "span",
-                          { className: `pipeline-pill ${prBadge.cls}`, title: "Video Production Pipeline" },
-                          `${prBadge.icon} ${prBadge.label}`
-                        )
-                      ),
 
-                      // Card Actions Row
-                      (canPlay || hasOpenRevs || activeAiJobByEpId.has(ep.id) || overall !== "completed")
-                        ? h(
-                            "div",
-                            { className: "episode-card-actions" },
-                            canPlay
+                        h(
+                          "div",
+                          { className: "episode-card-actions" },
+                          (() => {
+                            const activeAi = activeAiJobByEpId.get(ep.id);
+                            if (activeAi) {
+                              const isCur = activeAi.current_episode === ep.id && activeAi.status === "running";
+                              return h(
+                                "div",
+                                {
+                                  className: "ep-ai-live-group",
+                                  onClick: (e) => e.stopPropagation(),
+                                },
+                                h(
+                                  "span",
+                                  { className: "ep-ai-progress-pill" },
+                                  activeAi.status === "queued"
+                                    ? "🤖 Đang chờ"
+                                    : isCur
+                                      ? `✍️ ${activeAi.step || "Scripting"} (${activeAi.progress || 0}%)`
+                                      : `🤖 Trong đợt (${activeAi.progress || 0}%)`
+                                ),
+                                h(
+                                  "button",
+                                  {
+                                    type: "button",
+                                    className: "ep-ai-cancel-btn",
+                                    onClick: (e) => {
+                                      e.stopPropagation();
+                                      onCancelJob && onCancelJob(activeAi.id);
+                                    },
+                                    title: "Hủy tác vụ AI này",
+                                  },
+                                  "✕ Hủy"
+                                )
+                              );
+                            }
+                            if (isScriptedEp) return null;
+                            return h(
+                              "button",
+                              {
+                                type: "button",
+                                className: "ep-btn-ai",
+                                onClick: (e) => {
+                                  e.stopPropagation();
+                                  setAiModal({
+                                    open: true,
+                                    mode: "single",
+                                    episode: ep,
+                                    initialSelectedIds: null,
+                                    resumeJob: null,
+                                  });
+                                },
+                                title: "Biên kịch tập này bằng AI (Antigravity / Cloud API / Local / Web)",
+                              },
+                              "✍️ Biên kịch"
+                            );
+                          })(),
+                          hasOpenRevs
+                            ? canPlay
                               ? h(
                                   "button",
                                   {
                                     type: "button",
-                                    className: "ep-btn-play",
+                                    className: "ep-btn-revision ep-tag-revision",
                                     onClick: (e) => {
                                       e.stopPropagation();
-                                      onOpenEpisode && onOpenEpisode(ep.id);
+                                      onOpenEpisode &&
+                                        onOpenEpisode(ep.id, latestOpenRev?.scene_id || "", "revisions");
                                     },
+                                    title: "Xem chi tiết các yêu cầu sửa đang mở của tập này",
                                   },
-                                  ep.has_audio ? "▶ Mở Studio" : "🎬 Preview Storyboard"
+                                  `⚠️ Yêu cầu sửa (${openEpRevs.length})`
                                 )
-                              : null,
-                            (() => {
-                              const activeAi = activeAiJobByEpId.get(ep.id);
-                              if (activeAi) {
-                                const isCur = activeAi.current_episode === ep.id && activeAi.status === "running";
-                                return h(
-                                  "div",
+                              : h(
+                                  "span",
                                   {
-                                    className: "ep-ai-live-group",
-                                    onClick: (e) => e.stopPropagation(),
+                                    className: "ep-btn-revision ep-tag-revision is-readonly",
+                                    title: "Tập này đang có yêu cầu sửa",
                                   },
-                                  h(
-                                    "span",
-                                    { className: "ep-ai-progress-pill" },
-                                    activeAi.status === "queued"
-                                      ? "🤖 Chờ Worker"
-                                      : isCur
-                                        ? `✍️ ${activeAi.step || "Scripting"} (${activeAi.progress || 0}%)`
-                                        : `🤖 Trong đợt (${activeAi.progress || 0}%)`
-                                  ),
-                                  h(
-                                    "button",
-                                    {
-                                      type: "button",
-                                      className: "ep-ai-cancel-btn",
-                                      onClick: (e) => {
-                                        e.stopPropagation();
-                                        onCancelJob && onCancelJob(activeAi.id);
-                                      },
-                                      title: "Hủy tác vụ AI này",
-                                    },
-                                    "✕ Hủy"
-                                  )
-                                );
-                              }
-                              if (overall === "completed") return null;
-                              return h(
-                                "button",
-                                {
-                                  type: "button",
-                                  className: `ep-btn-ai ${ep.has_script ? "is-rewrite" : ""} ${
-                                    !workerOnline ? "is-disabled-offline" : ""
-                                  }`,
-                                  disabled: !workerOnline,
-                                  onClick: (e) => {
-                                    e.stopPropagation();
-                                    setAiModal({ open: true, mode: "single", episode: ep });
-                                  },
-                                  title: workerOnline
-                                    ? ep.has_script
-                                      ? "Yêu cầu AI viết lại/cập nhật kịch bản"
-                                      : "Giao Antigravity AI (Argon) biên kịch tập này"
-                                    : "Worker Offline — hãy bật VideoMaker Worker trong Antigravity IDE trước",
-                                },
-                                ep.has_script ? "🔄 Viết lại KB" : "✍️ Biên kịch"
-                              );
-                            })(),
-                            hasOpenRevs
-                              ? canPlay
-                                ? h(
-                                    "button",
-                                    {
-                                      type: "button",
-                                      className: "ep-btn-revision ep-tag-revision",
-                                      onClick: (e) => {
-                                        e.stopPropagation();
-                                        onOpenEpisode &&
-                                          onOpenEpisode(ep.id, latestOpenRev?.scene_id || "", "revisions");
-                                      },
-                                      title: "Xem chi tiết các yêu cầu sửa đang mở của tập này",
-                                    },
-                                    `⚠️ Yêu cầu sửa (${openEpRevs.length})`
-                                  )
-                                : h(
-                                    "span",
-                                    {
-                                      className: "ep-btn-revision ep-tag-revision is-readonly",
-                                      title: "Tập này đang có yêu cầu sửa",
-                                    },
-                                    `⚠️ Yêu cầu sửa (${openEpRevs.length})`
-                                  )
-                              : null
-                          )
-                        : null
+                                  `⚠️ Yêu cầu sửa (${openEpRevs.length})`
+                                )
+                            : null
+                        )
+                      )
                     );
                   })
                 )
@@ -860,19 +973,53 @@ export function EpisodeRoadmap({
       },
     }),
 
-    // AI Scripting Modal (Single Episode or 3-5 Batch)
+    // Floating Multi-Select Batch Action Bar
+    h(FloatingBatchBar, {
+      selectedEpisodes: episodes.filter((ep) => selectedEpIds.includes(ep.id)),
+      onClear: () => setSelectedEpIds([]),
+      onOpenBatchModal: () =>
+        setAiModal({
+          open: true,
+          mode: "batch",
+          episode: null,
+          initialSelectedIds: selectedEpIds,
+          resumeJob: null,
+        }),
+    }),
+
+    // AI Scripting Modal (Single Episode, Unlimited Batch, Resume, or Manual Web)
     h(AiScriptModal, {
       isOpen: aiModal.open,
       mode: aiModal.mode,
       course,
       targetEpisode: aiModal.episode,
-      workerStatus,
+      initialSelectedIds: aiModal.initialSelectedIds,
+      resumeJob: aiModal.resumeJob,
+      providersData,
+      onProvidersLoaded,
       renderPrefs,
-      onClose: () => setAiModal({ open: false, mode: "single", episode: null }),
+      onClose: () =>
+        setAiModal({
+          open: false,
+          mode: "single",
+          episode: null,
+          initialSelectedIds: null,
+          resumeJob: null,
+        }),
       onSubmitJob: async (payload) => {
         if (onStartAiScript) {
           await onStartAiScript(payload);
         }
+        setSelectedEpIds([]);
+      },
+      onResumeJob: async (payload) => {
+        if (onResumeAiJob) {
+          await onResumeAiJob(payload);
+        }
+      },
+      onManualCompleted: async (_data, epId) => {
+        if (onRefreshCourses) await onRefreshCourses();
+        showToast(true, `✅ Đã lưu kịch bản thủ công cho ${epId}.`);
       },
     })
   );

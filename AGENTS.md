@@ -2,7 +2,7 @@
 
 Every new conversation operating in this VideoMaker workspace must follow these workspace rules, state-discovery steps, onboarding interviews, diagram rules, and model allocation policies strictly.
 
-> **New machine setup:** If the `tech-video-studio` plugin / skills are not installed yet, read [`GUIDE.md`](GUIDE.md) or run `node setup.mjs`.
+> **New machine & multi-agent setup:** Read [`GUIDE.md`](GUIDE.md) or run `node setup.mjs` (default Antigravity workspace plugin) or `node setup.mjs --agents all` (Antigravity + Claude Code `.claude/skills/` & `.mcp.json` + Codex `.agents/skills/`; add `--claude-desktop` to merge into Claude Desktop config with `.bak` backup).
 
 ---
 
@@ -80,7 +80,7 @@ Work is split into three focused conversation roles connected by `<COURSE>/state
    ```powershell
    node "engine/state_cli.mjs" next --course <COURSE> --stage production --limit 5
    ```
-2. Synthesize Vietnamese TTS audio (`audio/*.mp3` or `.wav`) and subtitles (`subtitles.srt`) using 3-tier voice inheritance (`episode override / script.json` -> `course.json` -> [`engine/voices.json`](engine/voices.json) default; see [`engine/TTS_VOICE_SPEC.md`](engine/TTS_VOICE_SPEC.md) for custom voices):
+2. Synthesize Vietnamese TTS audio (`audio/<profile_id>/*.mp3` or `.wav`) and subtitles (`subtitles.srt` + `subtitles.<profile_id>.srt`) using 3-tier voice inheritance (`CLI / script.json` -> `course.json` -> [`engine/voices.json`](engine/voices.json) default; see [`engine/TTS_VOICE_SPEC.md`](engine/TTS_VOICE_SPEC.md) for custom voices). `tts_pipeline.py` preserves existing `voice_tracks` and automatically runs **Layer 1 Subtitle-Cue Alignment** from `scene._base_timings` (also runnable standalone via `--realign-only [--scene <SCENE_ID>]`):
    ```powershell
    node "engine/state_cli.mjs" set --course <COURSE> --ep <EP_ID> --stage production --status tts_processing --owner "<agent>"
    python "engine/tts_pipeline.py" --episode "<COURSE>/episodes/<EP_ID>/script.json" --course "<COURSE>/course.json"
@@ -130,15 +130,20 @@ Work is split into three focused conversation roles connected by `<COURSE>/state
 
 ---
 
-## 4. 3-Screen Dashboard, Revision Queue & Voice Studio (`http://localhost:3030`)
+## 4. 3-Screen Dashboard, Multi-Provider AI, Revision Queue & Voice Studio (`http://localhost:3030`)
 
 Start the pure-Node Studio server if not already running:
 ```powershell
 node "engine/server.mjs"
 ```
-- **Screen 1 (`view=projects`, default `/`):** Project Dashboard showing all courses, segmented progress bars, open revision counts, and live SSE status (`GET /api/stream`). *(Course creation stays strictly in Antigravity Conv 1 `/grill-me`, never on Web UI.)*
-- **Screen 2 (`view=roadmap`):** Episode Roadmap & Live Monitor grouped by Stage (*Chặng*) with dual Scripting/Video status badges, `production.stale` indicators, **Worker Status pill (`🟢 Worker: Argon (Online)` / `🔴 Worker: Offline`)**, **`✍️ Biên kịch Đợt (3–5 tập)`** & per-episode **`✍️ Biên kịch`** AI Scripting queue dispatch (`AiScriptModal` -> `POST /api/ai/jobs` + `studio-worker` MCP bridge), **`🎙️ Giọng đọc Khóa học`** (`VoiceStudioModal` + `/api/voices*`), **`⚠️ Yêu cầu sửa`** (`RevisionModal`), and 3 right-panel tabs (`📡 Live Activity`, `🗺️ curriculum.md`, **`🛠️ Yêu cầu sửa`**).
-- **Screen 3 (`view=player`):** 16:9 Studio Player supporting full-audio playback, silent **Storyboard Preview Mode** across all **7 symmetric Visual Templates** (`architecture`, `console_setup`, `code_cli`, `exam_tips`, `comparison_matrix`, `timeline_flow`, `kpi_metrics`), deep-linking (`&scene=<scene_id>`), **`🛠️ Yêu cầu sửa`** drawer tab (`Copy Prompt cho Agent`), Voice picker, and one-click Web generation buttons (**`🎙️ Tạo Audio (TTS)`** / **`🎬 Tạo Audio & Render Video`**).
+- **Screen 1 (`view=projects`, default `/`):** Project Dashboard showing all courses, segmented progress bars, open revision counts, and live SSE status (`GET /api/stream`). *(Course creation stays strictly in Antigravity/Agent Conv 1 `/grill-me`, never on Web UI.)*
+- **Screen 2 (`view=roadmap`):** Episode Roadmap & Live Monitor grouped by Stage (*Chặng*) with dual Scripting/Video status badges, `production.stale` indicators, and:
+  - **Top Pill (`🤖 AI Worker & Models`) & `BrandHealthGrid`:** Live health & `$0` handshake check across **9 brands** (`antigravity`, `openai`, `anthropic`, `deepseek`, `gemini`, `openrouter`, `ollama`, `lmstudio`, `manual_web`) via `GET /api/ai/providers[?force=1]`, `POST /api/ai/providers/credentials`, and `POST /api/ai/providers/test` (1-token ping). Highlights the single active selection (`◉` + `✓ Đang chọn` + active summary chip) with unclipped `Online` badge. Credentials stay in `engine/.ai_credentials.json` + OS env vars and are **never** leaked back to the frontend. Remembers `last_selection` in `engine/.ai_preferences.json`.
+  - **Episode Cards & Multi-Select Batch AI Scripting:** Clicking any scripted card opens Studio Player directly (card footers omit `Mở Studio` and `🔄 Viết lại KB`; unscripted cards keep **`✍️ Biên kịch`**). Supports **`✍️ Biên kịch Đợt / Hàng loạt`** and **`☑️ Chọn nhiều`** (`FloatingBatchBar` with **`✍️ Biên kịch hàng loạt (1 Model)`**, no 5-episode cap for built-in providers; 5-episode cap for Antigravity MCP worker). Rewriting an existing episode (via Player tab `🛠️ Sửa` **`🔄 Gửi AI Sửa Kịch Bản`** or batch modal) requires a non-empty change note (`rewrite_notes`) and sets `production.stale = true` if prior audio/video existed.
+  - **Quota-Safe Pause & Resume + Manual `$0` Mode:** If a batch hits `429`/`402`/error mid-run, the job enters `status: "paused"` (`pause_reason: "quota_exhausted"|"error"`) keeping completed episodes intact; click **`▶ Tiếp tục (Resume / Đổi Model)`** (`POST /api/ai/jobs/resume`) to switch provider/model and finish remaining episodes. **`manual_web`** builds a Prompt Pack (`POST /api/ai/manual-prompt`) and validates pasted JSON (`POST /api/ai/manual-submit`).
+  - **Voice, Revisions & Right Tabs:** **`🎙️ Giọng đọc Khóa học`** (`VoiceStudioModal` + `/api/voices*`), **`⚠️ Yêu cầu sửa`** (`RevisionModal`), and 3 right-panel tabs (`📡 Live Activity`, **`🛠️ Yêu cầu sửa`**, `🗺️ curriculum.md`).
+- **Screen 3 (`view=player`):** 16:9 Studio Player supporting full-audio playback, silent **Storyboard Preview Mode** across all **7 symmetric Visual Templates** (`architecture`, `console_setup`, `code_cli`, `exam_tips`, `comparison_matrix`, `timeline_flow`, `kpi_metrics`), deep-linking (`&scene=<scene_id>`), **Multi-Voice A/B Switcher** (`POST /api/episodes/voice-track/activate` & `/delete`), unified **`🎬 Xuất Video ▾`** popover (quality presets, optional TTS toggle, **`🚀 Bắt đầu Xuất Video`**, and existing video download link; no `btn-revision-topbar`), **`⏱️ Khớp nhịp Animation`** Playhead Calibration inside tab `🎬 Phân cảnh` (`POST /api/episodes/scene-timings`), **`🛠️ Sửa`** tab with inline quick-add revision form (defaults to `currentSceneId`, manual lock on scene switch), **`🔄 Gửi AI Sửa Kịch Bản`**, `Copy Prompt cho Agent`, Voice picker, and **`🎙️ Tạo Audio (TTS)`**.
+- **Universal MCP Bridge (`engine/mcp/rpc.mjs`):** Available via Stdio (`engine/mcp_server.mjs`) and loopback HTTP (`GET|POST /mcp` on `:3030`), exposing 9 `studio_*` tools and 4 MCP resources (`studio://courses`, `studio://courses/{course}`, `studio://jobs/queue`, `studio://templates/schema`).
 
 ---
 

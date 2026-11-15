@@ -33,6 +33,10 @@ function isJobActive(job) {
   return job?.status === "running" || job?.status === "queued";
 }
 
+function isJobPaused(job) {
+  return job?.status === "paused";
+}
+
 function isJobCompleted(job) {
   return job?.status === "completed" || job?.status === "done" || job?.status === "succeeded";
 }
@@ -46,6 +50,11 @@ function getStepLabel(job) {
   if (job.kind === "ai_script") {
     const done = Array.isArray(job.completed_episodes) ? job.completed_episodes.length : 0;
     const total = Array.isArray(job.episode_ids) ? job.episode_ids.length : 1;
+    if (job.status === "paused") {
+      return job.pause_reason === "quota_exhausted"
+        ? `⏸️ Hết Quota (${done}/${total})`
+        : `⏸️ Tạm dừng (${done}/${total})`;
+    }
     if (job.status === "queued") return `Chờ Worker (${total} tập)`;
     if (job.status === "running") {
       const pct = Math.max(0, Math.min(100, Math.round(Number(job.progress) || 0)));
@@ -79,8 +88,12 @@ function getStepLabel(job) {
 function formatSpecSummary(job) {
   if (!job) return "";
   if (job.kind === "ai_script") {
-    const modelStr = job.claimed_model || "Gemini 4 Argon";
-    return `${modelStr} · ${job.auto_produce ? "Tự chạy TTS & Render" : "Dừng ở script_ready (Storyboard)"}`;
+    const prov = job.provider_id || (job.execution_mode === "mcp" ? "antigravity" : "");
+    const modelStr = job.model || job.claimed_model || (prov === "antigravity" ? "Antigravity Worker" : "AI");
+    const label = prov && !String(modelStr).toLowerCase().includes(prov.toLowerCase())
+      ? `${prov} · ${modelStr}`
+      : modelStr;
+    return `${label} · ${job.auto_produce ? "Tự chạy TTS & Render" : "Dừng ở script_ready (Storyboard)"}`;
   }
   if (job.mode === "tts_only") return "";
   const parts = [];
@@ -109,10 +122,11 @@ function getDownloadHref(job) {
 
 function getJobOrderScore(job) {
   if (job.status === "running") return 0;
-  if (job.status === "queued") return 1;
-  if (isJobCompleted(job)) return 2;
-  if (isJobFailed(job)) return 3;
-  return 4;
+  if (job.status === "paused") return 1;
+  if (job.status === "queued") return 2;
+  if (isJobCompleted(job)) return 3;
+  if (isJobFailed(job)) return 4;
+  return 5;
 }
 
 export function HeaderJobsTray({
@@ -120,6 +134,7 @@ export function HeaderJobsTray({
   onCancelJob,
   onClearFinishedJobs,
   onNavigateToPlayer,
+  onResumeAiJob,
   highlightSignal = 0,
 }) {
   const [open, setOpen] = useState(false);
@@ -173,9 +188,10 @@ export function HeaderJobsTray({
   const stats = useMemo(() => {
     const running = sortedJobs.filter((j) => j.status === "running");
     const queued = sortedJobs.filter((j) => j.status === "queued");
+    const paused = sortedJobs.filter(isJobPaused);
     const completed = sortedJobs.filter(isJobCompleted);
     const failed = sortedJobs.filter(isJobFailed);
-    const finishedCount = sortedJobs.filter((j) => !isJobActive(j)).length;
+    const finishedCount = sortedJobs.filter((j) => !isJobActive(j) && !isJobPaused(j)).length;
     const activeCount = running.length + queued.length;
     const avgPct =
       running.length > 0
@@ -187,6 +203,7 @@ export function HeaderJobsTray({
     return {
       runningCount: running.length,
       queuedCount: queued.length,
+      pausedCount: paused.length,
       activeCount,
       completedCount: completed.length,
       failedCount: failed.length,
@@ -227,11 +244,13 @@ export function HeaderJobsTray({
   const buttonStateClass =
     stats.activeCount > 0
       ? "is-active"
-      : stats.completedCount > 0
-        ? "is-completed"
-        : stats.failedCount > 0
-          ? "is-failed"
-          : "is-idle";
+      : stats.pausedCount > 0
+        ? "is-paused"
+        : stats.completedCount > 0
+          ? "is-completed"
+          : stats.failedCount > 0
+            ? "is-failed"
+            : "is-idle";
 
   return h(
     "div",
@@ -330,16 +349,18 @@ export function HeaderJobsTray({
       h(
         "span",
         { className: "jobs-tray-label" },
-        stats.activeCount > 0 ? `${stats.avgPct}%` : "Tác vụ"
+        stats.activeCount > 0 ? `${stats.avgPct}%` : stats.pausedCount > 0 ? "Tạm dừng" : "Tác vụ"
       ),
 
       stats.activeCount > 0
         ? h("span", { className: "jobs-count-pill is-active" }, stats.activeCount)
-        : stats.completedCount > 0
-          ? h("span", { className: "jobs-count-pill is-done" }, `✓ ${stats.completedCount}`)
-          : stats.failedCount > 0
-            ? h("span", { className: "jobs-count-pill is-err" }, stats.failedCount)
-            : null
+        : stats.pausedCount > 0
+          ? h("span", { className: "jobs-count-pill is-paused" }, `⏸ ${stats.pausedCount}`)
+          : stats.completedCount > 0
+            ? h("span", { className: "jobs-count-pill is-done" }, `✓ ${stats.completedCount}`)
+            : stats.failedCount > 0
+              ? h("span", { className: "jobs-count-pill is-err" }, stats.failedCount)
+              : null
     ),
 
     open
@@ -391,6 +412,7 @@ export function HeaderJobsTray({
               : sortedJobs.map((job) => {
                   const isAi = job.kind === "ai_script";
                   const active = isJobActive(job);
+                  const paused = isJobPaused(job);
                   const completed = isJobCompleted(job);
                   const failed = isJobFailed(job);
                   const cancelled = job.status === "cancelled";
@@ -451,7 +473,7 @@ export function HeaderJobsTray({
                         "span",
                         {
                           className: `job-step-label ${
-                            completed ? "is-done" : failed ? "is-err" : cancelled ? "is-cancelled" : ""
+                            completed ? "is-done" : paused ? "is-paused" : failed ? "is-err" : cancelled ? "is-cancelled" : ""
                           }`,
                         },
                         getStepLabel(job)
@@ -466,15 +488,17 @@ export function HeaderJobsTray({
                         className: `job-row-fill ${
                           job.status === "queued"
                             ? "is-queued"
-                            : active && pct < 5
-                              ? "is-indeterminate"
-                              : completed
-                                ? "is-done"
-                                : failed
-                                  ? "is-err"
-                                  : cancelled
-                                    ? "is-cancelled"
-                                    : ""
+                            : paused
+                              ? "is-paused"
+                              : active && pct < 5
+                                ? "is-indeterminate"
+                                : completed
+                                  ? "is-done"
+                                  : failed
+                                    ? "is-err"
+                                    : cancelled
+                                      ? "is-cancelled"
+                                      : ""
                         }`,
                         style: { width: `${active && pct < 5 ? 18 : pct}%` },
                       })
@@ -495,7 +519,25 @@ export function HeaderJobsTray({
                     h(
                       "div",
                       { className: "job-row-actions" },
-                      active
+                      isAi && paused
+                        ? h(
+                            "button",
+                            {
+                              type: "button",
+                              className: "job-act-btn is-resume",
+                              onClick: () => {
+                                setOpen(false);
+                                if (onResumeAiJob) {
+                                  onResumeAiJob(job);
+                                } else if (job.course) {
+                                  window.location.href = `?view=roadmap&course=${encodeURIComponent(job.course)}`;
+                                }
+                              },
+                            },
+                            "▶ Tiếp tục"
+                          )
+                        : null,
+                      active || (isAi && paused)
                         ? h(
                             "button",
                             {

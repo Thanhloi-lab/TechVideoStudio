@@ -6,6 +6,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { validateScriptDiagrams } from "./src/diagram_validator.mjs";
 import { SUPPORTED_VISUAL_TYPES } from "./src/motion/kernel.mjs";
+import { createAiBroker } from "./ai/queue_broker.mjs";
+import { createMcpHandler, createStudioHttpRequester, SERVER_INFO as MCP_SERVER_INFO } from "./mcp/rpc.mjs";
 import {
   addRevisionTicket,
   appendEvent,
@@ -305,6 +307,11 @@ function buildEpisodePayload(courseName, courseDir, stateDir, epMeta, courseMeta
 
   const notes = fs.existsSync(notesPath) ? fs.readFileSync(notesPath, "utf-8") : "";
   const artifacts = inspectEpisodeArtifacts(courseDir, epId);
+  const audioCount =
+    artifacts.audio_count > 0 ? artifacts.audio_count : countEpisodeAudioFiles(epPath);
+  if (artifacts.audio_count === 0 && audioCount > 0) {
+    artifacts.audio_count = audioCount;
+  }
 
   let state = readEpisodeState(stateDir, epId);
   if (state) {
@@ -314,27 +321,41 @@ function buildEpisodePayload(courseName, courseDir, stateDir, epMeta, courseMeta
     state = createEpisodeStateFromMeta(epMeta, artifacts, { seedReady: true });
   }
 
+  if (script) {
+    script = normalizeScriptVoiceTracks(script, epPath, courseMeta, state);
+  }
+
   const encodedCourse = encodeURIComponent(courseName);
   const encodedEp = encodeURIComponent(epId);
   const videoFile = artifacts.video_file;
 
+  const activeTrack =
+    script?.active_voice_track && script?.voice_tracks?.[script.active_voice_track]
+      ? script.voice_tracks[script.active_voice_track]
+      : null;
+
   const effectiveProfile =
     state.voice_override?.tts_profile ||
     script?.tts_profile ||
+    activeTrack?.tts_profile ||
+    script?.active_voice_track ||
     courseMeta?.tts_profile ||
     null;
   const effectiveVoice =
     state.voice_override?.tts_voice ||
     script?.tts_voice ||
+    activeTrack?.tts_voice ||
     courseMeta?.tts_voice ||
     null;
   const effectiveRate =
     state.voice_override?.tts_rate ||
     script?.tts_rate ||
+    activeTrack?.tts_rate ||
     courseMeta?.tts_rate ||
     null;
   const providerUsed =
     script?.tts_provider_used ||
+    activeTrack?.tts_provider ||
     state.voice_override?.tts_provider ||
     courseMeta?.tts_provider ||
     null;
@@ -353,7 +374,7 @@ function buildEpisodePayload(courseName, courseDir, stateDir, epMeta, courseMeta
     tts_rate: effectiveRate,
     tts_provider_used: providerUsed,
     has_script: Boolean(script),
-    has_audio: artifacts.audio_count > 0,
+    has_audio: audioCount > 0,
     has_video: Boolean(videoFile),
     video_url: videoFile
       ? `/courses/${encodedCourse}/episodes/${encodedEp}/${encodeURIComponent(videoFile)}`
@@ -941,6 +962,989 @@ async function handleVoiceAssign(req, res) {
   }
 }
 
+// --- Multi-Voice Track & Scene-Timings Helpers ---
+function isValidSafeTrackId(id) {
+  return (
+    typeof id === "string" &&
+    id.length > 0 &&
+    id.length <= 120 &&
+    /^[A-Za-z0-9_.-]+$/.test(id) &&
+    id !== "." &&
+    id !== ".." &&
+    !id.includes("..")
+  );
+}
+
+function sanitizeTrackId(raw) {
+  const cleaned = String(raw || "")
+    .trim()
+    .replace(/[^A-Za-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return cleaned || "default";
+}
+
+function clamp01(val, fallback = 0) {
+  const num = Number(val);
+  if (!Number.isFinite(num)) return fallback;
+  return Math.round(Math.min(1, Math.max(0, num)) * 10000) / 10000;
+}
+
+function cloneJsonSafe(obj) {
+  if (obj === null || obj === undefined) return obj;
+  return JSON.parse(JSON.stringify(obj));
+}
+
+function extractSceneTimings(scene) {
+  const vd = scene?.visual_data && typeof scene.visual_data === "object" ? scene.visual_data : {};
+  const timings = {};
+
+  if (Array.isArray(vd.flow_steps)) {
+    timings.flow_steps = vd.flow_steps.map((s) => ({
+      progress_start: clamp01(s?.progress_start, 0),
+      progress_end: clamp01(s?.progress_end, 1),
+    }));
+  }
+  if (Array.isArray(vd.highlight_phases)) {
+    timings.highlight_phases = vd.highlight_phases.map((p) => ({
+      progress_start: clamp01(p?.progress_start, 0),
+      progress_end: clamp01(p?.progress_end, 1),
+    }));
+  }
+  if (Array.isArray(vd.terminal_commands)) {
+    timings.terminal_commands = vd.terminal_commands.map((c) => {
+      const p = clamp01(c?.progress_start ?? c?.progress_at, 0);
+      return c?.progress_at !== undefined
+        ? { progress_start: p, progress_at: p }
+        : { progress_start: p };
+    });
+  }
+  if (Array.isArray(vd.steps)) {
+    timings.steps = vd.steps.map((s) => ({
+      progress_start: clamp01(s?.progress_start, 0),
+      progress_end: clamp01(s?.progress_end, 1),
+    }));
+  }
+  if (Array.isArray(vd.milestones)) {
+    timings.milestones = vd.milestones.map((m) => {
+      const item = {
+        progress_start: clamp01(m?.progress_start, 0),
+        progress_end: clamp01(m?.progress_end, 1),
+      };
+      if (m?.progress_at !== undefined) {
+        item.progress_at = clamp01(m.progress_at, item.progress_start);
+      }
+      return item;
+    });
+  }
+  if (Array.isArray(vd.rows)) {
+    timings.rows = vd.rows.map((r, idx) => {
+      const fallback = clamp01(0.08 + (idx / Math.max(1, vd.rows.length)) * 0.62, 0);
+      const item = { progress_start: clamp01(r?.progress_start, fallback) };
+      if (r?.progress_end !== undefined) {
+        item.progress_end = clamp01(r.progress_end, 1);
+      }
+      return item;
+    });
+  }
+  if (Array.isArray(vd.comparisons)) {
+    timings.comparisons = vd.comparisons.map((c, idx) => {
+      const fallback = clamp01(idx / Math.max(1, vd.comparisons.length), 0);
+      const item = { progress_start: clamp01(c?.progress_start, fallback) };
+      if (c?.progress_end !== undefined) {
+        item.progress_end = clamp01(c.progress_end, 1);
+      }
+      return item;
+    });
+  }
+  if (Array.isArray(vd.cards)) {
+    timings.cards = vd.cards.map((c, idx) => {
+      const fallback = clamp01(0.06 + idx * 0.09, 0);
+      const item = { progress_start: clamp01(c?.progress_start, fallback) };
+      if (c?.progress_end !== undefined) {
+        item.progress_end = clamp01(c.progress_end, 1);
+      }
+      return item;
+    });
+  }
+  if (Array.isArray(vd.metrics)) {
+    timings.metrics = vd.metrics.map((c, idx) => {
+      const fallback = clamp01(0.06 + idx * 0.09, 0);
+      const item = { progress_start: clamp01(c?.progress_start, fallback) };
+      if (c?.progress_end !== undefined) {
+        item.progress_end = clamp01(c.progress_end, 1);
+      }
+      return item;
+    });
+  }
+  if (Array.isArray(vd.bars)) {
+    timings.bars = vd.bars.map((c, idx) => {
+      const fallback = clamp01(0.06 + idx * 0.09, 0);
+      const item = { progress_start: clamp01(c?.progress_start, fallback) };
+      if (c?.progress_end !== undefined) {
+        item.progress_end = clamp01(c.progress_end, 1);
+      }
+      return item;
+    });
+  }
+  if (vd.quiz && typeof vd.quiz === "object") {
+    timings.quiz = { show_at_progress: clamp01(vd.quiz.show_at_progress, 0.68) };
+  }
+  if (vd.callout && typeof vd.callout === "object" && vd.callout.show_at_progress !== undefined) {
+    timings.callout = { show_at_progress: clamp01(vd.callout.show_at_progress, 0.8) };
+  }
+  if (vd.takeaway && typeof vd.takeaway === "object" && vd.takeaway.show_at_progress !== undefined) {
+    timings.takeaway = { show_at_progress: clamp01(vd.takeaway.show_at_progress, 0.78) };
+  }
+  if (vd.chart && typeof vd.chart === "object" && vd.chart.show_at_progress !== undefined) {
+    timings.chart = { show_at_progress: clamp01(vd.chart.show_at_progress, 0.4) };
+  }
+  if (
+    vd.alert_stamp &&
+    typeof vd.alert_stamp === "object" &&
+    vd.alert_stamp.show_at_progress !== undefined
+  ) {
+    timings.alert_stamp = { show_at_progress: clamp01(vd.alert_stamp.show_at_progress, 0.72) };
+  }
+  return timings;
+}
+
+function clampIntervalSteps(rawList, existingList = [], minSlice = 0.01) {
+  const count = Math.min(rawList.length, existingList.length || rawList.length);
+  if (count === 0) return [];
+  const out = [];
+  let prevEnd = 0;
+  for (let i = 0; i < count; i++) {
+    const raw = rawList[i] || {};
+    const ex = existingList[i] || {};
+    const defStart = i / count;
+    const defEnd = (i + 1) / count;
+    let s = clamp01(raw.progress_start ?? ex.progress_start, defStart);
+    if (i > 0 && s < prevEnd) s = prevEnd;
+    s = Math.min(s, Math.max(0, Math.round((1 - minSlice) * 10000) / 10000));
+    let e = clamp01(raw.progress_end ?? ex.progress_end, Math.max(s + minSlice, defEnd));
+    if (e < s + minSlice) {
+      e = Math.min(1, Math.round((s + minSlice) * 10000) / 10000);
+    }
+    if (e < s) e = s;
+    const item = { progress_start: s, progress_end: e };
+    if (raw.progress_at !== undefined || ex.progress_at !== undefined) {
+      const at = clamp01(raw.progress_at ?? ex.progress_at, s);
+      item.progress_at = Math.min(e, Math.max(s, at));
+    }
+    prevEnd = e;
+    out.push(item);
+  }
+  return out;
+}
+
+function clampPointSteps(rawList, existingList = [], { syncProgressAt = false } = {}) {
+  const count = Math.min(rawList.length, existingList.length || rawList.length);
+  if (count === 0) return [];
+  const out = [];
+  let prevStart = 0;
+  for (let i = 0; i < count; i++) {
+    const raw = rawList[i] || {};
+    const ex = existingList[i] || {};
+    let s = clamp01(raw.progress_start ?? raw.progress_at ?? ex.progress_start ?? ex.progress_at, i / count);
+    if (i > 0 && s < prevStart) s = prevStart;
+    const item = { progress_start: s };
+    if (syncProgressAt || raw.progress_at !== undefined || ex.progress_at !== undefined) {
+      item.progress_at = s;
+    }
+    if (raw.progress_end !== undefined || ex.progress_end !== undefined) {
+      const e = clamp01(raw.progress_end ?? ex.progress_end, 1);
+      item.progress_end = Math.max(s, e);
+    }
+    prevStart = s;
+    out.push(item);
+  }
+  return out;
+}
+
+function normalizeAndClampTimings(scene, rawTimings) {
+  const vd = scene?.visual_data && typeof scene.visual_data === "object" ? scene.visual_data : {};
+  const input = rawTimings && typeof rawTimings === "object" ? rawTimings : {};
+  const result = extractSceneTimings(scene);
+
+  if (Array.isArray(input.flow_steps) && Array.isArray(vd.flow_steps)) {
+    result.flow_steps = clampIntervalSteps(input.flow_steps, vd.flow_steps);
+  }
+  if (Array.isArray(input.highlight_phases) && Array.isArray(vd.highlight_phases)) {
+    result.highlight_phases = clampIntervalSteps(input.highlight_phases, vd.highlight_phases);
+  }
+  if (Array.isArray(input.terminal_commands) && Array.isArray(vd.terminal_commands)) {
+    result.terminal_commands = clampPointSteps(input.terminal_commands, vd.terminal_commands, {
+      syncProgressAt: true,
+    });
+  }
+  if (Array.isArray(input.steps) && Array.isArray(vd.steps)) {
+    result.steps = clampIntervalSteps(input.steps, vd.steps);
+  }
+  if (Array.isArray(input.milestones) && Array.isArray(vd.milestones)) {
+    result.milestones = clampIntervalSteps(input.milestones, vd.milestones);
+  }
+  if (Array.isArray(input.rows) && Array.isArray(vd.rows)) {
+    result.rows = clampPointSteps(input.rows, vd.rows);
+  }
+  if (Array.isArray(input.comparisons) && Array.isArray(vd.comparisons)) {
+    result.comparisons = clampPointSteps(input.comparisons, vd.comparisons);
+  }
+  if (Array.isArray(input.cards) && Array.isArray(vd.cards)) {
+    result.cards = clampPointSteps(input.cards, vd.cards);
+  }
+  if (Array.isArray(input.metrics) && Array.isArray(vd.metrics)) {
+    result.metrics = clampPointSteps(input.metrics, vd.metrics);
+  }
+  if (Array.isArray(input.bars) && Array.isArray(vd.bars)) {
+    result.bars = clampPointSteps(input.bars, vd.bars);
+  }
+
+  const quizShow =
+    input.quiz && typeof input.quiz === "object"
+      ? input.quiz.show_at_progress
+      : input.quiz_show_at_progress;
+  if (quizShow !== undefined && vd.quiz && typeof vd.quiz === "object") {
+    result.quiz = { show_at_progress: clamp01(quizShow, 0.68) };
+  }
+
+  const calloutShow =
+    input.callout && typeof input.callout === "object"
+      ? input.callout.show_at_progress
+      : input.callout_show_at_progress;
+  if (calloutShow !== undefined && vd.callout && typeof vd.callout === "object") {
+    result.callout = { show_at_progress: clamp01(calloutShow, 0.8) };
+  }
+
+  const takeawayShow =
+    input.takeaway && typeof input.takeaway === "object"
+      ? input.takeaway.show_at_progress
+      : input.takeaway_show_at_progress;
+  if (takeawayShow !== undefined && vd.takeaway && typeof vd.takeaway === "object") {
+    result.takeaway = { show_at_progress: clamp01(takeawayShow, 0.78) };
+  }
+
+  const chartShow =
+    input.chart && typeof input.chart === "object"
+      ? input.chart.show_at_progress
+      : input.chart_show_at_progress;
+  if (chartShow !== undefined && vd.chart && typeof vd.chart === "object") {
+    result.chart = { show_at_progress: clamp01(chartShow, 0.4) };
+  }
+
+  const stampShow =
+    input.alert_stamp && typeof input.alert_stamp === "object"
+      ? input.alert_stamp.show_at_progress
+      : input.alert_stamp_show_at_progress;
+  if (stampShow !== undefined && vd.alert_stamp && typeof vd.alert_stamp === "object") {
+    result.alert_stamp = { show_at_progress: clamp01(stampShow, 0.72) };
+  }
+
+  return result;
+}
+
+function applySceneTimings(scene, timings) {
+  if (!scene || typeof scene !== "object" || !timings || typeof timings !== "object") return;
+  if (!scene.visual_data || typeof scene.visual_data !== "object") {
+    scene.visual_data = {};
+  }
+  const vd = scene.visual_data;
+
+  const applyInterval = (key) => {
+    if (!Array.isArray(timings[key]) || !Array.isArray(vd[key])) return;
+    for (let i = 0; i < Math.min(timings[key].length, vd[key].length); i++) {
+      const t = timings[key][i];
+      if (!t || !vd[key][i] || typeof vd[key][i] !== "object") continue;
+      if (t.progress_start !== undefined) vd[key][i].progress_start = clamp01(t.progress_start);
+      if (t.progress_end !== undefined) vd[key][i].progress_end = clamp01(t.progress_end);
+      if (t.progress_at !== undefined) vd[key][i].progress_at = clamp01(t.progress_at);
+    }
+  };
+
+  const applyPoints = (key, syncAt = false) => {
+    if (!Array.isArray(timings[key]) || !Array.isArray(vd[key])) return;
+    for (let i = 0; i < Math.min(timings[key].length, vd[key].length); i++) {
+      const t = timings[key][i];
+      if (!t || !vd[key][i] || typeof vd[key][i] !== "object") continue;
+      const p = clamp01(t.progress_start ?? t.progress_at);
+      vd[key][i].progress_start = p;
+      if (syncAt || t.progress_at !== undefined || vd[key][i].progress_at !== undefined) {
+        vd[key][i].progress_at = clamp01(t.progress_at ?? p);
+      }
+      if (t.progress_end !== undefined) {
+        vd[key][i].progress_end = clamp01(t.progress_end);
+      }
+    }
+  };
+
+  applyInterval("flow_steps");
+  applyInterval("highlight_phases");
+  applyPoints("terminal_commands", true);
+  applyInterval("steps");
+  applyInterval("milestones");
+  applyPoints("rows");
+  applyPoints("comparisons");
+  applyPoints("cards");
+  applyPoints("metrics");
+  applyPoints("bars");
+
+  if (timings.quiz && typeof timings.quiz === "object" && vd.quiz && typeof vd.quiz === "object") {
+    if (timings.quiz.show_at_progress !== undefined) {
+      vd.quiz.show_at_progress = clamp01(timings.quiz.show_at_progress, 0.68);
+    }
+  }
+  if (
+    timings.callout &&
+    typeof timings.callout === "object" &&
+    vd.callout &&
+    typeof vd.callout === "object"
+  ) {
+    if (timings.callout.show_at_progress !== undefined) {
+      vd.callout.show_at_progress = clamp01(timings.callout.show_at_progress, 0.8);
+    }
+  }
+  if (
+    timings.takeaway &&
+    typeof timings.takeaway === "object" &&
+    vd.takeaway &&
+    typeof vd.takeaway === "object"
+  ) {
+    if (timings.takeaway.show_at_progress !== undefined) {
+      vd.takeaway.show_at_progress = clamp01(timings.takeaway.show_at_progress, 0.78);
+    }
+  }
+  if (timings.chart && typeof timings.chart === "object" && vd.chart && typeof vd.chart === "object") {
+    if (timings.chart.show_at_progress !== undefined) {
+      vd.chart.show_at_progress = clamp01(timings.chart.show_at_progress, 0.4);
+    }
+  }
+  if (
+    timings.alert_stamp &&
+    typeof timings.alert_stamp === "object" &&
+    vd.alert_stamp &&
+    typeof vd.alert_stamp === "object"
+  ) {
+    if (timings.alert_stamp.show_at_progress !== undefined) {
+      vd.alert_stamp.show_at_progress = clamp01(timings.alert_stamp.show_at_progress, 0.72);
+    }
+  }
+}
+
+function normalizeScriptVoiceTracks(script, epDir, courseMeta = {}, state = null) {
+  if (!script || typeof script !== "object") return script;
+
+  const normalized = { ...script };
+  const rawTracks =
+    normalized.voice_tracks &&
+    typeof normalized.voice_tracks === "object" &&
+    !Array.isArray(normalized.voice_tracks)
+      ? { ...normalized.voice_tracks }
+      : {};
+
+  const trackKeys = Object.keys(rawTracks);
+  if (trackKeys.length > 0) {
+    normalized.voice_tracks = rawTracks;
+    if (!normalized.active_voice_track || !rawTracks[normalized.active_voice_track]) {
+      if (normalized.tts_profile && rawTracks[normalized.tts_profile]) {
+        normalized.active_voice_track = normalized.tts_profile;
+      } else {
+        normalized.active_voice_track = trackKeys[0];
+      }
+    }
+    return normalized;
+  }
+
+  // Legacy fallback: detect root audio/<scene_id>.mp3|wav files without voice_tracks
+  const audioDir = path.join(epDir, "audio");
+  const scenes = Array.isArray(normalized.scenes) ? normalized.scenes : [];
+  const legacySceneData = {};
+  let foundLegacyAudio = false;
+
+  for (const scene of scenes) {
+    if (!scene || !scene.id) continue;
+    let relAudio = scene.audio_file ? String(scene.audio_file).replace(/\\/g, "/") : "";
+    let fullAudio = relAudio ? safeResolve(epDir, relAudio.split("/")) : null;
+
+    if (!fullAudio || !fs.existsSync(fullAudio) || fs.statSync(fullAudio).size === 0) {
+      relAudio = "";
+      fullAudio = null;
+      if (fs.existsSync(audioDir) && fs.statSync(audioDir).isDirectory()) {
+        for (const ext of ["mp3", "wav"]) {
+          const candidate = path.join(audioDir, `${scene.id}.${ext}`);
+          if (fs.existsSync(candidate) && fs.statSync(candidate).size > 0) {
+            relAudio = `audio/${scene.id}.${ext}`;
+            fullAudio = candidate;
+            break;
+          }
+        }
+      }
+    }
+
+    if (fullAudio && relAudio) {
+      foundLegacyAudio = true;
+      legacySceneData[scene.id] = {
+        audio_file: relAudio,
+        duration_sec: Number(scene.duration_sec) || 0,
+        subtitles: Array.isArray(scene.subtitles) ? scene.subtitles : [],
+        timings: extractSceneTimings(scene),
+      };
+    }
+  }
+
+  if (foundLegacyAudio) {
+    const legacyId = sanitizeTrackId(
+      normalized.tts_profile ||
+        state?.voice_override?.tts_profile ||
+        courseMeta?.tts_profile ||
+        "legacy"
+    );
+    const providerVal = Array.isArray(normalized.tts_provider_used)
+      ? normalized.tts_provider_used[0]
+      : normalized.tts_provider_used;
+    normalized.voice_tracks = {
+      [legacyId]: {
+        tts_profile:
+          normalized.tts_profile ||
+          state?.voice_override?.tts_profile ||
+          courseMeta?.tts_profile ||
+          legacyId,
+        tts_provider:
+          providerVal || state?.voice_override?.tts_provider || courseMeta?.tts_provider || "edge",
+        tts_voice:
+          normalized.tts_voice || state?.voice_override?.tts_voice || courseMeta?.tts_voice || "",
+        tts_rate:
+          normalized.tts_rate || state?.voice_override?.tts_rate || courseMeta?.tts_rate || "",
+        subtitles_srt: fs.existsSync(path.join(epDir, "subtitles.srt")) ? "subtitles.srt" : null,
+        total_duration_sec: Number(normalized.total_duration_sec) || 0,
+        generated_at: normalized.generated_at || null,
+        legacy: true,
+        scene_data: legacySceneData,
+      },
+    };
+    normalized.active_voice_track = legacyId;
+  } else {
+    normalized.voice_tracks = {};
+    normalized.active_voice_track = normalized.active_voice_track || null;
+  }
+
+  return normalized;
+}
+
+function summarizeVoiceTracks(script) {
+  const tracks = script?.voice_tracks && typeof script.voice_tracks === "object" ? script.voice_tracks : {};
+  const activeId = script?.active_voice_track || null;
+  return Object.entries(tracks).map(([id, t]) => ({
+    profile_id: id,
+    tts_profile: t?.tts_profile || id,
+    tts_provider: t?.tts_provider || null,
+    tts_voice: t?.tts_voice || null,
+    tts_rate: t?.tts_rate || null,
+    subtitles_srt: t?.subtitles_srt || null,
+    total_duration_sec: Number(t?.total_duration_sec) || 0,
+    generated_at: t?.generated_at || null,
+    legacy: Boolean(t?.legacy),
+    scenes_count: t?.scene_data && typeof t.scene_data === "object" ? Object.keys(t.scene_data).length : 0,
+    is_active: id === activeId,
+  }));
+}
+
+async function handleVoiceTrackActivate(req, res) {
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch (err) {
+    return sendJson(res, 400, { ok: false, error: err.message });
+  }
+
+  const course = String(body.course || "").trim();
+  const episode = String(body.episode || "").trim();
+  const profileId = String(body.profile_id || "").trim();
+
+  if (!/^[A-Za-z0-9_-]+$/.test(course) || !/^[A-Za-z0-9_-]+$/.test(episode)) {
+    return sendJson(res, 400, { ok: false, error: "Invalid course or episode identifier" });
+  }
+  if (!isValidSafeTrackId(profileId)) {
+    return sendJson(res, 400, { ok: false, error: "Invalid profile_id" });
+  }
+
+  const key = `${course}:${episode}`;
+  if (activeJobByEp.has(key)) {
+    const existingJob = jobs.get(activeJobByEp.get(key));
+    if (existingJob && (existingJob.status === "queued" || existingJob.status === "running")) {
+      return sendJson(res, 409, {
+        ok: false,
+        error: `Tập ${episode} đang có tác vụ TTS/Render đang chạy. Vui lòng đợi hoàn tất trước khi chuyển giọng.`,
+      });
+    }
+  }
+
+  const courseDir = safeResolve(WORKSPACE_ROOT, [course]);
+  const epDir = safeResolve(WORKSPACE_ROOT, [course, "episodes", episode]);
+  const scriptPath = safeResolve(WORKSPACE_ROOT, [course, "episodes", episode, "script.json"]);
+  if (!courseDir || !epDir || !scriptPath || !fs.existsSync(scriptPath)) {
+    return sendJson(res, 404, { ok: false, error: `Không tìm thấy script.json cho ${course}/${episode}.` });
+  }
+
+  let courseMeta = {};
+  const courseJsonPath = path.join(courseDir, "course.json");
+  if (fs.existsSync(courseJsonPath)) {
+    try {
+      courseMeta = JSON.parse(fs.readFileSync(courseJsonPath, "utf-8"));
+    } catch {
+      courseMeta = {};
+    }
+  }
+
+  let rawScript;
+  try {
+    rawScript = JSON.parse(fs.readFileSync(scriptPath, "utf-8"));
+  } catch {
+    return sendJson(res, 400, { ok: false, error: `script.json của ${course}/${episode} bị lỗi cú pháp JSON.` });
+  }
+
+  const stateDir = path.join(courseDir, "state");
+  const existingState = readEpisodeState(stateDir, episode);
+  const script = normalizeScriptVoiceTracks(rawScript, epDir, courseMeta, existingState);
+
+  const track = script.voice_tracks?.[profileId];
+  if (!track || typeof track !== "object") {
+    return sendJson(res, 404, {
+      ok: false,
+      error: `Không tìm thấy track giọng "${profileId}" trong script.json.`,
+    });
+  }
+
+  script.active_voice_track = profileId;
+  script.tts_profile = track.tts_profile || profileId;
+  if (track.tts_voice) script.tts_voice = track.tts_voice;
+  if (track.tts_rate) script.tts_rate = track.tts_rate;
+  if (track.tts_pitch) script.tts_pitch = track.tts_pitch;
+  if (track.tts_provider) {
+    script.tts_provider_used = Array.isArray(track.tts_provider)
+      ? track.tts_provider
+      : [track.tts_provider];
+  }
+
+  const sceneDataMap = track.scene_data && typeof track.scene_data === "object" ? track.scene_data : {};
+  let computedTotalDur = 0;
+  for (const scene of Array.isArray(script.scenes) ? script.scenes : []) {
+    if (!scene || !scene.id) continue;
+    const sd = sceneDataMap[scene.id];
+    if (sd && typeof sd === "object") {
+      if (sd.audio_file !== undefined) scene.audio_file = sd.audio_file;
+      if (sd.duration_sec !== undefined) scene.duration_sec = Number(sd.duration_sec) || 0;
+      if (Array.isArray(sd.subtitles)) scene.subtitles = cloneJsonSafe(sd.subtitles);
+      if (sd.timings && typeof sd.timings === "object") {
+        if (!scene._base_timings) {
+          scene._base_timings = extractSceneTimings(scene);
+        }
+        applySceneTimings(scene, sd.timings);
+      }
+    }
+    computedTotalDur += Number(scene.duration_sec) || 0;
+  }
+
+  script.total_duration_sec =
+    Number(track.total_duration_sec) > 0
+      ? Number(track.total_duration_sec)
+      : Math.round(computedTotalDur * 1000) / 1000;
+
+  // Copy track SRT -> root subtitles.srt if present
+  const srtDest = path.join(epDir, "subtitles.srt");
+  const candidateSrtNames = [
+    track.subtitles_srt ? String(track.subtitles_srt) : "",
+    `subtitles.${profileId}.srt`,
+  ].filter(Boolean);
+
+  for (const srtName of candidateSrtNames) {
+    const srtSrc = safeResolve(epDir, [srtName]);
+    if (srtSrc && srtSrc !== srtDest && fs.existsSync(srtSrc) && fs.statSync(srtSrc).isFile()) {
+      fs.copyFileSync(srtSrc, srtDest);
+      break;
+    }
+  }
+
+  writeJsonAtomic(scriptPath, script);
+
+  const now = new Date().toISOString();
+  const state = mutateEpisodeStateForJob(
+    course,
+    episode,
+    (st, artifacts) => {
+      st.voice_override = {
+        tts_profile: track.tts_profile || profileId,
+        tts_provider:
+          (Array.isArray(track.tts_provider) ? track.tts_provider[0] : track.tts_provider) ||
+          st.voice_override?.tts_provider ||
+          "edge",
+        tts_voice: track.tts_voice || script.tts_voice || "",
+        tts_rate: track.tts_rate || script.tts_rate || "+0%",
+        updated_at: now,
+      };
+      st.production = st.production || {};
+      st.production.tts_done = true;
+      if (st.production.video_done || artifacts.video_file) {
+        st.production.stale = true;
+        st.production.stale_reason = `Switched active voice track to ${profileId}`;
+      }
+    },
+    {
+      type: "voice_track_activated",
+      profile_id: profileId,
+      tts_voice: track.tts_voice || script.tts_voice || null,
+      message: `Switched active voice track to ${profileId}`,
+    }
+  );
+
+  return sendJson(res, 200, {
+    ok: true,
+    course,
+    episode,
+    active_voice_track: script.active_voice_track,
+    voice_tracks: script.voice_tracks,
+    voice_tracks_summary: summarizeVoiceTracks(script),
+    script,
+    state,
+  });
+}
+
+async function handleVoiceTrackDelete(req, res) {
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch (err) {
+    return sendJson(res, 400, { ok: false, error: err.message });
+  }
+
+  const course = String(body.course || "").trim();
+  const episode = String(body.episode || "").trim();
+  const profileId = String(body.profile_id || "").trim();
+
+  if (!/^[A-Za-z0-9_-]+$/.test(course) || !/^[A-Za-z0-9_-]+$/.test(episode)) {
+    return sendJson(res, 400, { ok: false, error: "Invalid course or episode identifier" });
+  }
+  if (!isValidSafeTrackId(profileId)) {
+    return sendJson(res, 400, { ok: false, error: "Invalid profile_id" });
+  }
+
+  const key = `${course}:${episode}`;
+  if (activeJobByEp.has(key)) {
+    const existingJob = jobs.get(activeJobByEp.get(key));
+    if (existingJob && (existingJob.status === "queued" || existingJob.status === "running")) {
+      return sendJson(res, 409, {
+        ok: false,
+        error: `Tập ${episode} đang có tác vụ TTS/Render đang chạy hoặc chờ xử lý. Vui lòng đợi hoàn tất trước khi xóa giọng đọc.`,
+      });
+    }
+  }
+
+  const courseDir = safeResolve(WORKSPACE_ROOT, [course]);
+  const epDir = safeResolve(WORKSPACE_ROOT, [course, "episodes", episode]);
+  const scriptPath = safeResolve(WORKSPACE_ROOT, [course, "episodes", episode, "script.json"]);
+  if (!courseDir || !epDir || !scriptPath || !fs.existsSync(scriptPath)) {
+    return sendJson(res, 404, { ok: false, error: `Không tìm thấy script.json cho ${course}/${episode}.` });
+  }
+
+  let courseMeta = {};
+  const courseJsonPath = path.join(courseDir, "course.json");
+  if (fs.existsSync(courseJsonPath)) {
+    try {
+      courseMeta = JSON.parse(fs.readFileSync(courseJsonPath, "utf-8"));
+    } catch {
+      courseMeta = {};
+    }
+  }
+
+  let rawScript;
+  try {
+    rawScript = JSON.parse(fs.readFileSync(scriptPath, "utf-8"));
+  } catch {
+    return sendJson(res, 400, { ok: false, error: `script.json của ${course}/${episode} bị lỗi cú pháp JSON.` });
+  }
+
+  const stateDir = path.join(courseDir, "state");
+  const existingState = readEpisodeState(stateDir, episode);
+  const script = normalizeScriptVoiceTracks(rawScript, epDir, courseMeta, existingState);
+
+  const trackIds = Object.keys(script.voice_tracks || {});
+  if (!script.voice_tracks || !script.voice_tracks[profileId]) {
+    return sendJson(res, 404, {
+      ok: false,
+      error: `Không tìm thấy track giọng "${profileId}" trong script.json.`,
+    });
+  }
+
+  if (trackIds.length <= 1) {
+    return sendJson(res, 400, {
+      ok: false,
+      error: "Không thể xóa track giọng duy nhất còn lại của tập. Cần giữ lại ít nhất 1 giọng đọc.",
+    });
+  }
+
+  if (script.active_voice_track === profileId) {
+    return sendJson(res, 409, {
+      ok: false,
+      error: `Không thể xóa track giọng đang kích hoạt ("${profileId}"). Hãy chuyển sang giọng khác trước khi xóa.`,
+    });
+  }
+
+  const track = script.voice_tracks[profileId];
+  const audioDir = path.join(epDir, "audio");
+  const trackAudioDir = safeResolve(audioDir, [profileId]);
+  if (
+    trackAudioDir &&
+    trackAudioDir !== path.resolve(audioDir) &&
+    fs.existsSync(trackAudioDir) &&
+    fs.statSync(trackAudioDir).isDirectory()
+  ) {
+    fs.rmSync(trackAudioDir, { recursive: true, force: true });
+  }
+
+  // Also remove any unshared per-scene files referenced by this track inside audio/
+  const remainingAudioFiles = new Set();
+  for (const [otherId, otherTrack] of Object.entries(script.voice_tracks)) {
+    if (otherId === profileId || !otherTrack?.scene_data) continue;
+    for (const sd of Object.values(otherTrack.scene_data)) {
+      if (sd?.audio_file) {
+        const resolved = safeResolve(epDir, String(sd.audio_file).split(/[\\/]/));
+        if (resolved) remainingAudioFiles.add(resolved);
+      }
+    }
+  }
+  if (track?.scene_data && typeof track.scene_data === "object") {
+    for (const sd of Object.values(track.scene_data)) {
+      if (!sd?.audio_file) continue;
+      const targetAudio = safeResolve(epDir, String(sd.audio_file).split(/[\\/]/));
+      if (
+        targetAudio &&
+        targetAudio.startsWith(path.resolve(audioDir) + path.sep) &&
+        !remainingAudioFiles.has(targetAudio) &&
+        fs.existsSync(targetAudio) &&
+        fs.statSync(targetAudio).isFile()
+      ) {
+        fs.unlinkSync(targetAudio);
+      }
+    }
+  }
+
+  const srtRoot = path.join(epDir, "subtitles.srt");
+  const srtCandidates = [
+    `subtitles.${profileId}.srt`,
+    track?.subtitles_srt ? String(track.subtitles_srt) : "",
+  ].filter(Boolean);
+  for (const srtName of srtCandidates) {
+    const srtTarget = safeResolve(epDir, [srtName]);
+    if (
+      srtTarget &&
+      srtTarget !== path.resolve(srtRoot) &&
+      fs.existsSync(srtTarget) &&
+      fs.statSync(srtTarget).isFile()
+    ) {
+      fs.unlinkSync(srtTarget);
+    }
+  }
+
+  delete script.voice_tracks[profileId];
+  writeJsonAtomic(scriptPath, script);
+
+  const state = mutateEpisodeStateForJob(
+    course,
+    episode,
+    () => {},
+    {
+      type: "voice_track_deleted",
+      profile_id: profileId,
+      message: `Deleted unused voice track ${profileId}`,
+    }
+  );
+
+  return sendJson(res, 200, {
+    ok: true,
+    course,
+    episode,
+    deleted_profile_id: profileId,
+    active_voice_track: script.active_voice_track,
+    voice_tracks: script.voice_tracks,
+    voice_tracks_summary: summarizeVoiceTracks(script),
+    script,
+    state,
+  });
+}
+
+async function handleSceneTimings(req, res) {
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch (err) {
+    return sendJson(res, 400, { ok: false, error: err.message });
+  }
+
+  const course = String(body.course || "").trim();
+  const episode = String(body.episode || "").trim();
+  const sceneId = String(body.scene_id || "").trim();
+  const action = String(body.action || "save").trim();
+
+  if (!/^[A-Za-z0-9_-]+$/.test(course) || !/^[A-Za-z0-9_-]+$/.test(episode)) {
+    return sendJson(res, 400, { ok: false, error: "Invalid course or episode identifier" });
+  }
+  if (!sceneId || !/^[A-Za-z0-9_.-]+$/.test(sceneId)) {
+    return sendJson(res, 400, { ok: false, error: "Invalid scene_id" });
+  }
+  if (action !== "save" && action !== "auto_align") {
+    return sendJson(res, 400, { ok: false, error: 'action must be "save" or "auto_align"' });
+  }
+
+  const key = `${course}:${episode}`;
+  if (activeJobByEp.has(key)) {
+    const existingJob = jobs.get(activeJobByEp.get(key));
+    if (existingJob && (existingJob.status === "queued" || existingJob.status === "running")) {
+      return sendJson(res, 409, {
+        ok: false,
+        error: `Tập ${episode} đang có tác vụ TTS/Render đang chạy. Vui lòng đợi hoàn tất trước khi chỉnh timing.`,
+      });
+    }
+  }
+
+  const courseDir = safeResolve(WORKSPACE_ROOT, [course]);
+  const epDir = safeResolve(WORKSPACE_ROOT, [course, "episodes", episode]);
+  const scriptPath = safeResolve(WORKSPACE_ROOT, [course, "episodes", episode, "script.json"]);
+  if (!courseDir || !epDir || !scriptPath || !fs.existsSync(scriptPath)) {
+    return sendJson(res, 404, { ok: false, error: `Không tìm thấy script.json cho ${course}/${episode}.` });
+  }
+
+  let courseMeta = {};
+  const courseJsonPath = path.join(courseDir, "course.json");
+  if (fs.existsSync(courseJsonPath)) {
+    try {
+      courseMeta = JSON.parse(fs.readFileSync(courseJsonPath, "utf-8"));
+    } catch {
+      courseMeta = {};
+    }
+  }
+
+  let rawScript;
+  try {
+    rawScript = JSON.parse(fs.readFileSync(scriptPath, "utf-8"));
+  } catch {
+    return sendJson(res, 400, { ok: false, error: `script.json của ${course}/${episode} bị lỗi cú pháp JSON.` });
+  }
+
+  const stateDir = path.join(courseDir, "state");
+  const existingState = readEpisodeState(stateDir, episode);
+  let script = normalizeScriptVoiceTracks(rawScript, epDir, courseMeta, existingState);
+
+  const scenes = Array.isArray(script.scenes) ? script.scenes : [];
+  let targetScene = scenes.find((s) => s && s.id === sceneId);
+  if (!targetScene) {
+    return sendJson(res, 404, { ok: false, error: `Không tìm thấy phân cảnh "${sceneId}" trong script.json.` });
+  }
+
+  if (action === "auto_align") {
+    const ttsArgs = [TTS_SCRIPT_PATH, "--realign-only", "--episode", scriptPath, "--scene", sceneId, "--json"];
+    const activeProfile = script.active_voice_track || script.tts_profile || null;
+    if (activeProfile && isValidSafeTrackId(activeProfile)) {
+      const voicesData = loadVoicesConfig();
+      if (
+        voicesData.profiles.some((p) => p && p.id === activeProfile) ||
+        script.voice_tracks?.[activeProfile]
+      ) {
+        ttsArgs.push("--profile", activeProfile);
+      }
+    }
+
+    let alignRes;
+    try {
+      alignRes = await runChildProcess(PYTHON_BIN, ttsArgs, { timeoutMs: 60_000 });
+    } catch (err) {
+      return sendJson(res, 500, { ok: false, error: err.message });
+    }
+
+    const parsedAlign = parseJsonFromStdout(alignRes.stdout);
+    if (alignRes.code !== 0 || parsedAlign?.ok === false) {
+      const errMsg =
+        parsedAlign?.error ||
+        alignRes.stderr?.trim() ||
+        alignRes.stdout?.trim() ||
+        `Realign exited with code ${alignRes.code}`;
+      return sendJson(res, 502, { ok: false, error: errMsg });
+    }
+
+    try {
+      const reloaded = JSON.parse(fs.readFileSync(scriptPath, "utf-8"));
+      script = normalizeScriptVoiceTracks(reloaded, epDir, courseMeta, existingState);
+      targetScene = (Array.isArray(script.scenes) ? script.scenes : []).find((s) => s && s.id === sceneId) || targetScene;
+    } catch (err) {
+      return sendJson(res, 500, { ok: false, error: `Không thể đọc lại script.json sau khi căn timing: ${err.message}` });
+    }
+  } else {
+    if (!body.timings || typeof body.timings !== "object" || Array.isArray(body.timings)) {
+      return sendJson(res, 400, { ok: false, error: "timings object is required when action is \"save\"" });
+    }
+
+    if (!targetScene._base_timings) {
+      targetScene._base_timings = extractSceneTimings(targetScene);
+    }
+
+    const clampedTimings = normalizeAndClampTimings(targetScene, body.timings);
+    applySceneTimings(targetScene, clampedTimings);
+
+    const activeId = script.active_voice_track;
+    if (activeId && script.voice_tracks && script.voice_tracks[activeId]) {
+      const track = script.voice_tracks[activeId];
+      track.scene_data = track.scene_data && typeof track.scene_data === "object" ? track.scene_data : {};
+      const prevSceneData = track.scene_data[sceneId] && typeof track.scene_data[sceneId] === "object"
+        ? track.scene_data[sceneId]
+        : {
+            audio_file: targetScene.audio_file || null,
+            duration_sec: Number(targetScene.duration_sec) || 0,
+            subtitles: Array.isArray(targetScene.subtitles) ? targetScene.subtitles : [],
+          };
+      track.scene_data[sceneId] = {
+        ...prevSceneData,
+        timings: cloneJsonSafe(clampedTimings),
+      };
+    }
+
+    writeJsonAtomic(scriptPath, script);
+  }
+
+  const state = mutateEpisodeStateForJob(
+    course,
+    episode,
+    (st, artifacts) => {
+      st.production = st.production || {};
+      if (st.production.video_done || artifacts.video_file) {
+        st.production.stale = true;
+        st.production.stale_reason =
+          action === "auto_align"
+            ? `Auto-aligned animation timings for ${sceneId}`
+            : `Updated animation timings for ${sceneId}`;
+      }
+    },
+    {
+      type: "scene_timings_updated",
+      scene_id: sceneId,
+      action,
+      profile_id: script.active_voice_track || null,
+      message:
+        action === "auto_align"
+          ? `Auto-aligned subtitle cues for ${sceneId}`
+          : `Saved manual timings for ${sceneId}`,
+    }
+  );
+
+  return sendJson(res, 200, {
+    ok: true,
+    course,
+    episode,
+    scene_id: sceneId,
+    action,
+    active_voice_track: script.active_voice_track || null,
+    scene: targetScene,
+    script,
+    state,
+  });
+}
+
 // --- Background Production Job Runner ---
 const MAX_CONCURRENT_JOBS = 1;
 const VALID_JOB_MODES = new Set(["tts_and_render", "tts_only", "render_only"]);
@@ -950,6 +1954,15 @@ const VALID_HARDWARE_MODES = new Set(["auto", "gpu", "cpu"]);
 const VALID_RESOLUTIONS = new Set(["720p", "1080p", "1440p", "2160p"]);
 const VALID_FPS = new Set([24, 30, 60]);
 const VALID_SPEEDS = new Set([1, 1.25, 1.5, 2]);
+
+const VALID_TTS_PROVIDERS = new Set([
+  "auto",
+  "edge",
+  "google",
+  "voicestudio",
+  "openai_compat",
+  "custom_http",
+]);
 
 const jobs = new Map(); // jobId -> job
 const jobRuntimes = new Map(); // jobId -> { child, cancelled }
@@ -966,6 +1979,10 @@ function sanitizeJobForApi(job) {
     episode_title: job.episode_title || job.episode,
     mode: job.mode,
     profile_id: job.profile_id || null,
+    tts_profile: job.tts_profile || job.profile_id || null,
+    tts_provider: job.tts_provider || null,
+    tts_voice: job.tts_voice || null,
+    tts_rate: job.tts_rate || null,
     format: job.format,
     codec: job.codec,
     hardware: job.hardware,
@@ -998,14 +2015,29 @@ function countEpisodeAudioFiles(epDir) {
   if (!fs.existsSync(audioDir) || !fs.statSync(audioDir).isDirectory()) {
     return 0;
   }
-  return fs.readdirSync(audioDir).filter((f) => {
-    if (!/\.(mp3|wav)$/i.test(f)) return false;
+  let count = 0;
+  const walk = (dir) => {
+    let entries;
     try {
-      return fs.statSync(path.join(audioDir, f)).size > 0;
+      entries = fs.readdirSync(dir, { withFileTypes: true });
     } catch {
-      return false;
+      return;
     }
-  }).length;
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(fullPath);
+      } else if (entry.isFile() && /\.(mp3|wav)$/i.test(entry.name)) {
+        try {
+          if (fs.statSync(fullPath).size > 0) count += 1;
+        } catch {
+          // ignore
+        }
+      }
+    }
+  };
+  walk(audioDir);
+  return count;
 }
 
 function resolveEpisodeTitle(courseDir, epId, scriptJson = null) {
@@ -1172,6 +2204,15 @@ async function executeProductionJob(job) {
       if (job.profile_id) {
         ttsArgs.push("--profile", job.profile_id);
       }
+      if (job.tts_provider) {
+        ttsArgs.push("--provider", job.tts_provider);
+      }
+      if (job.tts_voice) {
+        ttsArgs.push("--voice", job.tts_voice);
+      }
+      if (job.tts_rate) {
+        ttsArgs.push("--rate", job.tts_rate);
+      }
 
       const ttsRes = await runChildProcess(PYTHON_BIN, ttsArgs, {
         timeoutMs: 300_000,
@@ -1217,6 +2258,9 @@ async function executeProductionJob(job) {
             if (state.production.video_done || artifacts.video_file) {
               state.production.stale = true;
               state.production.stale_reason = "Audio regenerated; video needs re-render";
+            } else {
+              state.production.stale = false;
+              state.production.stale_reason = null;
             }
             state.production.status = "pending";
             state.last_error = null;
@@ -1456,7 +2500,11 @@ function handleGetJobs(res, parsedUrl) {
 
 function validateRenderOptions(raw = {}, { requireScriptCheck = false } = {}) {
   const mode = String(raw.mode || "tts_and_render").trim();
-  const profile_id = raw.profile_id ? String(raw.profile_id).trim() : null;
+  const rawProfileId = raw.profile_id ?? raw.tts_profile ?? null;
+  const profile_id = rawProfileId ? String(rawProfileId).trim() : null;
+  const tts_provider = raw.tts_provider ? String(raw.tts_provider).trim() : null;
+  const tts_voice = raw.tts_voice ? String(raw.tts_voice).trim() : null;
+  const tts_rate = raw.tts_rate ? String(raw.tts_rate).trim() : null;
   const format = String(raw.format || "mp4").trim().toLowerCase();
   const codec = String(raw.codec || (format === "webm" ? "vp9" : "h264")).trim().toLowerCase();
   const hardware = String(raw.hardware || "auto").trim().toLowerCase();
@@ -1466,6 +2514,9 @@ function validateRenderOptions(raw = {}, { requireScriptCheck = false } = {}) {
 
   if (!VALID_JOB_MODES.has(mode)) {
     return { ok: false, status: 400, error: 'mode must be "tts_and_render", "tts_only", or "render_only"' };
+  }
+  if (tts_provider && !VALID_TTS_PROVIDERS.has(tts_provider)) {
+    return { ok: false, status: 400, error: `Unsupported tts_provider "${tts_provider}"` };
   }
   if (!VALID_VIDEO_FORMATS.has(format)) {
     return { ok: false, status: 400, error: 'format must be "mp4" or "webm"' };
@@ -1517,6 +2568,10 @@ function validateRenderOptions(raw = {}, { requireScriptCheck = false } = {}) {
     options: {
       mode,
       profile_id: mode === "render_only" ? null : profile_id,
+      tts_profile: mode === "render_only" ? null : profile_id,
+      tts_provider: mode === "render_only" ? null : tts_provider,
+      tts_voice: mode === "render_only" ? null : tts_voice,
+      tts_rate: mode === "render_only" ? null : tts_rate,
       format,
       codec,
       hardware,
@@ -1539,7 +2594,20 @@ function enqueueProductionJob(params = {}) {
   if (!optsRes.ok) {
     return optsRes;
   }
-  const { mode, profile_id, format, codec, hardware, resolution, fps, speed } = optsRes.options;
+  const {
+    mode,
+    profile_id,
+    tts_profile,
+    tts_provider,
+    tts_voice,
+    tts_rate,
+    format,
+    codec,
+    hardware,
+    resolution,
+    fps,
+    speed,
+  } = optsRes.options;
 
   const courseDir = safeResolve(WORKSPACE_ROOT, [course]);
   const epDir = safeResolve(WORKSPACE_ROOT, [course, "episodes", episode]);
@@ -1599,6 +2667,10 @@ function enqueueProductionJob(params = {}) {
     episode_title,
     mode,
     profile_id,
+    tts_profile,
+    tts_provider,
+    tts_voice,
+    tts_rate,
     format,
     codec,
     hardware,
@@ -1764,1130 +2836,111 @@ function handleClearFinishedJobs(res) {
   return sendJson(res, 200, { ok: true, removed, jobs: remaining });
 }
 
-// --- Antigravity Worker Heartbeat Registry & Strict Whitelist AI Queue ---
-const WORKER_HEARTBEAT_INTERVAL_MS = 5000;
-const WORKER_WATCHER_TTL_MS = Math.max(1000, Number(process.env.VIDEO_MAKER_WATCHER_TTL_MS) || 18_000);
-const WORKER_SCHEDULE_TTL_MS = Math.max(5000, Number(process.env.VIDEO_MAKER_SCHEDULE_TTL_MS) || 90_000);
-const WORKER_SWEEP_INTERVAL_MS = Math.max(500, Number(process.env.VIDEO_MAKER_SWEEP_INTERVAL_MS) || 3000);
-const ALLOWED_AI_TASK_TYPES = new Set(["script_episode", "script_batch"]);
-const MAX_AI_BATCH_EPISODES = 5;
-const MAX_AI_CUSTOM_INSTRUCTIONS_LEN = 1200;
+// --- AI Broker (Providers, Builtin Runner, Worker Heartbeat & Queue) + MCP HTTP ---
+const aiBroker = createAiBroker({
+  ENGINE_DIR,
+  WORKSPACE_ROOT,
+  AI_QUEUE_FILE,
+  sendJson,
+  readJsonBody,
+  safeResolve,
+  broadcastSse,
+  scheduleStateBroadcast,
+  mutateEpisodeStateForJob,
+  enqueueProductionJob,
+  validateRenderOptions,
+  activeJobByEp,
+  jobs,
+  loadCourseJson,
+  flattenCourseEpisodes,
+  readEpisodeState,
+  listRevisions,
+  appendEvent,
+  writeJsonAtomic,
+  validateScriptDiagrams,
+  SUPPORTED_VISUAL_TYPES,
+});
 
-const aiWorkers = new Map(); // worker_id -> worker record
-const pendingWaiterResponses = new Set(); // { res, worker_id, timer }
-const aiJobs = new Map(); // aijob-... -> aiJob
-const activeAiJobByEp = new Map(); // `${course}:${ep}` -> aijobId
-let aiJobSeqCounter = 0;
-let lastWorkerSignature = "";
+aiBroker.startTimersAndLoad();
 
-function isLoopbackReq(req) {
-  const addr = String(req.socket?.remoteAddress || "").trim();
-  return addr === "127.0.0.1" || addr === "::1" || addr === "::ffff:127.0.0.1";
-}
+const mcpHandler = createMcpHandler({
+  requestStudio: createStudioHttpRequester({
+    host: "127.0.0.1",
+    port: () => server.address()?.port || PORT,
+  }),
+  serverHost: "127.0.0.1",
+  serverPort: PORT,
+});
 
-function requireLoopback(req, res) {
-  if (!isLoopbackReq(req)) {
-    sendJson(res, 403, {
-      ok: false,
-      code: "LOOPBACK_ONLY",
-      error: "Worker and MCP endpoints are restricted to local loopback (127.0.0.1).",
-    });
-    return false;
-  }
-  return true;
-}
+async function handleMcpHttp(req, res) {
+  if (!aiBroker.requireLoopback(req, res)) return;
 
-function purgeExpiredWorkersInternal() {
-  const now = Date.now();
-  let removed = false;
-  for (const [id, rec] of aiWorkers.entries()) {
-    const ttl = rec.mode === "schedule" ? WORKER_SCHEDULE_TTL_MS : WORKER_WATCHER_TTL_MS;
-    if (now - rec.last_heartbeat_at > ttl) {
-      aiWorkers.delete(id);
-      removed = true;
-    }
-  }
-  return removed;
-}
-
-function buildWorkerStatusSnapshot() {
-  const workers = Array.from(aiWorkers.values())
-    .sort((a, b) => b.last_heartbeat_at - a.last_heartbeat_at)
-    .map((w) => ({
-      worker_id: w.worker_id,
-      model: w.model,
-      mode: w.mode,
-      session_label: w.session_label || null,
-      registered_at: w.registered_at,
-      last_heartbeat_iso: w.last_heartbeat_iso,
-      age_ms: Math.max(0, Date.now() - w.last_heartbeat_at),
-      ttl_ms: w.mode === "schedule" ? WORKER_SCHEDULE_TTL_MS : WORKER_WATCHER_TTL_MS,
-    }));
-
-  return {
-    online: workers.length > 0,
-    worker_count: workers.length,
-    primary_worker: workers[0] || null,
-    workers,
-    heartbeat_interval_ms: WORKER_HEARTBEAT_INTERVAL_MS,
-    watcher_ttl_ms: WORKER_WATCHER_TTL_MS,
-    schedule_ttl_ms: WORKER_SCHEDULE_TTL_MS,
-    ts: new Date().toISOString(),
-  };
-}
-
-function workerStatusSignature(snap) {
-  return JSON.stringify({
-    online: snap.online,
-    ids: snap.workers.map((w) => `${w.worker_id}:${w.model}:${w.mode}`),
-  });
-}
-
-function getAiWorkerStatusSnapshot() {
-  purgeExpiredWorkersInternal();
-  return buildWorkerStatusSnapshot();
-}
-
-function hasOnlineWorker() {
-  purgeExpiredWorkersInternal();
-  return aiWorkers.size > 0;
-}
-
-function sweepExpiredWorkers({ broadcast = true } = {}) {
-  const removed = purgeExpiredWorkersInternal();
-  const snap = buildWorkerStatusSnapshot();
-  const sig = workerStatusSignature(snap);
-  if ((removed || sig !== lastWorkerSignature) && broadcast) {
-    lastWorkerSignature = sig;
-    broadcastSse("worker_status", snap);
-  }
-  return snap;
-}
-
-function recordWorkerHeartbeat(body = {}) {
-  const rawId = String(body.worker_id || body.workerId || "").trim();
-  if (!rawId || !/^[A-Za-z0-9._-]{1,80}$/.test(rawId)) {
-    return { ok: false, status: 400, error: "Invalid worker_id (expected 1-80 chars of A-Za-z0-9._-)" };
-  }
-  const model = String(body.model || "Gemini 4 Argon").trim().slice(0, 120) || "Gemini 4 Argon";
-  const mode = body.mode === "schedule" ? "schedule" : "watcher";
-  const session_label = body.session_label ? String(body.session_label).trim().slice(0, 120) : null;
-  const nowMs = Date.now();
-  const nowIso = new Date(nowMs).toISOString();
-  const existing = aiWorkers.get(rawId);
-
-  aiWorkers.set(rawId, {
-    worker_id: rawId,
-    model,
-    mode,
-    session_label,
-    pid: Number.isFinite(Number(body.pid)) ? Number(body.pid) : existing?.pid || null,
-    registered_at: existing?.registered_at || nowIso,
-    last_heartbeat_at: nowMs,
-    last_heartbeat_iso: nowIso,
-  });
-
-  purgeExpiredWorkersInternal();
-  const snap = buildWorkerStatusSnapshot();
-  const sig = workerStatusSignature(snap);
-  if (sig !== lastWorkerSignature) {
-    lastWorkerSignature = sig;
-    broadcastSse("worker_status", snap);
-  }
-  return { ok: true, worker_status: snap };
-}
-
-function sanitizeAiJobForApi(job) {
-  return {
-    id: job.id,
-    kind: "ai_script",
-    type: job.type,
-    course: job.course,
-    episode_ids: [...(job.episode_ids || [])],
-    episode_titles: { ...(job.episode_titles || {}) },
-    current_episode: job.current_episode || null,
-    completed_episodes: [...(job.completed_episodes || [])],
-    custom_instructions: job.custom_instructions || "",
-    auto_produce: Boolean(job.auto_produce),
-    render_prefs: job.render_prefs ? { ...job.render_prefs } : null,
-    status: job.status,
-    step: job.step,
-    progress: job.progress ?? 0,
-    claimed_by: job.claimed_by || null,
-    claimed_model: job.claimed_model || null,
-    logs: [...(job.logs || [])],
-    error: job.error || null,
-    summary: job.summary || null,
-    spawned_production_jobs: [...(job.spawned_production_jobs || [])],
-    created_at: job.created_at,
-    started_at: job.started_at || null,
-    updated_at: job.updated_at,
-    completed_at: job.completed_at || null,
-  };
-}
-
-function appendAiJobLog(job, line) {
-  if (!line) return;
-  job.logs = job.logs || [];
-  job.logs.push(`[${new Date().toISOString().slice(11, 19)}] ${line}`);
-  if (job.logs.length > 100) {
-    job.logs.splice(0, job.logs.length - 100);
-  }
-}
-
-function listSortedAiJobs(courseFilter = "") {
-  const list = Array.from(aiJobs.values())
-    .filter((j) => !courseFilter || j.course === courseFilter)
-    .sort((a, b) => (b._seq || 0) - (a._seq || 0));
-  return list.map(sanitizeAiJobForApi);
-}
-
-function persistAiQueue() {
-  try {
-    const payload = {
-      version: 1,
-      updated_at: new Date().toISOString(),
-      seq: aiJobSeqCounter,
-      jobs: Array.from(aiJobs.values()),
-    };
-    writeJsonAtomic(AI_QUEUE_FILE, payload);
-  } catch (err) {
-    console.error(`[ai_queue] persist failed: ${err.message}`);
-  }
-}
-
-function releaseAiEpLocks(job) {
-  for (const epId of job?.episode_ids || []) {
-    const k = `${job.course}:${epId}`;
-    if (activeAiJobByEp.get(k) === job.id) {
-      activeAiJobByEp.delete(k);
-    }
-  }
-}
-
-function loadAiQueueFromDisk() {
-  if (!fs.existsSync(AI_QUEUE_FILE)) return;
-  try {
-    const raw = JSON.parse(fs.readFileSync(AI_QUEUE_FILE, "utf-8"));
-    const list = Array.isArray(raw?.jobs) ? raw.jobs : [];
-    aiJobSeqCounter = Math.max(0, Number(raw?.seq) || list.length);
-    const now = new Date().toISOString();
-
-    for (const item of list) {
-      if (!item || !item.id || !ALLOWED_AI_TASK_TYPES.has(item.type)) continue;
-      if (item.status === "running") {
-        item.status = "queued";
-        item.step = "queued";
-        item.claimed_by = null;
-        item.updated_at = now;
-        appendAiJobLog(item, "Server restarted while running; re-queued remaining episode(s).");
-      }
-      aiJobs.set(item.id, item);
-      if (item.status === "queued") {
-        for (const epId of item.episode_ids || []) {
-          activeAiJobByEp.set(`${item.course}:${epId}`, item.id);
-        }
-      }
-    }
-  } catch (err) {
-    console.error(`[ai_queue] load failed: ${err.message}`);
-  }
-}
-
-function findNextQueuedAiJob() {
-  return (
-    Array.from(aiJobs.values())
-      .filter((j) => j.status === "queued")
-      .sort((a, b) => (a._seq || 0) - (b._seq || 0))[0] || null
-  );
-}
-
-function wakeWaiters(reason, job) {
-  if (pendingWaiterResponses.size === 0) return;
-  const snap = buildWorkerStatusSnapshot();
-  const payload = {
-    ok: true,
-    wake: true,
-    reason,
-    job: job ? sanitizeAiJobForApi(job) : null,
-    worker_status: snap,
-  };
-  for (const waiter of [...pendingWaiterResponses]) {
-    pendingWaiterResponses.delete(waiter);
-    clearTimeout(waiter.timer);
-    try {
-      sendJson(waiter.res, 200, payload);
-    } catch {
-      // ignore closed socket
-    }
-  }
-}
-
-function handleGetAiStatus(res) {
-  const snap = getAiWorkerStatusSnapshot();
-  const allJobs = Array.from(aiJobs.values());
-  return sendJson(res, 200, {
-    ok: true,
-    ...snap,
-    queued_jobs: allJobs.filter((j) => j.status === "queued").length,
-    running_jobs: allJobs.filter((j) => j.status === "running").length,
-    allowed_task_types: Array.from(ALLOWED_AI_TASK_TYPES),
-    supported_visual_types: [...SUPPORTED_VISUAL_TYPES],
-  });
-}
-
-function handleGetAiJobs(res, parsedUrl) {
-  const course = String(parsedUrl.searchParams.get("course") || "").trim();
-  if (course && !/^[A-Za-z0-9_-]+$/.test(course)) {
-    return sendJson(res, 400, { ok: false, error: "Invalid course identifier" });
-  }
-  return sendJson(res, 200, { ok: true, jobs: listSortedAiJobs(course) });
-}
-
-async function handleCreateAiJob(req, res) {
-  let body;
-  try {
-    body = await readJsonBody(req);
-  } catch (err) {
-    return sendJson(res, 400, { ok: false, error: err.message });
-  }
-
-  const type = String(body.type || "").trim();
-  if (!ALLOWED_AI_TASK_TYPES.has(type)) {
-    return sendJson(res, 400, {
-      ok: false,
-      code: "TASK_NOT_ALLOWED",
-      error: `Task type "${type}" không nằm trong whitelist. Chỉ hỗ trợ: ${Array.from(ALLOWED_AI_TASK_TYPES).join(", ")}.`,
-    });
-  }
-
-  if (!hasOnlineWorker()) {
-    return sendJson(res, 503, {
-      ok: false,
-      code: "WORKER_OFFLINE",
-      error:
-        "Chưa kết nối Antigravity Worker. Vui lòng mở Antigravity IDE (model Argon) và gửi lệnh \"Bật VideoMaker Worker\" trước khi biên kịch.",
-      worker_status: getAiWorkerStatusSnapshot(),
-    });
-  }
-
-  const course = String(body.course || "").trim();
-  if (!/^[A-Za-z0-9_-]+$/.test(course)) {
-    return sendJson(res, 400, { ok: false, error: "Invalid course identifier" });
-  }
-  const courseDir = safeResolve(WORKSPACE_ROOT, [course]);
-  if (!courseDir || !fs.existsSync(path.join(courseDir, "course.json"))) {
-    return sendJson(res, 404, { ok: false, error: `Không tìm thấy khóa học "${course}".` });
-  }
-
-  let courseJson;
-  try {
-    courseJson = loadCourseJson(courseDir);
-  } catch (err) {
-    return sendJson(res, 400, { ok: false, error: err.message });
-  }
-
-  const rawEpList = Array.isArray(body.episode_ids)
-    ? body.episode_ids
-    : body.episode_id || body.episode
-      ? [body.episode_id || body.episode]
-      : [];
-  const episode_ids = [];
-  const seenEps = new Set();
-  for (const item of rawEpList) {
-    const ep = String(item || "").trim();
-    if (!ep || seenEps.has(ep)) continue;
-    seenEps.add(ep);
-    episode_ids.push(ep);
-  }
-
-  if (episode_ids.length === 0) {
-    return sendJson(res, 400, { ok: false, error: "Cần chọn ít nhất 1 tập để biên kịch." });
-  }
-  if (type === "script_episode" && episode_ids.length !== 1) {
-    return sendJson(res, 400, { ok: false, error: "script_episode chỉ nhận đúng 1 tập." });
-  }
-  if (episode_ids.length > MAX_AI_BATCH_EPISODES) {
-    return sendJson(res, 400, {
-      ok: false,
-      error: `Mỗi đợt biên kịch tối đa ${MAX_AI_BATCH_EPISODES} tập (đã chọn ${episode_ids.length}).`,
-    });
-  }
-
-  const courseEps = new Map(flattenCourseEpisodes(courseJson).map((e) => [e.id, e]));
-  const episode_titles = {};
-  for (const epId of episode_ids) {
-    if (!/^[A-Za-z0-9_-]+$/.test(epId) || !courseEps.has(epId)) {
-      return sendJson(res, 404, {
-        ok: false,
-        error: `Tập "${epId}" không tồn tại trong ${course}/course.json.`,
+  if (req.method === "GET") {
+    const accept = String(req.headers.accept || "");
+    if (accept.includes("text/event-stream")) {
+      res.writeHead(200, {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
       });
+      res.write("event: endpoint\ndata: /mcp\n\n");
+      const timer = setInterval(() => {
+        try {
+          res.write(`: ping ${Date.now()}\n\n`);
+        } catch {
+          clearInterval(timer);
+        }
+      }, 15_000);
+      if (typeof timer.unref === "function") timer.unref();
+      req.on("close", () => clearInterval(timer));
+      return;
     }
-    const key = `${course}:${epId}`;
-    if (activeAiJobByEp.has(key)) {
-      const existingId = activeAiJobByEp.get(key);
-      const existing = aiJobs.get(existingId);
-      if (existing && (existing.status === "queued" || existing.status === "running")) {
-        return sendJson(res, 409, {
-          ok: false,
-          code: "EPISODE_BUSY",
-          error: `Tập "${epId}" đang có tác vụ AI biên kịch (${existing.status}).`,
-          job_id: existingId,
-        });
-      }
-      activeAiJobByEp.delete(key);
-    }
-    if (activeJobByEp.has(key)) {
-      const prodId = activeJobByEp.get(key);
-      const prodJob = jobs.get(prodId);
-      if (prodJob && (prodJob.status === "queued" || prodJob.status === "running")) {
-        return sendJson(res, 409, {
-          ok: false,
-          code: "EPISODE_BUSY",
-          error: `Tập "${epId}" đang chạy tác vụ TTS/Render (${prodJob.status}).`,
-          job_id: prodId,
-        });
-      }
-      activeJobByEp.delete(key);
-    }
-    episode_titles[epId] = courseEps.get(epId)?.title || epId;
-  }
-
-  const custom_instructions = String(body.custom_instructions || "")
-    .trim()
-    .slice(0, MAX_AI_CUSTOM_INSTRUCTIONS_LEN);
-  const auto_produce = Boolean(body.auto_produce);
-  let render_prefs = null;
-  if (auto_produce) {
-    const rawPrefs = body.render_prefs && typeof body.render_prefs === "object" ? body.render_prefs : {};
-    const validRes = validateRenderOptions({ ...rawPrefs, mode: rawPrefs.mode || "tts_and_render" });
-    if (!validRes.ok) {
-      return sendJson(res, validRes.status || 400, { ok: false, error: validRes.error });
-    }
-    render_prefs = validRes.options;
-  }
-
-  const now = new Date().toISOString();
-  const aiJob = {
-    id: `aijob-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-    _seq: ++aiJobSeqCounter,
-    kind: "ai_script",
-    type,
-    course,
-    episode_ids,
-    episode_titles,
-    current_episode: episode_ids[0],
-    completed_episodes: [],
-    custom_instructions,
-    auto_produce,
-    render_prefs,
-    status: "queued",
-    step: "queued",
-    progress: 0,
-    claimed_by: null,
-    claimed_model: null,
-    logs: [],
-    error: null,
-    summary: null,
-    spawned_production_jobs: [],
-    created_at: now,
-    started_at: null,
-    updated_at: now,
-    completed_at: null,
-  };
-  appendAiJobLog(
-    aiJob,
-    `Queued ${type} for ${course} (${episode_ids.length} ep: ${episode_ids.join(", ")}; auto_produce=${auto_produce})`
-  );
-
-  aiJobs.set(aiJob.id, aiJob);
-  for (const epId of episode_ids) {
-    activeAiJobByEp.set(`${course}:${epId}`, aiJob.id);
-  }
-  persistAiQueue();
-
-  const stateDir = path.join(courseDir, "state");
-  if (fs.existsSync(stateDir)) {
-    appendEvent(stateDir, {
-      type: "ai_job_queued",
-      course,
-      job_id: aiJob.id,
-      episode_ids,
-      auto_produce,
-      message: `Web UI đã đẩy lệnh biên kịch AI cho ${episode_ids.join(", ")}`,
-    });
-  }
-
-  broadcastSse("ai_job_update", { job: sanitizeAiJobForApi(aiJob) });
-  wakeWaiters("job_enqueued", aiJob);
-
-  return sendJson(res, 202, {
-    ok: true,
-    job: sanitizeAiJobForApi(aiJob),
-    worker_status: getAiWorkerStatusSnapshot(),
-  });
-}
-
-async function handleCancelAiJob(req, res) {
-  let body;
-  try {
-    body = await readJsonBody(req);
-  } catch (err) {
-    return sendJson(res, 400, { ok: false, error: err.message });
-  }
-  const jobId = String(body.job_id || "").trim();
-  if (!jobId) {
-    return sendJson(res, 400, { ok: false, error: "job_id is required" });
-  }
-  const job = aiJobs.get(jobId);
-  if (!job) {
-    return sendJson(res, 404, { ok: false, error: "AI job not found" });
-  }
-  if (job.status !== "queued" && job.status !== "running") {
-    return sendJson(res, 400, { ok: false, error: `Job is already ${job.status}` });
-  }
-
-  const wasRunning = job.status === "running";
-  job.status = "cancelled";
-  job.step = "cancelled";
-  job.completed_at = new Date().toISOString();
-  job.updated_at = job.completed_at;
-  appendAiJobLog(job, "Cancelled from Studio UI.");
-  releaseAiEpLocks(job);
-
-  if (wasRunning) {
-    for (const epId of job.episode_ids) {
-      if (job.completed_episodes.includes(epId)) continue;
-      try {
-        mutateEpisodeStateForJob(
-          job.course,
-          epId,
-          (state) => {
-            if (state.scripting && state.scripting.status !== "completed") {
-              state.scripting.status = "pending";
-            }
-          },
-          { type: "ai_job_cancelled", job_id: job.id }
-        );
-      } catch {
-        // ignore missing state dir
-      }
-    }
-  }
-
-  persistAiQueue();
-  broadcastSse("ai_job_update", { job: sanitizeAiJobForApi(job) });
-  return sendJson(res, 200, { ok: true, job: sanitizeAiJobForApi(job) });
-}
-
-function handleClearFinishedAiJobs(res) {
-  let removed = 0;
-  for (const [id, job] of aiJobs.entries()) {
-    if (job.status === "completed" || job.status === "failed" || job.status === "cancelled") {
-      aiJobs.delete(id);
-      removed += 1;
-    }
-  }
-  persistAiQueue();
-  const remaining = listSortedAiJobs();
-  broadcastSse("ai_jobs_cleared", { jobs: remaining, removed, ts: new Date().toISOString() });
-  return sendJson(res, 200, { ok: true, removed, jobs: remaining });
-}
-
-async function handleWorkerHeartbeat(req, res) {
-  if (!requireLoopback(req, res)) return;
-  let body;
-  try {
-    body = await readJsonBody(req);
-  } catch (err) {
-    return sendJson(res, 400, { ok: false, error: err.message });
-  }
-  const result = recordWorkerHeartbeat(body);
-  if (!result.ok) {
-    return sendJson(res, result.status || 400, { ok: false, error: result.error });
-  }
-  return sendJson(res, 200, {
-    ok: true,
-    worker_status: result.worker_status,
-    queued_jobs: Array.from(aiJobs.values()).filter((j) => j.status === "queued").length,
-  });
-}
-
-async function handleWorkerWait(req, res) {
-  if (!requireLoopback(req, res)) return;
-  let body = {};
-  try {
-    body = await readJsonBody(req);
-  } catch (err) {
-    return sendJson(res, 400, { ok: false, error: err.message });
-  }
-
-  const hb = recordWorkerHeartbeat({ ...body, mode: body.mode || "watcher" });
-  if (!hb.ok) {
-    return sendJson(res, hb.status || 400, { ok: false, error: hb.error });
-  }
-
-  const nextJob = findNextQueuedAiJob();
-  if (nextJob) {
     return sendJson(res, 200, {
       ok: true,
-      wake: true,
-      reason: "job_available",
-      job: sanitizeAiJobForApi(nextJob),
-      worker_status: hb.worker_status,
+      serverInfo: MCP_SERVER_INFO,
+      transport: "http",
+      endpoint: "/mcp",
+      tools: mcpHandler.TOOLS.map((t) => t.name),
+      resources: mcpHandler.STATIC_RESOURCES.map((r) => r.uri),
     });
   }
 
-  const timeoutMs = Math.min(28_000, Math.max(1500, Number(body.timeout_ms) || 25_000));
-  const waiter = {
-    res,
-    worker_id: String(body.worker_id || body.workerId),
-    timer: null,
-  };
-  waiter.timer = setTimeout(() => {
-    pendingWaiterResponses.delete(waiter);
+  if (req.method === "POST") {
+    let body;
     try {
-      sendJson(res, 200, {
-        ok: true,
-        wake: false,
-        reason: "timeout",
-        job: null,
-        worker_status: buildWorkerStatusSnapshot(),
-      });
-    } catch {
-      // ignore
-    }
-  }, timeoutMs);
-
-  pendingWaiterResponses.add(waiter);
-  req.on("close", () => {
-    if (pendingWaiterResponses.has(waiter)) {
-      pendingWaiterResponses.delete(waiter);
-      clearTimeout(waiter.timer);
-    }
-  });
-}
-
-async function handlePollAiJob(req, res) {
-  if (!requireLoopback(req, res)) return;
-  let body = {};
-  try {
-    body = await readJsonBody(req);
-  } catch (err) {
-    return sendJson(res, 400, { ok: false, error: err.message });
-  }
-  if (body.worker_id || body.workerId) {
-    const hb = recordWorkerHeartbeat(body);
-    if (!hb.ok) {
-      return sendJson(res, hb.status || 400, { ok: false, error: hb.error });
-    }
-  }
-  const nextJob = findNextQueuedAiJob();
-  return sendJson(res, 200, {
-    ok: true,
-    job: nextJob ? sanitizeAiJobForApi(nextJob) : null,
-    queued_count: Array.from(aiJobs.values()).filter((j) => j.status === "queued").length,
-    worker_status: getAiWorkerStatusSnapshot(),
-  });
-}
-
-async function handleClaimAiJob(req, res) {
-  if (!requireLoopback(req, res)) return;
-  let body;
-  try {
-    body = await readJsonBody(req);
-  } catch (err) {
-    return sendJson(res, 400, { ok: false, error: err.message });
-  }
-
-  const workerId = String(body.worker_id || body.workerId || "").trim();
-  const hb = recordWorkerHeartbeat({ ...body, worker_id: workerId });
-  if (!hb.ok) {
-    return sendJson(res, hb.status || 400, { ok: false, error: hb.error });
-  }
-
-  let job = null;
-  if (body.job_id) {
-    job = aiJobs.get(String(body.job_id).trim()) || null;
-    if (!job) {
-      return sendJson(res, 404, { ok: false, error: `AI job "${body.job_id}" not found` });
-    }
-    if (job.status !== "queued") {
-      return sendJson(res, 409, {
-        ok: false,
-        code: "JOB_ALREADY_CLAIMED",
-        error: `AI job "${job.id}" has status "${job.status}"`,
-        job: sanitizeAiJobForApi(job),
-      });
-    }
-  } else {
-    job = findNextQueuedAiJob();
-  }
-
-  if (!job) {
-    return sendJson(res, 200, { ok: true, claimed: false, job: null });
-  }
-
-  const now = new Date().toISOString();
-  const workerRec = aiWorkers.get(workerId);
-  job.status = "running";
-  job.step = "planning";
-  job.progress = 5;
-  job.claimed_by = workerId;
-  job.claimed_model = String(body.model || workerRec?.model || "Gemini 4 Argon");
-  job.started_at = job.started_at || now;
-  job.updated_at = now;
-  const firstPendingEp = job.episode_ids.find((id) => !job.completed_episodes.includes(id)) || job.episode_ids[0];
-  job.current_episode = firstPendingEp;
-  appendAiJobLog(job, `Claimed by ${workerId} (${job.claimed_model}). Starting ${firstPendingEp}...`);
-
-  if (firstPendingEp) {
-    mutateEpisodeStateForJob(
-      job.course,
-      firstPendingEp,
-      (state) => {
-        state.scripting = state.scripting || {};
-        state.scripting.status = "planning";
-        state.scripting.started_at = state.scripting.started_at || now;
-        state.scripting.owner = job.claimed_model;
-        state.last_error = null;
-      },
-      { type: "ai_job_claimed", job_id: job.id, owner: job.claimed_model }
-    );
-  }
-
-  persistAiQueue();
-  broadcastSse("ai_job_update", { job: sanitizeAiJobForApi(job) });
-  return sendJson(res, 200, { ok: true, claimed: true, job: sanitizeAiJobForApi(job) });
-}
-
-async function handleProgressAiJob(req, res) {
-  if (!requireLoopback(req, res)) return;
-  let body;
-  try {
-    body = await readJsonBody(req);
-  } catch (err) {
-    return sendJson(res, 400, { ok: false, error: err.message });
-  }
-  const jobId = String(body.job_id || "").trim();
-  const workerId = String(body.worker_id || "").trim();
-  const job = aiJobs.get(jobId);
-  if (!job) return sendJson(res, 404, { ok: false, error: "AI job not found" });
-  if (job.status === "cancelled") {
-    return sendJson(res, 409, { ok: false, code: "JOB_CANCELLED", error: "AI job was cancelled from UI" });
-  }
-  if (job.status !== "running") {
-    return sendJson(res, 409, { ok: false, error: `AI job is not running (${job.status})` });
-  }
-  if (workerId && job.claimed_by && workerId !== job.claimed_by) {
-    return sendJson(res, 403, { ok: false, error: `Job claimed by ${job.claimed_by}` });
-  }
-  if (workerId) recordWorkerHeartbeat({ ...body, worker_id: workerId, model: job.claimed_model });
-
-  const epId = body.episode_id ? String(body.episode_id).trim() : job.current_episode;
-  if (epId && job.episode_ids.includes(epId)) {
-    job.current_episode = epId;
-  }
-  if (body.status && ["planning", "in_progress", "reviewing"].includes(body.status)) {
-    job.step = body.status;
-    if (epId && job.episode_ids.includes(epId)) {
-      mutateEpisodeStateForJob(
-        job.course,
-        epId,
-        (state) => {
-          state.scripting = state.scripting || {};
-          state.scripting.status = body.status;
-          state.scripting.phase = body.phase ? String(body.phase) : state.scripting.phase;
-          state.scripting.owner = job.claimed_model || workerId;
-        },
-        body.message
-          ? { type: "ai_job_progress", job_id: job.id, phase: body.status, message: String(body.message) }
-          : null
-      );
-    }
-  } else if (body.phase) {
-    job.step = String(body.phase);
-  }
-  if (body.progress !== undefined && Number.isFinite(Number(body.progress))) {
-    job.progress = Math.max(0, Math.min(99, Math.round(Number(body.progress))));
-  }
-  job.updated_at = new Date().toISOString();
-  if (body.message) appendAiJobLog(job, String(body.message));
-
-  persistAiQueue();
-  broadcastSse("ai_job_update", { job: sanitizeAiJobForApi(job) });
-  return sendJson(res, 200, { ok: true, job: sanitizeAiJobForApi(job) });
-}
-
-async function handleSubmitAiEpisode(req, res) {
-  if (!requireLoopback(req, res)) return;
-  let body;
-  try {
-    body = await readJsonBody(req);
-  } catch (err) {
-    return sendJson(res, 400, { ok: false, error: err.message });
-  }
-
-  const jobId = String(body.job_id || "").trim();
-  const workerId = String(body.worker_id || "").trim();
-  const course = String(body.course || "").trim();
-  const episodeId = String(body.episode_id || body.episode || "").trim();
-
-  const job = aiJobs.get(jobId);
-  if (!job) return sendJson(res, 404, { ok: false, error: "AI job not found" });
-  if (job.status === "cancelled") {
-    return sendJson(res, 409, { ok: false, code: "JOB_CANCELLED", error: "AI job was cancelled from UI" });
-  }
-  if (job.status !== "running") {
-    return sendJson(res, 409, { ok: false, error: `AI job is not running (${job.status})` });
-  }
-  if (workerId && job.claimed_by && workerId !== job.claimed_by) {
-    return sendJson(res, 403, { ok: false, error: `Job claimed by ${job.claimed_by}` });
-  }
-  if (workerId) recordWorkerHeartbeat({ ...body, worker_id: workerId, model: job.claimed_model });
-
-  if (course !== job.course || !job.episode_ids.includes(episodeId)) {
-    return sendJson(res, 400, {
-      ok: false,
-      error: `Tập ${course}/${episodeId} không thuộc phạm vi AI job "${jobId}".`,
-    });
-  }
-
-  const epDir = safeResolve(WORKSPACE_ROOT, [course, "episodes", episodeId]);
-  const scriptPath = safeResolve(WORKSPACE_ROOT, [course, "episodes", episodeId, "script.json"]);
-  const notesPath = safeResolve(WORKSPACE_ROOT, [course, "episodes", episodeId, "notes.md"]);
-  if (!epDir || !scriptPath || !notesPath) {
-    return sendJson(res, 403, { ok: false, error: "Forbidden path" });
-  }
-
-  let scriptJson = body.script_json ?? body.scriptJson ?? null;
-  if (typeof scriptJson === "string") {
-    try {
-      scriptJson = JSON.parse(scriptJson);
+      body = await readJsonBody(req, 4 * 1024 * 1024);
     } catch (err) {
-      return sendJson(res, 400, { ok: false, error: `Invalid script_json string: ${err.message}` });
-    }
-  }
-  if (!scriptJson) {
-    if (!fs.existsSync(scriptPath)) {
       return sendJson(res, 400, {
-        ok: false,
-        error: `Không có payload script_json và cũng chưa thấy file trên đĩa tại ${scriptPath}`,
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32700, message: err.message || "Parse error" },
       });
     }
-    try {
-      scriptJson = JSON.parse(fs.readFileSync(scriptPath, "utf-8"));
-    } catch (err) {
-      return sendJson(res, 400, { ok: false, error: `Lỗi đọc JSON từ đĩa: ${err.message}` });
-    }
-  }
 
-  if (!Array.isArray(scriptJson?.scenes) || scriptJson.scenes.length === 0) {
-    return sendJson(res, 422, {
-      ok: false,
-      code: "SCRIPT_VALIDATION_FAILED",
-      errors: ["script.json must contain a non-empty scenes[] array."],
-      warnings: [],
-    });
-  }
-
-  const validation = validateScriptDiagrams(scriptJson);
-  if (!validation.valid) {
-    return sendJson(res, 422, {
-      ok: false,
-      code: "SCRIPT_VALIDATION_FAILED",
-      errors: validation.errors,
-      warnings: validation.warnings,
-    });
-  }
-
-  fs.mkdirSync(epDir, { recursive: true });
-  writeJsonAtomic(scriptPath, scriptJson);
-
-  let notesMd = body.notes_md ?? body.notesMd;
-  if (notesMd !== undefined && notesMd !== null) {
-    const tmpNotes = `${notesPath}.${process.pid}.tmp`;
-    fs.writeFileSync(tmpNotes, String(notesMd), "utf-8");
-    fs.renameSync(tmpNotes, notesPath);
-  }
-
-  const now = new Date().toISOString();
-  const summaryNote = String(body.summary_note || `Script biên soạn bởi AI (${job.claimed_model || workerId})`).trim();
-  const state = mutateEpisodeStateForJob(
-    course,
-    episodeId,
-    (epState, artifacts) => {
-      epState.scripting = epState.scripting || {};
-      epState.scripting.status = "completed";
-      epState.scripting.started_at = epState.scripting.started_at || now;
-      epState.scripting.completed_at = now;
-      epState.scripting.owner = job.claimed_model || workerId || "Gemini 4 Argon";
-      epState.scripting.notes = summaryNote;
-      epState.production = epState.production || {};
-      if (
-        epState.production.tts_done ||
-        epState.production.video_done ||
-        artifacts.audio_count > 0 ||
-        artifacts.video_file
-      ) {
-        epState.production.stale = true;
-        epState.production.stale_reason = "Kịch bản vừa được AI biên tập lại; cần tạo lại Audio/Video";
-      }
-      if (epState.production.status === "needs_revision") {
-        epState.production.status = "pending";
-      }
-      epState.last_error = null;
-    },
-    {
-      type: "ai_script_submitted",
-      job_id: job.id,
-      owner: job.claimed_model || workerId,
-      message: `Hoàn tất kịch bản & diagram check (${validation.scene_count} visual scenes): ${episodeId}`,
-    }
-  );
-
-  if (!job.completed_episodes.includes(episodeId)) {
-    job.completed_episodes.push(episodeId);
-  }
-  const nextPending = job.episode_ids.find((id) => !job.completed_episodes.includes(id));
-  job.current_episode = nextPending || episodeId;
-  job.progress = Math.min(95, Math.round((job.completed_episodes.length / Math.max(1, job.episode_ids.length)) * 90));
-  job.updated_at = now;
-  appendAiJobLog(job, `Submitted ${episodeId} (${job.completed_episodes.length}/${job.episode_ids.length}).`);
-
-  persistAiQueue();
-  broadcastSse("ai_job_update", { job: sanitizeAiJobForApi(job) });
-  return sendJson(res, 200, {
-    ok: true,
-    episode_id: episodeId,
-    validation,
-    state,
-    job: sanitizeAiJobForApi(job),
-  });
-}
-
-async function handleCompleteAiJob(req, res) {
-  if (!requireLoopback(req, res)) return;
-  let body;
-  try {
-    body = await readJsonBody(req);
-  } catch (err) {
-    return sendJson(res, 400, { ok: false, error: err.message });
-  }
-
-  const jobId = String(body.job_id || "").trim();
-  const workerId = String(body.worker_id || "").trim();
-  const job = aiJobs.get(jobId);
-  if (!job) return sendJson(res, 404, { ok: false, error: "AI job not found" });
-  if (job.status === "cancelled") {
-    return sendJson(res, 409, { ok: false, code: "JOB_CANCELLED", error: "AI job was cancelled from UI" });
-  }
-  if (job.status !== "running") {
-    return sendJson(res, 409, { ok: false, error: `AI job is not running (${job.status})` });
-  }
-  if (workerId && job.claimed_by && workerId !== job.claimed_by) {
-    return sendJson(res, 403, { ok: false, error: `Job claimed by ${job.claimed_by}` });
-  }
-  if (workerId) recordWorkerHeartbeat({ ...body, worker_id: workerId, model: job.claimed_model });
-
-  const missing = job.episode_ids.filter((id) => !job.completed_episodes.includes(id));
-  if (missing.length > 0) {
-    return sendJson(res, 400, {
-      ok: false,
-      error: `Chưa nộp kịch bản cho tất cả tập trong đợt. Còn thiếu: ${missing.join(", ")}`,
-    });
-  }
-
-  const now = new Date().toISOString();
-  releaseAiEpLocks(job);
-
-  const spawned = [];
-  if (job.auto_produce) {
-    for (const epId of job.episode_ids) {
-      const prodRes = enqueueProductionJob({
-        course: job.course,
-        episode: epId,
-        ...(job.render_prefs || {}),
-        mode: job.render_prefs?.mode || "tts_and_render",
-      });
-      if (prodRes.ok && prodRes.job?.id) {
-        spawned.push(prodRes.job.id);
-        appendAiJobLog(job, `Auto-queued production ${prodRes.job.id} for ${epId}.`);
-      } else {
-        appendAiJobLog(job, `Auto-produce skipped for ${epId}: ${prodRes.error}`);
-      }
-    }
-  }
-
-  job.spawned_production_jobs = spawned;
-  job.status = "completed";
-  job.step = "done";
-  job.progress = 100;
-  job.summary = body.summary ? String(body.summary).trim() : `Hoàn tất ${job.episode_ids.length} tập.`;
-  job.completed_at = now;
-  job.updated_at = now;
-  appendAiJobLog(job, job.summary);
-
-  persistAiQueue();
-  broadcastSse("ai_job_update", { job: sanitizeAiJobForApi(job) });
-  return sendJson(res, 200, {
-    ok: true,
-    job: sanitizeAiJobForApi(job),
-    spawned_production_jobs: spawned,
-  });
-}
-
-async function handleFailAiJob(req, res) {
-  if (!requireLoopback(req, res)) return;
-  let body;
-  try {
-    body = await readJsonBody(req);
-  } catch (err) {
-    return sendJson(res, 400, { ok: false, error: err.message });
-  }
-
-  const jobId = String(body.job_id || "").trim();
-  const workerId = String(body.worker_id || "").trim();
-  const job = aiJobs.get(jobId);
-  if (!job) return sendJson(res, 404, { ok: false, error: "AI job not found" });
-  if (workerId) recordWorkerHeartbeat({ ...body, worker_id: workerId, model: job.claimed_model });
-
-  const now = new Date().toISOString();
-  const errText = String(body.error || "Worker reported failure").trim();
-  job.status = "failed";
-  job.step = "error";
-  job.error = errText;
-  job.completed_at = now;
-  job.updated_at = now;
-  appendAiJobLog(job, `Failed: ${errText}`);
-  releaseAiEpLocks(job);
-
-  for (const epId of job.episode_ids) {
-    if (job.completed_episodes.includes(epId)) continue;
-    try {
-      mutateEpisodeStateForJob(
-        job.course,
-        epId,
-        (state) => {
-          if (state.scripting && state.scripting.status !== "completed") {
-            state.scripting.status = "needs_revision";
-            state.last_error = errText;
-          }
-        },
-        { type: "ai_job_failed", job_id: job.id, error: errText }
+    if (Array.isArray(body)) {
+      const results = (await Promise.all(body.map((item) => mcpHandler.processMessage(item)))).filter(
+        (r) => r !== null
       );
-    } catch {
-      // ignore missing course dir
-    }
-  }
-
-  persistAiQueue();
-  broadcastSse("ai_job_update", { job: sanitizeAiJobForApi(job) });
-  return sendJson(res, 200, { ok: true, job: sanitizeAiJobForApi(job) });
-}
-
-function handleGetAiContext(req, res, parsedUrl) {
-  if (!requireLoopback(req, res)) return;
-  const course = String(parsedUrl.searchParams.get("course") || "").trim();
-  if (!/^[A-Za-z0-9_-]+$/.test(course)) {
-    return sendJson(res, 400, { ok: false, error: "Invalid course identifier" });
-  }
-  const courseDir = safeResolve(WORKSPACE_ROOT, [course]);
-  if (!courseDir || !fs.existsSync(path.join(courseDir, "course.json"))) {
-    return sendJson(res, 404, { ok: false, error: `Course "${course}" not found` });
-  }
-
-  const courseJson = loadCourseJson(courseDir);
-  const allMetas = flattenCourseEpisodes(courseJson);
-  const epsParam = String(parsedUrl.searchParams.get("episodes") || "").trim();
-  const filterSet = epsParam
-    ? new Set(epsParam.split(",").map((s) => s.trim()).filter(Boolean))
-    : null;
-  const targetMetas = filterSet ? allMetas.filter((m) => filterSet.has(m.id)) : allMetas;
-  const openRevs = listRevisions(WORKSPACE_ROOT, course, { status: "open" });
-
-  let curriculumMd = "";
-  const curriculumPath = path.join(courseDir, "curriculum.md");
-  if (fs.existsSync(curriculumPath)) {
-    curriculumMd = fs.readFileSync(curriculumPath, "utf-8");
-  }
-
-  const stateDir = path.join(courseDir, "state");
-  const episodes = targetMetas.map((meta) => {
-    const epDir = path.join(courseDir, "episodes", meta.id);
-    const scriptPath = path.join(epDir, "script.json");
-    const notesPath = path.join(epDir, "notes.md");
-    let existingScript = null;
-    if (fs.existsSync(scriptPath)) {
-      try {
-        existingScript = JSON.parse(fs.readFileSync(scriptPath, "utf-8"));
-      } catch {
-        existingScript = null;
+      if (results.length === 0) {
+        res.writeHead(202);
+        res.end();
+        return;
       }
+      return sendJson(res, 200, results);
     }
-    const existingNotes = fs.existsSync(notesPath) ? fs.readFileSync(notesPath, "utf-8") : "";
-    const epState = fs.existsSync(stateDir) ? readEpisodeState(stateDir, meta.id) : null;
-    return {
-      ...meta,
-      state: epState,
-      script_path: scriptPath,
-      notes_path: notesPath,
-      existing_script: existingScript,
-      existing_notes: existingNotes,
-      open_revisions: openRevs.filter((r) => r.episode_id === meta.id),
-    };
-  });
 
-  return sendJson(res, 200, {
-    ok: true,
-    course,
-    course_json: courseJson,
-    curriculum_md: curriculumMd,
-    supported_visual_types: [...SUPPORTED_VISUAL_TYPES],
-    open_revisions: openRevs,
-    episodes,
-  });
+    const resp = await mcpHandler.processMessage(body);
+    if (resp === null) {
+      res.writeHead(202);
+      res.end();
+      return;
+    }
+    return sendJson(res, 200, resp);
+  }
+
+  res.writeHead(405, { "Content-Type": "application/json; charset=utf-8" });
+  res.end(JSON.stringify({ ok: false, error: "Method Not Allowed (use GET or POST /mcp)" }));
 }
-
-async function handleValidateScriptEndpoint(req, res) {
-  if (!requireLoopback(req, res)) return;
-  let body;
-  try {
-    body = await readJsonBody(req);
-  } catch (err) {
-    return sendJson(res, 400, { ok: false, error: err.message });
-  }
-
-  let scriptJson = body.script_json ?? body.scriptJson ?? null;
-  if (typeof scriptJson === "string") {
-    try {
-      scriptJson = JSON.parse(scriptJson);
-    } catch (err) {
-      return sendJson(res, 400, { ok: false, error: `Invalid JSON string: ${err.message}` });
-    }
-  }
-  if (!scriptJson && body.course && (body.episode_id || body.episode)) {
-    const c = String(body.course).trim();
-    const e = String(body.episode_id || body.episode).trim();
-    if (!/^[A-Za-z0-9_-]+$/.test(c) || !/^[A-Za-z0-9_-]+$/.test(e)) {
-      return sendJson(res, 400, { ok: false, error: "Invalid course or episode identifier" });
-    }
-    const sp = safeResolve(WORKSPACE_ROOT, [c, "episodes", e, "script.json"]);
-    if (!sp || !fs.existsSync(sp)) {
-      return sendJson(res, 404, { ok: false, error: `script.json not found for ${c}/${e}` });
-    }
-    scriptJson = JSON.parse(fs.readFileSync(sp, "utf-8"));
-  }
-  if (!scriptJson || typeof scriptJson !== "object") {
-    return sendJson(res, 400, { ok: false, error: "Provide script_json or { course, episode_id }" });
-  }
-  const validation = validateScriptDiagrams(scriptJson);
-  return sendJson(res, 200, { ok: true, validation });
-}
-
-loadAiQueueFromDisk();
-const aiWorkerSweepTimer = setInterval(() => sweepExpiredWorkers({ broadcast: true }), WORKER_SWEEP_INTERVAL_MS);
-if (typeof aiWorkerSweepTimer.unref === "function") aiWorkerSweepTimer.unref();
 
 // --- API Handlers ---
 function handleGetEvents(res, parsedUrl) {
@@ -3288,6 +3341,18 @@ const server = http.createServer((req, res) => {
     return void handleVoiceAssign(req, res);
   }
 
+  if (req.method === "POST" && pathname === "/api/episodes/voice-track/activate") {
+    return void handleVoiceTrackActivate(req, res);
+  }
+
+  if (req.method === "POST" && pathname === "/api/episodes/voice-track/delete") {
+    return void handleVoiceTrackDelete(req, res);
+  }
+
+  if (req.method === "POST" && pathname === "/api/episodes/scene-timings") {
+    return void handleSceneTimings(req, res);
+  }
+
   if (req.method === "GET" && pathname.startsWith("/api/voices/preview-file/")) {
     const filename = pathname.slice("/api/voices/preview-file/".length);
     if (!filename || filename.includes("/") || filename.includes("\\") || filename.includes("..")) {
@@ -3316,64 +3381,12 @@ const server = http.createServer((req, res) => {
     return handleClearFinishedJobs(res);
   }
 
-  if (req.method === "GET" && pathname === "/api/ai/status") {
-    return handleGetAiStatus(res);
+  if (aiBroker.handleRequest(req, res, pathname, parsedUrl)) {
+    return;
   }
 
-  if (req.method === "GET" && pathname === "/api/ai/jobs") {
-    return handleGetAiJobs(res, parsedUrl);
-  }
-
-  if (req.method === "POST" && pathname === "/api/ai/jobs") {
-    return void handleCreateAiJob(req, res);
-  }
-
-  if (req.method === "POST" && pathname === "/api/ai/jobs/cancel") {
-    return void handleCancelAiJob(req, res);
-  }
-
-  if (req.method === "POST" && pathname === "/api/ai/jobs/clear") {
-    return handleClearFinishedAiJobs(res);
-  }
-
-  if (req.method === "POST" && pathname === "/api/ai/worker/heartbeat") {
-    return void handleWorkerHeartbeat(req, res);
-  }
-
-  if (req.method === "POST" && pathname === "/api/ai/worker/wait") {
-    return void handleWorkerWait(req, res);
-  }
-
-  if (req.method === "POST" && pathname === "/api/ai/jobs/poll") {
-    return void handlePollAiJob(req, res);
-  }
-
-  if (req.method === "POST" && pathname === "/api/ai/jobs/claim") {
-    return void handleClaimAiJob(req, res);
-  }
-
-  if (req.method === "POST" && pathname === "/api/ai/jobs/progress") {
-    return void handleProgressAiJob(req, res);
-  }
-
-  if (req.method === "POST" && pathname === "/api/ai/jobs/submit-episode") {
-    return void handleSubmitAiEpisode(req, res);
-  }
-
-  if (req.method === "POST" && pathname === "/api/ai/jobs/complete") {
-    return void handleCompleteAiJob(req, res);
-  }
-
-  if (req.method === "POST" && pathname === "/api/ai/jobs/fail") {
-    return void handleFailAiJob(req, res);
-  }
-
-  if (req.method === "GET" && pathname === "/api/ai/context") {
-    return handleGetAiContext(req, res, parsedUrl);
-  }
-
-  if (req.method === "POST" && pathname === "/api/ai/validate-script") {
-    return void handleValidateScriptEndpoint(req, res);
+  if (pathname === "/mcp") {
+    return void handleMcpHttp(req, res);
   }
 
   if (req.method === "GET" && pathname === "/api/download-video") {

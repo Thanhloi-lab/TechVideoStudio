@@ -14,16 +14,20 @@ Supports providers:
 
 import argparse
 import base64
+import copy
 import hashlib
 import io
 import json
+import math
 import os
 import re
+import shutil
 import socket
 import ssl
 import struct
 import sys
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -1121,6 +1125,858 @@ def process_preview(
     }
 
 
+# ---------------------------------------------------------------------------
+# Multi-Voice Profile Sanitization, Legacy Migration & Subtitle-Cue Alignment
+# ---------------------------------------------------------------------------
+
+_STOPWORDS = frozenset({
+    "la", "cua", "va", "cho", "voi", "cac", "mot", "nhung", "trong", "khi",
+    "nay", "do", "thi", "de", "ban", "ta", "chung", "minh", "nhu", "hay",
+    "hoac", "neu", "ma", "bi", "duoc", "se", "da", "dang", "rat", "ngay",
+    "o", "tai", "tu", "den", "len", "xuong", "ra", "vao", "ve", "sau", "truoc",
+    "the", "and", "for", "with", "to", "in", "of", "a", "an", "is", "are",
+    "on", "or", "by", "as", "at", "it", "be", "this", "that", "from", "into",
+})
+
+
+def sanitize_profile_id(
+    raw_id: str | None,
+    fallback_voice: str | None = None,
+    fallback_provider: str | None = None,
+) -> str:
+    """Sanitize a TTS profile identifier to safe [a-zA-Z0-9_-] directory/filename characters."""
+    candidate = str(raw_id or "").strip()
+    if not candidate:
+        prov = str(fallback_provider or "").strip()
+        voice = str(fallback_voice or "").strip()
+        if prov and voice:
+            candidate = f"{prov}-{voice}"
+        elif voice:
+            candidate = voice
+        elif prov:
+            candidate = prov
+        else:
+            candidate = "default"
+    cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "-", candidate)
+    cleaned = re.sub(r"-{2,}", "-", cleaned).strip("-_")
+    if not cleaned:
+        return "default"
+    return cleaned[:80]
+
+
+def _write_json_atomic(target: Path, payload: dict[str, Any]) -> None:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(f"{target.name}.tmp.{os.getpid()}")
+    tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(tmp, target)
+
+
+def _clamp01(val: Any, fallback: float = 0.0) -> float:
+    try:
+        num = float(val)
+        if not math.isfinite(num):
+            return max(0.0, min(1.0, float(fallback)))
+        return max(0.0, min(1.0, num))
+    except (TypeError, ValueError):
+        return max(0.0, min(1.0, float(fallback)))
+
+
+def _round_p(val: float) -> float:
+    return round(max(0.0, min(1.0, float(val))), 3)
+
+
+def _fold_accents(text: str) -> str:
+    s = str(text or "").replace("đ", "d").replace("Đ", "D")
+    nfd = unicodedata.normalize("NFD", s)
+    return "".join(ch for ch in nfd if unicodedata.category(ch) != "Mn")
+
+
+def _normalize_for_substring(text: str) -> str:
+    folded = _fold_accents(str(text or "")).lower()
+    folded = re.sub(r"[^a-z0-9]+", " ", folded)
+    return re.sub(r"\s+", " ", folded).strip()
+
+
+def _tokenize_text(text: str) -> tuple[list[str], list[str]]:
+    """Return (exact_tokens, folded_tokens) with punctuation split and stopwords filtered."""
+    raw = str(text or "").lower()
+    # Keep Vietnamese letters & digits; split punctuation like ':', '-', '_', '/'
+    raw_cleaned = re.sub(r"[^\w\s]", " ", raw, flags=re.UNICODE).replace("_", " ")
+    exact_tokens: list[str] = []
+    folded_tokens: list[str] = []
+    for tok in raw_cleaned.split():
+        if not tok:
+            continue
+        ftok = _fold_accents(tok)
+        if not ftok:
+            continue
+        if ftok in _STOPWORDS:
+            continue
+        if len(ftok) < 2 and not ftok.isdigit():
+            continue
+        exact_tokens.append(tok)
+        folded_tokens.append(ftok)
+    return exact_tokens, folded_tokens
+
+
+def extract_scene_timings(scene: dict[str, Any]) -> dict[str, Any]:
+    """Extract a normalized snapshot of step-timing fields from scene['visual_data']."""
+    vdata = scene.get("visual_data")
+    if not isinstance(vdata, dict):
+        return {}
+
+    timings: dict[str, Any] = {}
+
+    def _extract_contiguous_list(key: str, default_start_offset: float = 0.0, default_span: float = 1.0) -> None:
+        arr = vdata.get(key)
+        if not isinstance(arr, list) or not arr:
+            return
+        count = len(arr)
+        out: list[dict[str, Any]] = []
+        for idx, item in enumerate(arr):
+            if not isinstance(item, dict):
+                continue
+            fb_start = default_start_offset + (idx / max(1, count)) * default_span
+            p_start = _clamp01(item.get("progress_start", item.get("progress_at")), fb_start)
+            fb_end = (
+                _clamp01(arr[idx + 1].get("progress_start", arr[idx + 1].get("progress_at")),
+                         default_start_offset + ((idx + 1) / max(1, count)) * default_span)
+                if idx + 1 < count and isinstance(arr[idx + 1], dict)
+                else (1.0 if default_start_offset == 0.0 and default_span == 1.0 else min(1.0, default_start_offset + default_span))
+            )
+            p_end = _clamp01(item.get("progress_end"), fb_end)
+            if p_end <= p_start:
+                p_end = min(1.0, round(p_start + 0.04, 3))
+            entry: dict[str, Any] = {
+                "progress_start": _round_p(p_start),
+                "progress_end": _round_p(p_end),
+            }
+            if "progress_at" in item:
+                entry["progress_at"] = _round_p(_clamp01(item.get("progress_at"), p_start))
+            out.append(entry)
+        if out:
+            timings[key] = out
+
+    def _extract_event_list(key: str, base_start: float = 0.06, span: float = 0.68) -> None:
+        arr = vdata.get(key)
+        if not isinstance(arr, list) or not arr:
+            return
+        count = len(arr)
+        out: list[dict[str, Any]] = []
+        for idx, item in enumerate(arr):
+            if not isinstance(item, dict):
+                continue
+            fb_start = base_start + (idx / max(1, count)) * span
+            raw_start = item.get("progress_start", item.get("progress_at", item.get("show_at_progress")))
+            p_start = _clamp01(raw_start, fb_start)
+            entry: dict[str, Any] = {"progress_start": _round_p(p_start)}
+            if "progress_at" in item:
+                entry["progress_at"] = _round_p(_clamp01(item.get("progress_at"), p_start))
+            if "progress_end" in item:
+                entry["progress_end"] = _round_p(_clamp01(item.get("progress_end"), min(1.0, p_start + 0.1)))
+            if "show_at_progress" in item:
+                entry["show_at_progress"] = _round_p(_clamp01(item.get("show_at_progress"), p_start))
+            out.append(entry)
+        if out:
+            timings[key] = out
+
+    # Contiguous step templates
+    _extract_contiguous_list("flow_steps", 0.0, 1.0)
+    _extract_contiguous_list("highlight_phases", 0.0, 1.0)
+    _extract_contiguous_list("steps", 0.0, 1.0)
+    _extract_contiguous_list("milestones", 0.06, 0.86)
+
+    # Event-based lists across code_cli, comparison_matrix, exam_tips, kpi_metrics
+    _extract_event_list("terminal_commands", 0.25, 0.60)
+    _extract_event_list("rows", 0.08, 0.62)
+    _extract_event_list("comparisons", 0.0, 0.65)
+    _extract_event_list("cards", 0.06, 0.36)
+    _extract_event_list("metrics", 0.06, 0.36)
+    _extract_event_list("bars", 0.40, 0.35)
+
+    # Single reveal objects
+    for obj_key, default_at in (
+        ("quiz", 0.68),
+        ("callout", 0.80),
+        ("takeaway", 0.78),
+        ("chart", 0.40),
+        ("alert_stamp", 0.72),
+    ):
+        obj = vdata.get(obj_key)
+        if isinstance(obj, dict):
+            timings[obj_key] = {
+                "show_at_progress": _round_p(_clamp01(obj.get("show_at_progress"), default_at))
+            }
+
+    return timings
+
+
+def ensure_base_timings(scene: dict[str, Any]) -> dict[str, Any]:
+    """Snapshot original AI timings into scene['_base_timings'] if not yet saved."""
+    existing = scene.get("_base_timings")
+    if isinstance(existing, dict) and existing:
+        return existing
+    snapshot = extract_scene_timings(scene)
+    scene["_base_timings"] = copy.deepcopy(snapshot)
+    return scene["_base_timings"]
+
+
+def apply_scene_timings(scene: dict[str, Any], timings: dict[str, Any] | None) -> None:
+    """Apply a timings dictionary onto scene['visual_data'] safely."""
+    if not isinstance(timings, dict) or not timings:
+        return
+    vdata = scene.get("visual_data")
+    if not isinstance(vdata, dict):
+        return
+
+    for list_key in (
+        "flow_steps",
+        "highlight_phases",
+        "steps",
+        "milestones",
+        "terminal_commands",
+        "rows",
+        "comparisons",
+        "cards",
+        "metrics",
+        "bars",
+    ):
+        t_arr = timings.get(list_key)
+        v_arr = vdata.get(list_key)
+        if not isinstance(t_arr, list) or not isinstance(v_arr, list):
+            continue
+        for idx in range(min(len(t_arr), len(v_arr))):
+            t_item = t_arr[idx]
+            v_item = v_arr[idx]
+            if not isinstance(t_item, dict) or not isinstance(v_item, dict):
+                continue
+            if "progress_start" in t_item or "progress_at" in t_item:
+                p_start = _round_p(_clamp01(t_item.get("progress_start", t_item.get("progress_at")), 0.0))
+                v_item["progress_start"] = p_start
+                if "progress_at" in v_item or "progress_at" in t_item:
+                    v_item["progress_at"] = _round_p(_clamp01(t_item.get("progress_at"), p_start))
+            if "progress_end" in t_item:
+                v_item["progress_end"] = _round_p(_clamp01(t_item.get("progress_end"), 1.0))
+            if "show_at_progress" in t_item:
+                v_item["show_at_progress"] = _round_p(_clamp01(t_item.get("show_at_progress"), 0.5))
+
+    for obj_key in ("quiz", "callout", "takeaway", "chart", "alert_stamp"):
+        t_obj = timings.get(obj_key)
+        v_obj = vdata.get(obj_key)
+        if isinstance(t_obj, dict) and isinstance(v_obj, dict) and "show_at_progress" in t_obj:
+            v_obj["show_at_progress"] = _round_p(_clamp01(t_obj.get("show_at_progress"), 0.68))
+
+
+def _extract_item_cues(item: dict[str, Any], list_key: str) -> list[tuple[str, float]]:
+    """Collect weighted (text, weight) cues from a visual step/item."""
+    cues: list[tuple[str, float]] = []
+
+    def _add(val: Any, weight: float) -> None:
+        if isinstance(val, str) and val.strip():
+            cues.append((val.strip(), weight))
+
+    # Highest priority: explicit AI/author cue_text
+    _add(item.get("cue_text"), 3.2)
+
+    # Primary structural headings & commands
+    for field in ("heading", "title", "label", "command", "cmd", "badge_text", "callout", "question", "criterion"):
+        _add(item.get(field), 1.6)
+
+    # Secondary descriptive cues
+    for field in (
+        "description",
+        "explanation",
+        "action",
+        "tip",
+        "wrong",
+        "right",
+        "value",
+        "delta_text",
+        "time_label",
+        "packet_label",
+        "annotate_text",
+        "unit",
+    ):
+        _add(item.get(field), 1.0)
+
+    # Console setup fields (prioritize highlighted fields)
+    if list_key == "steps" and isinstance(item.get("fields"), list):
+        for fld in item["fields"]:
+            if not isinstance(fld, dict):
+                continue
+            w = 1.3 if fld.get("highlight") else 0.7
+            _add(fld.get("label"), w)
+            _add(fld.get("selected"), w)
+            _add(fld.get("value"), w * 0.8)
+
+    # Comparison matrix row cell values
+    if list_key == "rows" and isinstance(item.get("values"), dict):
+        for cell in item["values"].values():
+            if isinstance(cell, dict):
+                _add(cell.get("text"), 0.8)
+
+    # Highlight phase lines/code_override summary if no callout/cue_text
+    if list_key == "highlight_phases" and not cues:
+        _add(item.get("code_override") if isinstance(item.get("code_override"), str) else "", 0.8)
+
+    return cues
+
+
+def _prepare_sub_entries(subtitles: list[dict[str, Any]], scene_duration: float) -> tuple[list[dict[str, Any]], float]:
+    valid_subs = [
+        s for s in (subtitles or [])
+        if isinstance(s, dict) and str(s.get("text") or "").strip()
+    ]
+    if not valid_subs:
+        return [], max(0.0, float(scene_duration or 0.0))
+
+    dur = float(scene_duration or 0.0)
+    if dur <= 0.0:
+        dur = max(float(s.get("end_sec") or s.get("start_sec") or 0.0) for s in valid_subs)
+    if dur <= 0.0:
+        return [], 0.0
+
+    entries: list[dict[str, Any]] = []
+    for idx, sub in enumerate(valid_subs):
+        txt = str(sub.get("text") or "").strip()
+        start_sec = max(0.0, float(sub.get("start_sec") or 0.0))
+        end_sec = max(start_sec, float(sub.get("end_sec") or start_sec))
+        exact_toks, folded_toks = _tokenize_text(txt)
+        entries.append({
+            "index": idx,
+            "text": txt,
+            "norm_str": _normalize_for_substring(txt),
+            "exact_set": set(exact_toks),
+            "folded_set": set(folded_toks),
+            "start_norm": _clamp01(start_sec / dur),
+            "end_norm": _clamp01(end_sec / dur),
+        })
+    return entries, dur
+
+
+def _score_cues_against_sub(cues: list[tuple[str, float]], sub_entry: dict[str, Any]) -> tuple[float, float]:
+    """Return (match_score, estimated_progress_in_0_to_1) for cues against one subtitle entry."""
+    if not cues or not sub_entry["folded_set"]:
+        return 0.0, sub_entry["start_norm"]
+
+    total_score = 0.0
+    total_query_weight = 0.0
+    best_char_pos: int | None = None
+    best_char_weight = -1.0
+    sub_str = sub_entry["norm_str"]
+
+    for cue_text, weight in cues:
+        exact_q, folded_q = _tokenize_text(cue_text)
+        if not folded_q:
+            continue
+
+        seen_f: set[str] = set()
+        unique_folded: list[str] = []
+        for ft in folded_q:
+            if ft not in seen_f:
+                seen_f.add(ft)
+                unique_folded.append(ft)
+
+        total_query_weight += weight * len(unique_folded)
+        cue_hits = 0.0
+
+        for et, ft in zip(exact_q, folded_q):
+            if ft in sub_entry["folded_set"]:
+                # Longer technical terms/acronyms carry slightly higher specificity
+                len_bonus = 1.35 if len(ft) >= 5 else 1.0
+                accent_bonus = 1.15 if et in sub_entry["exact_set"] else 1.0
+                cue_hits += weight * len_bonus * accent_bonus
+                pos = sub_str.find(ft)
+                if pos >= 0 and (weight > best_char_weight or (weight == best_char_weight and (best_char_pos is None or pos < best_char_pos))):
+                    best_char_pos = pos
+                    best_char_weight = weight
+
+        # Bigram phrase bonus for multi-word cues
+        if len(folded_q) >= 2:
+            for k in range(len(folded_q) - 1):
+                bigram = f"{folded_q[k]} {folded_q[k + 1]}"
+                if len(bigram) >= 5 and bigram in sub_str:
+                    cue_hits += weight * 1.8
+                    bpos = sub_str.find(bigram)
+                    if bpos >= 0 and weight >= best_char_weight:
+                        best_char_pos = bpos
+                        best_char_weight = weight + 0.5
+
+        total_score += cue_hits
+
+    if total_score <= 0.0:
+        return 0.0, sub_entry["start_norm"]
+
+    norm_factor = math.sqrt(max(1.0, total_query_weight))
+    final_score = total_score / norm_factor
+
+    cue_pos = sub_entry["start_norm"]
+    if best_char_pos is not None and len(sub_str) > 20:
+        char_ratio = best_char_pos / float(len(sub_str))
+        if char_ratio > 0.30:
+            span = max(0.0, sub_entry["end_norm"] - sub_entry["start_norm"])
+            cue_pos = sub_entry["start_norm"] + min(0.75, char_ratio * 0.85) * span
+
+    return final_score, _clamp01(cue_pos)
+
+
+def _align_sequence_starts(
+    items_cues: list[list[tuple[str, float]]],
+    base_starts: list[float],
+    sub_entries: list[dict[str, Any]],
+    pin_first_to_zero: bool,
+    min_gap: float,
+    max_end: float,
+) -> list[float]:
+    """Monotonically align step start positions across subtitle entries with proportional fallback."""
+    k_count = len(items_cues)
+    if k_count == 0:
+        return []
+
+    safe_min_gap = min(min_gap, (max_end * 0.85) / max(1, k_count))
+
+    def _enforce_monotonic(raw_starts: list[float]) -> list[float]:
+        out = [_clamp01(v) for v in raw_starts]
+        if pin_first_to_zero:
+            out[0] = 0.0
+        for idx in range(1, k_count):
+            if out[idx] < out[idx - 1] + safe_min_gap:
+                out[idx] = out[idx - 1] + safe_min_gap
+        upper = min(max_end, 1.0 - safe_min_gap if pin_first_to_zero else max_end)
+        if out[-1] > upper:
+            out[-1] = upper
+        for idx in range(k_count - 2, -1, -1):
+            if out[idx] > out[idx + 1] - safe_min_gap:
+                out[idx] = out[idx + 1] - safe_min_gap
+        if pin_first_to_zero:
+            out[0] = 0.0
+            for idx in range(1, k_count):
+                if out[idx] < out[idx - 1] + safe_min_gap:
+                    out[idx] = out[idx - 1] + safe_min_gap
+        else:
+            if out[0] < 0.0:
+                out[0] = 0.0
+                for idx in range(1, k_count):
+                    if out[idx] < out[idx - 1] + safe_min_gap:
+                        out[idx] = out[idx - 1] + safe_min_gap
+        return [_round_p(v) for v in out]
+
+    if not sub_entries:
+        return _enforce_monotonic(base_starts)
+
+    m_count = len(sub_entries)
+    scores: list[list[float]] = []
+    cue_times: list[list[float]] = []
+    has_match: list[bool] = []
+
+    for i in range(k_count):
+        row_s: list[float] = []
+        row_t: list[float] = []
+        best_s = 0.0
+        for j in range(m_count):
+            sc, tm = _score_cues_against_sub(items_cues[i], sub_entries[j])
+            row_s.append(sc)
+            row_t.append(tm)
+            if sc > best_s:
+                best_s = sc
+        scores.append(row_s)
+        cue_times.append(row_t)
+        has_match.append(best_s >= 0.35)
+
+    # Identify items that can be anchored via cue match; if pin_first_to_zero, index 0 is anchored at 0.0
+    anchored_indices = [i for i in range(k_count) if has_match[i] and not (pin_first_to_zero and i == 0)]
+
+    resolved: list[float | None] = [None] * k_count
+    if pin_first_to_zero:
+        resolved[0] = 0.0
+
+    if anchored_indices:
+        # Monotonic DP over anchored_indices -> subtitle index j in 0..M-1
+        a_len = len(anchored_indices)
+        dp = [[-1e9] * m_count for _ in range(a_len)]
+        back = [[-1] * m_count for _ in range(a_len)]
+
+        first_i = anchored_indices[0]
+        for j in range(m_count):
+            dist_pen = 0.15 * abs(cue_times[first_i][j] - base_starts[first_i])
+            dp[0][j] = scores[first_i][j] - dist_pen
+
+        for a_idx in range(1, a_len):
+            cur_i = anchored_indices[a_idx]
+            prev_i = anchored_indices[a_idx - 1]
+            for j in range(m_count):
+                dist_pen = 0.15 * abs(cue_times[cur_i][j] - base_starts[cur_i])
+                cur_gain = scores[cur_i][j] - dist_pen
+                best_prev_val = -1e9
+                best_prev_j = 0
+                for pj in range(j + 1):
+                    # Slight preference for advancing subtitle index unless intra-subtitle position advances
+                    same_sub_pen = 0.0
+                    if pj == j:
+                        if cue_times[cur_i][j] <= cue_times[prev_i][pj] + 0.005:
+                            same_sub_pen = 0.35
+                        else:
+                            same_sub_pen = 0.08
+                    cand = dp[a_idx - 1][pj] + cur_gain - same_sub_pen
+                    if cand > best_prev_val:
+                        best_prev_val = cand
+                        best_prev_j = pj
+                dp[a_idx][j] = best_prev_val
+                back[a_idx][j] = best_prev_j
+
+        best_last_j = max(range(m_count), key=lambda j: dp[a_len - 1][j])
+        chosen_js = [0] * a_len
+        cur_j = best_last_j
+        for a_idx in range(a_len - 1, -1, -1):
+            chosen_js[a_idx] = cur_j
+            if a_idx > 0:
+                cur_j = back[a_idx][cur_j]
+
+        for a_idx, i in enumerate(anchored_indices):
+            j = chosen_js[a_idx]
+            if scores[i][j] >= 0.35:
+                resolved[i] = cue_times[i][j]
+
+    # Interpolate any unanchored items proportionally using _base_timings
+    i = 0
+    while i < k_count:
+        if resolved[i] is not None:
+            i += 1
+            continue
+        left_idx = i - 1
+        right_idx = i + 1
+        while right_idx < k_count and resolved[right_idx] is None:
+            right_idx += 1
+
+        left_t = resolved[left_idx] if left_idx >= 0 and resolved[left_idx] is not None else 0.0
+        right_t = resolved[right_idx] if right_idx < k_count and resolved[right_idx] is not None else max_end
+
+        left_b = base_starts[left_idx] if left_idx >= 0 else 0.0
+        right_b = base_starts[right_idx] if right_idx < k_count else max_end
+        base_span = right_b - left_b
+        target_span = max(0.0, right_t - left_t)
+        gap_count = right_idx - left_idx
+
+        for fill_idx in range(max(0, left_idx + 1), min(k_count, right_idx)):
+            if base_span > 1e-4:
+                ratio = (base_starts[fill_idx] - left_b) / base_span
+            else:
+                ratio = (fill_idx - left_idx) / float(max(1, gap_count))
+            ratio = max(0.0, min(1.0, ratio))
+            resolved[fill_idx] = left_t + ratio * target_span
+
+        i = right_idx
+
+    final_raw = [v if v is not None else base_starts[idx] for idx, v in enumerate(resolved)]
+    return _enforce_monotonic(final_raw)
+
+
+def align_scene_timings(
+    scene: dict[str, Any],
+    subtitles: list[dict[str, Any]],
+    scene_duration: float,
+    apply_to_scene: bool = True,
+) -> dict[str, Any]:
+    """Align scene step timings to real TTS subtitle cues using _base_timings as reference."""
+    base_timings = copy.deepcopy(ensure_base_timings(scene))
+    vdata = scene.get("visual_data")
+    if not isinstance(vdata, dict):
+        return {}
+
+    sub_entries, dur = _prepare_sub_entries(subtitles, scene_duration)
+    if not sub_entries or dur <= 0.0:
+        if apply_to_scene:
+            apply_scene_timings(scene, base_timings)
+        return base_timings
+
+    new_timings: dict[str, Any] = {}
+
+    # 1. Contiguous step templates: flow_steps, highlight_phases, steps, milestones
+    for key, pin_zero in (
+        ("flow_steps", True),
+        ("highlight_phases", True),
+        ("steps", True),
+        ("milestones", False),
+    ):
+        arr = vdata.get(key)
+        if not isinstance(arr, list) or not arr:
+            continue
+        base_arr = base_timings.get(key) or []
+        base_starts = [
+            float(base_arr[idx].get("progress_start", idx / max(1, len(arr))))
+            if idx < len(base_arr) else (idx / max(1, len(arr)))
+            for idx in range(len(arr))
+        ]
+        # Pin milestones[0] to 0.0 only if _base_timings started at ~0.0
+        effective_pin = pin_zero or (bool(base_starts) and base_starts[0] <= 0.015)
+        cues = [_extract_item_cues(item if isinstance(item, dict) else {}, key) for item in arr]
+        max_last_start = 0.88 if (key == "milestones" and isinstance(vdata.get("callout"), dict)) else 0.94
+        starts = _align_sequence_starts(
+            items_cues=cues,
+            base_starts=base_starts,
+            sub_entries=sub_entries,
+            pin_first_to_zero=effective_pin,
+            min_gap=0.06,
+            max_end=max_last_start,
+        )
+        t_list: list[dict[str, Any]] = []
+        for idx in range(len(arr)):
+            p_start = starts[idx]
+            p_end = starts[idx + 1] if idx + 1 < len(arr) else 1.0
+            entry: dict[str, Any] = {
+                "progress_start": _round_p(p_start),
+                "progress_end": _round_p(p_end),
+            }
+            orig_item = arr[idx] if isinstance(arr[idx], dict) else {}
+            if "progress_at" in orig_item or (idx < len(base_arr) and "progress_at" in base_arr[idx]):
+                entry["progress_at"] = _round_p(p_start)
+            t_list.append(entry)
+        new_timings[key] = t_list
+
+    # 2. Event-based lists: terminal_commands, rows, comparisons, cards, metrics, bars
+    event_configs = [
+        ("terminal_commands", 0.94),
+        ("rows", 0.84 if isinstance(vdata.get("takeaway"), dict) else 0.92),
+        ("comparisons", 0.82 if isinstance(vdata.get("quiz"), dict) else 0.92),
+        ("cards", 0.65 if isinstance(vdata.get("chart"), dict) else 0.88),
+        ("metrics", 0.88),
+        ("bars", 0.90),
+    ]
+    for key, max_end in event_configs:
+        arr = vdata.get(key)
+        if not isinstance(arr, list) or not arr:
+            continue
+        base_arr = base_timings.get(key) or []
+        base_starts = [
+            float(base_arr[idx].get("progress_start", idx / max(1, len(arr)) * max_end))
+            if idx < len(base_arr) else (idx / max(1, len(arr)) * max_end)
+            for idx in range(len(arr))
+        ]
+        cues = [_extract_item_cues(item if isinstance(item, dict) else {}, key) for item in arr]
+        starts = _align_sequence_starts(
+            items_cues=cues,
+            base_starts=base_starts,
+            sub_entries=sub_entries,
+            pin_first_to_zero=False,
+            min_gap=0.04,
+            max_end=max_end,
+        )
+        t_list = []
+        for idx, p_start in enumerate(starts):
+            orig_item = arr[idx] if isinstance(arr[idx], dict) else {}
+            b_item = base_arr[idx] if idx < len(base_arr) else {}
+            entry = {"progress_start": _round_p(p_start)}
+            if "progress_at" in orig_item or "progress_at" in b_item:
+                entry["progress_at"] = _round_p(p_start)
+            if "progress_end" in orig_item or "progress_end" in b_item:
+                next_p = starts[idx + 1] if idx + 1 < len(starts) else 1.0
+                entry["progress_end"] = _round_p(max(p_start + 0.04, next_p))
+            if "show_at_progress" in orig_item or "show_at_progress" in b_item:
+                entry["show_at_progress"] = _round_p(p_start)
+            t_list.append(entry)
+        new_timings[key] = t_list
+
+    # 3. Single reveal objects: quiz, callout, takeaway, chart, alert_stamp
+    def _align_single_reveal(obj_key: str, floor_t: float, default_at: float) -> None:
+        obj = vdata.get(obj_key)
+        if not isinstance(obj, dict):
+            return
+        base_obj = base_timings.get(obj_key) or {}
+        base_at = float(base_obj.get("show_at_progress", default_at))
+        cues: list[tuple[str, float]] = []
+        for f, w in (
+            ("cue_text", 3.2),
+            ("question", 1.6),
+            ("title", 1.5),
+            ("text", 1.4),
+            ("explanation", 1.0),
+            ("unit", 0.8),
+        ):
+            val = obj.get(f)
+            if isinstance(val, str) and val.strip():
+                cues.append((val.strip(), w))
+
+        best_sc = 0.0
+        best_tm = max(floor_t, base_at)
+        for sub in sub_entries:
+            sc, tm = _score_cues_against_sub(cues, sub)
+            if tm >= floor_t - 0.02 and sc > best_sc and sc >= 0.35:
+                best_sc = sc
+                best_tm = max(floor_t, tm)
+
+        chosen = best_tm if best_sc >= 0.35 else max(floor_t, base_at)
+        new_timings[obj_key] = {"show_at_progress": _round_p(max(floor_t, min(0.94, chosen)))}
+
+    if isinstance(vdata.get("quiz"), dict):
+        cmp_list = new_timings.get("comparisons") or []
+        floor_q = (cmp_list[-1]["progress_start"] + 0.05) if cmp_list else 0.50
+        _align_single_reveal("quiz", min(0.90, floor_q), 0.68)
+
+    if isinstance(vdata.get("callout"), dict):
+        ms_list = new_timings.get("milestones") or []
+        floor_c = (ms_list[-1]["progress_start"] + 0.04) if ms_list else 0.65
+        _align_single_reveal("callout", min(0.90, floor_c), 0.80)
+
+    if isinstance(vdata.get("takeaway"), dict):
+        rows_list = new_timings.get("rows") or []
+        floor_tk = (rows_list[-1]["progress_start"] + 0.04) if rows_list else 0.65
+        _align_single_reveal("takeaway", min(0.90, floor_tk), 0.78)
+
+    if isinstance(vdata.get("chart"), dict):
+        cards_list = new_timings.get("cards") or []
+        floor_ch = (cards_list[-1]["progress_start"] + 0.05) if cards_list else 0.30
+        _align_single_reveal("chart", min(0.85, floor_ch), 0.40)
+
+    if isinstance(vdata.get("alert_stamp"), dict):
+        chart_t = new_timings.get("chart", {}).get("show_at_progress", 0.0)
+        cards_list = new_timings.get("cards") or []
+        cards_last = (cards_list[-1]["progress_start"] + 0.05) if cards_list else 0.0
+        floor_al = max(chart_t + 0.05 if chart_t else 0.0, cards_last, 0.45)
+        _align_single_reveal("alert_stamp", min(0.90, floor_al), 0.72)
+
+    if apply_to_scene:
+        apply_scene_timings(scene, new_timings)
+    return new_timings
+
+
+def _build_srt_from_voice_track(script: dict[str, Any], scene_data: dict[str, Any]) -> str:
+    srt_entries: list[str] = []
+    srt_idx = 1
+    episode_cursor = 0.0
+    for scene in script.get("scenes", []):
+        sid = scene.get("id")
+        sdata = scene_data.get(sid) if isinstance(scene_data, dict) else None
+        subs = (sdata.get("subtitles") if isinstance(sdata, dict) else None) or scene.get("subtitles") or []
+        dur = float((sdata.get("duration_sec") if isinstance(sdata, dict) else None) or scene.get("duration_sec") or 0.0)
+        for sub in subs:
+            if not isinstance(sub, dict):
+                continue
+            start_sec = float(sub.get("start_sec") or 0.0)
+            end_sec = float(sub.get("end_sec") or start_sec)
+            txt = str(sub.get("text") or "").strip()
+            if not txt:
+                continue
+            srt_entries.append(
+                f"{srt_idx}\n"
+                f"{format_srt_time(episode_cursor + start_sec)} --> "
+                f"{format_srt_time(episode_cursor + end_sec)}\n"
+                f"{txt}\n"
+            )
+            srt_idx += 1
+        episode_cursor += dur
+    return "\n".join(srt_entries)
+
+
+def migrate_legacy_voice_track(script: dict[str, Any], ep_dir: Path) -> str | None:
+    """If an episode has legacy root audio/<scene_id>.<ext> files without voice_tracks, migrate them cleanly."""
+    voice_tracks = script.get("voice_tracks")
+    if isinstance(voice_tracks, dict) and voice_tracks:
+        return script.get("active_voice_track")
+
+    audio_dir = ep_dir / "audio"
+    scenes = script.get("scenes") if isinstance(script.get("scenes"), list) else []
+    legacy_found = False
+    for sc in scenes:
+        if not isinstance(sc, dict):
+            continue
+        sid = sc.get("id")
+        rel = str(sc.get("audio_file") or "")
+        if rel:
+            rel_path = ep_dir / rel
+            # Legacy path looks like audio/<scene_id>.<ext> (direct child of audio/)
+            if rel_path.exists() and rel_path.is_file() and rel_path.parent.resolve() == audio_dir.resolve():
+                legacy_found = True
+                break
+        if sid:
+            for ext in ("mp3", "wav"):
+                cand = audio_dir / f"{sid}.{ext}"
+                if cand.exists() and cand.is_file():
+                    legacy_found = True
+                    break
+        if legacy_found:
+            break
+
+    if not legacy_found:
+        return None
+
+    used_provs = script.get("tts_provider_used")
+    prov_hint = used_provs[0] if isinstance(used_provs, list) and used_provs else script.get("tts_provider")
+    legacy_id = sanitize_profile_id(
+        script.get("tts_profile"),
+        fallback_voice=script.get("tts_voice"),
+        fallback_provider=prov_hint,
+    )
+
+    target_dir = audio_dir / legacy_id
+    target_dir.mkdir(parents=True, exist_ok=True)
+    scene_data: dict[str, Any] = {}
+    total_dur = 0.0
+
+    for sc in scenes:
+        if not isinstance(sc, dict) or not sc.get("id"):
+            continue
+        sid = sc["id"]
+        ensure_base_timings(sc)
+        rel = str(sc.get("audio_file") or "")
+        src_path: Path | None = None
+        if rel:
+            cand = ep_dir / rel
+            if cand.exists() and cand.is_file():
+                src_path = cand
+        if src_path is None:
+            for ext in ("mp3", "wav"):
+                cand = audio_dir / f"{sid}.{ext}"
+                if cand.exists() and cand.is_file():
+                    src_path = cand
+                    break
+
+        new_rel = rel
+        if src_path is not None:
+            ext = src_path.suffix.lstrip(".").lower() or "mp3"
+            dst_path = target_dir / f"{sid}.{ext}"
+            if src_path.resolve() != dst_path.resolve():
+                shutil.move(str(src_path), str(dst_path))
+            new_rel = f"audio/{legacy_id}/{sid}.{ext}"
+            sc["audio_file"] = new_rel
+
+        sc_dur = float(sc.get("duration_sec") or 0.0)
+        total_dur += sc_dur
+        sc_subs = sc.get("subtitles") if isinstance(sc.get("subtitles"), list) else []
+        sc_timings = extract_scene_timings(sc)
+        scene_data[sid] = {
+            "audio_file": new_rel,
+            "duration_sec": round(sc_dur, 3),
+            "subtitles": sc_subs,
+            "timings": sc_timings,
+        }
+
+    legacy_srt_name = f"subtitles.{legacy_id}.srt"
+    root_srt = ep_dir / "subtitles.srt"
+    legacy_srt = ep_dir / legacy_srt_name
+    if root_srt.exists() and root_srt.is_file():
+        shutil.copy2(str(root_srt), str(legacy_srt))
+    else:
+        srt_text = _build_srt_from_voice_track(script, scene_data)
+        if srt_text:
+            legacy_srt.write_text(srt_text, encoding="utf-8")
+            root_srt.write_text(srt_text, encoding="utf-8")
+
+    script["voice_tracks"] = {
+        legacy_id: {
+            "tts_profile": script.get("tts_profile") or legacy_id,
+            "tts_provider": prov_hint or "edge",
+            "tts_voice": script.get("tts_voice") or "",
+            "tts_rate": script.get("tts_rate") or "+0%",
+            "subtitles_srt": legacy_srt_name,
+            "total_duration_sec": round(float(script.get("total_duration_sec") or total_dur), 3),
+            "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "scene_data": scene_data,
+        }
+    }
+    script["active_voice_track"] = legacy_id
+    return legacy_id
+
+
 def process_episode(
     script_path: Path,
     voices_cfg: dict[str, Any],
@@ -1156,15 +2012,30 @@ def process_episode(
         cli_pitch=cli_pitch,
     )
 
+    # Preserve existing voice tracks & migrate legacy root audio/ files before generating new track
+    migrate_legacy_voice_track(script, ep_dir)
+    if not isinstance(script.get("voice_tracks"), dict):
+        script["voice_tracks"] = {}
+
+    safe_profile_id = sanitize_profile_id(
+        config.get("resolved_profile_id"),
+        fallback_voice=config.get("voice_id"),
+        fallback_provider=config.get("provider"),
+    )
+    track_audio_dir = audio_dir / safe_profile_id
+    track_audio_dir.mkdir(parents=True, exist_ok=True)
+
     hint_fmt = config.get("response_format") or "mp3"
     srt_entries: list[str] = []
     srt_idx = 1
     episode_cursor = 0.0
     total_duration = 0.0
     providers_used: set[str] = set()
+    track_scene_data: dict[str, Any] = {}
 
     for scene in script.get("scenes", []):
         scene_id = scene["id"]
+        ensure_base_timings(scene)
         narration = scene.get("narration", "").strip()
         chunks = split_text_for_tts(narration, max_chars=165)
 
@@ -1215,13 +2086,23 @@ def process_episode(
             final_bytes = bytes(mp3_buf)
             scene_duration = round(scene_cursor, 3)
 
-        audio_rel = f"audio/{scene_id}.{scene_ext}"
+        audio_rel = f"audio/{safe_profile_id}/{scene_id}.{scene_ext}"
         audio_path = ep_dir / audio_rel
         audio_path.write_bytes(final_bytes)
+
+        # Layer 1 Auto Subtitle-Cue Alignment using _base_timings reference
+        aligned_timings = align_scene_timings(scene, subtitles, scene_duration, apply_to_scene=True)
 
         scene["audio_file"] = audio_rel
         scene["duration_sec"] = scene_duration
         scene["subtitles"] = subtitles
+
+        track_scene_data[scene_id] = {
+            "audio_file": audio_rel,
+            "duration_sec": scene_duration,
+            "subtitles": subtitles,
+            "timings": aligned_timings,
+        }
 
         episode_cursor += scene_duration
         total_duration += scene_duration
@@ -1231,30 +2112,136 @@ def process_episode(
                 f"{audio_rel} ({audio_path.stat().st_size} bytes)"
             )
 
-    if config.get("resolved_profile_id"):
-        script["tts_profile"] = config["resolved_profile_id"]
+    srt_content = "\n".join(srt_entries)
+    track_srt_rel = f"subtitles.{safe_profile_id}.srt"
+    track_srt_path = ep_dir / track_srt_rel
+    track_srt_path.write_text(srt_content, encoding="utf-8")
+
+    root_srt_path = ep_dir / "subtitles.srt"
+    root_srt_path.write_text(srt_content, encoding="utf-8")
+
+    effective_profile = config.get("resolved_profile_id") or safe_profile_id
+    used_list = sorted(providers_used)
+    provider_label = used_list[0] if len(used_list) == 1 else (config.get("provider") or "edge")
+
+    script["voice_tracks"][safe_profile_id] = {
+        "tts_profile": effective_profile,
+        "tts_provider": provider_label,
+        "tts_voice": config.get("voice_id"),
+        "tts_rate": config.get("rate"),
+        "tts_pitch": config.get("pitch"),
+        "subtitles_srt": track_srt_rel,
+        "total_duration_sec": round(total_duration, 3),
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "scene_data": track_scene_data,
+    }
+    script["active_voice_track"] = safe_profile_id
+
+    script["tts_profile"] = effective_profile
     script["tts_voice"] = config.get("voice_id")
     if config.get("rate"):
         script["tts_rate"] = config["rate"]
-    script["tts_provider_used"] = sorted(providers_used)
+    script["tts_provider_used"] = used_list
     script["total_duration_sec"] = round(total_duration, 3)
-    script_path.write_text(json.dumps(script, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
-    srt_path = ep_dir / "subtitles.srt"
-    srt_path.write_text("\n".join(srt_entries), encoding="utf-8")
+    _write_json_atomic(script_path, script)
 
     if not quiet:
-        print(f"\nEpisode total duration: {total_duration:.2f}s | SRT: {srt_path}")
+        print(f"\nEpisode total duration: {total_duration:.2f}s | Track: {safe_profile_id} | SRT: {root_srt_path}")
 
     return {
         "ok": True,
         "episode_id": script.get("episode_id") or ep_dir.name,
+        "active_voice_track": safe_profile_id,
+        "voice_tracks": sorted(script["voice_tracks"].keys()),
         "tts_profile": script.get("tts_profile"),
         "tts_voice": script.get("tts_voice"),
         "tts_provider_used": script.get("tts_provider_used"),
         "total_duration_sec": script["total_duration_sec"],
         "scenes_count": len(script.get("scenes", [])),
-        "srt_path": str(srt_path),
+        "srt_path": str(root_srt_path),
+        "track_srt_path": str(track_srt_path),
+    }
+
+
+def realign_episode(
+    script_path: Path,
+    scene_id: str | None = None,
+    profile_id: str | None = None,
+    quiet: bool = False,
+) -> dict[str, Any]:
+    """Re-run Layer 1 subtitle-cue alignment without regenerating TTS audio."""
+    script = json.loads(script_path.read_text(encoding="utf-8"))
+    ep_dir = script_path.parent
+
+    migrate_legacy_voice_track(script, ep_dir)
+    voice_tracks = script.get("voice_tracks") if isinstance(script.get("voice_tracks"), dict) else {}
+    active_track_id = script.get("active_voice_track")
+
+    target_profile: str | None = None
+    if profile_id:
+        safe_req = sanitize_profile_id(profile_id)
+        if profile_id in voice_tracks:
+            target_profile = profile_id
+        elif safe_req in voice_tracks:
+            target_profile = safe_req
+        elif voice_tracks:
+            avail = ", ".join(sorted(voice_tracks.keys()))
+            raise ValueError(f"Voice track '{profile_id}' not found in script.json. Available: {avail}")
+        else:
+            target_profile = safe_req
+    elif active_track_id and active_track_id in voice_tracks:
+        target_profile = active_track_id
+    elif voice_tracks:
+        target_profile = next(iter(voice_tracks.keys()))
+        script["active_voice_track"] = target_profile
+        active_track_id = target_profile
+
+    scenes = script.get("scenes") if isinstance(script.get("scenes"), list) else []
+    target_scenes = [s for s in scenes if isinstance(s, dict) and (not scene_id or s.get("id") == scene_id)]
+    if scene_id and not target_scenes:
+        raise ValueError(f"Scene '{scene_id}' not found in {script_path}")
+
+    apply_active_visuals = (target_profile is None) or (target_profile == active_track_id) or (active_track_id is None)
+    track_obj = voice_tracks.get(target_profile) if target_profile else None
+    track_scenes = track_obj.setdefault("scene_data", {}) if isinstance(track_obj, dict) else None
+
+    aligned_scenes: list[str] = []
+    timings_by_scene: dict[str, Any] = {}
+
+    for sc in target_scenes:
+        sid = sc.get("id")
+        if not sid:
+            continue
+        ensure_base_timings(sc)
+        sdata = track_scenes.get(sid) if isinstance(track_scenes, dict) and isinstance(track_scenes.get(sid), dict) else {}
+        subs = sdata.get("subtitles") if isinstance(sdata.get("subtitles"), list) else sc.get("subtitles", [])
+        dur = float(sdata.get("duration_sec") or sc.get("duration_sec") or 0.0)
+
+        aligned = align_scene_timings(sc, subs, dur, apply_to_scene=apply_active_visuals)
+        if isinstance(track_scenes, dict):
+            entry = track_scenes.setdefault(sid, {
+                "audio_file": sdata.get("audio_file") or sc.get("audio_file") or "",
+                "duration_sec": round(dur, 3),
+                "subtitles": subs,
+            })
+            entry["timings"] = aligned
+
+        aligned_scenes.append(sid)
+        timings_by_scene[sid] = aligned
+        if not quiet:
+            print(f"[REALIGN] {sid} (profile={target_profile or 'default'}): {len(aligned)} timing group(s)")
+
+    _write_json_atomic(script_path, script)
+
+    return {
+        "ok": True,
+        "mode": "realign_only",
+        "episode_id": script.get("episode_id") or ep_dir.name,
+        "profile_id": target_profile,
+        "active_voice_track": script.get("active_voice_track"),
+        "aligned_scenes": aligned_scenes,
+        "timings_by_scene": timings_by_scene,
     }
 
 
@@ -1285,6 +2272,8 @@ def main() -> int:
     parser.add_argument("--pitch", default=None, help="Optional pitch override (e.g. +0Hz or -2Hz)")
 
     # Utility & Web Studio CLI modes
+    parser.add_argument("--realign-only", action="store_true", help="Re-align scene timings from existing subtitles without TTS")
+    parser.add_argument("--scene", default=None, help="Optional single scene_id filter for --realign-only")
     parser.add_argument("--list-profiles", action="store_true", help="List profiles from voices.json")
     parser.add_argument("--discover-voicestudio", action="store_true", help="Probe local VoiceStudio voices")
     parser.add_argument("--preview", action="store_true", help="Synthesize a single sample audio file")
@@ -1358,6 +2347,20 @@ def main() -> int:
     script_path = Path(args.episode).resolve()
     if not script_path.exists():
         return _emit_error(f"script.json not found at {script_path}", args.as_json)
+
+    if args.realign_only:
+        try:
+            res = realign_episode(
+                script_path=script_path,
+                scene_id=args.scene,
+                profile_id=args.profile,
+                quiet=args.as_json,
+            )
+            if args.as_json:
+                print(json.dumps(res, ensure_ascii=False))
+            return 0
+        except Exception as exc:
+            return _emit_error(str(exc), args.as_json)
 
     course_path = Path(args.course).resolve() if args.course else None
     try:

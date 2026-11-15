@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 
 const h = React.createElement;
 
@@ -7,6 +7,12 @@ const SCOPE_META = {
   visual: { icon: "🎨", label: "Sơ đồ / UI", cls: "scope-visual", agent: "Argon" },
   production: { icon: "🎙️", label: "TTS / Video", cls: "scope-production", agent: "Hydrogen" },
 };
+
+const QUICK_SCOPES = [
+  { id: "script", label: "📝 Kịch bản / Nội dung" },
+  { id: "visual", label: "🎨 Sơ đồ / Animation" },
+  { id: "production", label: "🎙️ Giọng đọc / Video" },
+];
 
 const STATUS_META = {
   open: { label: "Đang mở", cls: "st-open" },
@@ -136,15 +142,30 @@ export function RevisionPanel({
   courseId,
   episodes = [],
   episode = null,
+  currentSceneId = "",
+  scenes = null,
+  onOpenAiRewrite = null,
   onJumpToTicket,
   onStateAction,
   onTriggerProduction,
   onCreateRevision = null,
   activeJob = null,
 }) {
+  const sceneList = useMemo(() => {
+    const raw =
+      Array.isArray(scenes) && scenes.length > 0
+        ? scenes
+        : episode?.script?.scenes || [];
+    return raw.map((sc, idx) => ({
+      id: sc.id,
+      title: sc.title || sc.id,
+      index: typeof sc.index === "number" ? sc.index : idx,
+    }));
+  }, [scenes, episode]);
+
   const allTickets = useMemo(() => {
     if (mode === "episode" && episode) {
-      const scMap = new Map((episode.script?.scenes || []).map((s, idx) => [s.id, { idx, title: s.title }]));
+      const scMap = new Map(sceneList.map((s) => [s.id, { idx: s.index, title: s.title }]));
       return (episode.state?.revisions || []).map((rev) => ({
         ...rev,
         _episodeId: episode.id,
@@ -174,7 +195,7 @@ export function RevisionPanel({
       if (diff !== 0) return diff;
       return String(b.created_at || "").localeCompare(String(a.created_at || ""));
     });
-  }, [mode, episode, episodes]);
+  }, [mode, episode, episodes, sceneList]);
 
   const counts = useMemo(() => {
     const c = { open: 0, in_progress: 0, resolved: 0, all: allTickets.length };
@@ -189,13 +210,83 @@ export function RevisionPanel({
   const [copyStatus, setCopyStatus] = useState("");
   const [errMsg, setErrMsg] = useState("");
 
+  // Inline Quick-Add Revision Form state (episode mode)
+  const [quickSceneId, setQuickSceneId] = useState(currentSceneId || "");
+  const [sceneManualOverride, setSceneManualOverride] = useState(false);
+  const [quickScope, setQuickScope] = useState("script");
+  const [quickDesc, setQuickDesc] = useState("");
+  const [quickBusy, setQuickBusy] = useState(false);
+
+  useEffect(() => {
+    setSceneManualOverride(false);
+    setQuickSceneId(currentSceneId || "");
+    setQuickScope("script");
+    setQuickDesc("");
+  }, [episode?.id]);
+
+  useEffect(() => {
+    if (!sceneManualOverride) {
+      setQuickSceneId(currentSceneId || "");
+    }
+  }, [currentSceneId, sceneManualOverride]);
+
   const visibleTickets = useMemo(() => {
     if (statusFilter === "all") return allTickets;
     return allTickets.filter((t) => t.status === statusFilter);
   }, [allTickets, statusFilter]);
 
   const openOrProgressCount = counts.open + counts.in_progress;
+  const hasOpenProductionTicket = useMemo(
+    () => allTickets.some((t) => t.scope === "production" && t.status !== "resolved"),
+    [allTickets]
+  );
   const isJobRunning = Boolean(activeJob && (activeJob.status === "queued" || activeJob.status === "running"));
+
+  const handleQuickCreate = async (e) => {
+    e.preventDefault();
+    if (mode !== "episode" || !episode || quickBusy) return;
+    const desc = quickDesc.trim();
+    if (!desc) {
+      setErrMsg("Vui lòng nhập mô tả yêu cầu sửa.");
+      return;
+    }
+    setQuickBusy(true);
+    setErrMsg("");
+    try {
+      const payload = {
+        course: courseId,
+        episode: episode.id,
+        action: "create_revision",
+        scope: quickScope,
+        scene_id: quickSceneId || null,
+        description: desc,
+        owner: "user-ui",
+      };
+      if (onStateAction) {
+        await onStateAction(payload);
+      } else {
+        const res = await fetch("/api/state", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json();
+        if (!res.ok || data.ok === false) {
+          throw new Error(data.error || `HTTP ${res.status}`);
+        }
+      }
+      setQuickDesc("");
+      setSceneManualOverride(false);
+      setQuickSceneId(currentSceneId || "");
+      if (statusFilter !== "open" && statusFilter !== "all") {
+        setStatusFilter("open");
+      }
+    } catch (err) {
+      setErrMsg(err.message || "Không thể tạo yêu cầu sửa.");
+    } finally {
+      setQuickBusy(false);
+    }
+  };
 
   const handleUpdateTicket = async (e, ticket, nextStatus, resolutionNote = "") => {
     e.stopPropagation();
@@ -254,6 +345,86 @@ export function RevisionPanel({
   return h(
     "div",
     { className: "revision-panel" },
+    // Inline Quick-Add Revision Form (Player / Lesson Detail tab 🛠️ Sửa)
+    mode === "episode" && episode
+      ? h(
+          "form",
+          { className: "rev-quick-form", onSubmit: handleQuickCreate },
+          h(
+            "div",
+            { className: "rev-quick-form-head" },
+            h("span", { className: "rev-quick-title" }, "➕ Thêm yêu cầu sửa nhanh"),
+            sceneManualOverride
+              ? h("span", { className: "rev-quick-lock-hint" }, "Đã khóa cảnh chọn")
+              : null
+          ),
+          h(
+            "div",
+            { className: "rev-quick-row" },
+            h(
+              "select",
+              {
+                className: "studio-input studio-input-sm rev-quick-select",
+                "aria-label": "Phân cảnh cần sửa",
+                value: quickSceneId,
+                disabled: quickBusy,
+                onChange: (e) => {
+                  setQuickSceneId(e.target.value);
+                  setSceneManualOverride(true);
+                },
+              },
+              h("option", { value: "" }, "Toàn tập"),
+              ...sceneList.map((sc) =>
+                h(
+                  "option",
+                  { key: sc.id, value: sc.id },
+                  `Cảnh ${String(sc.index + 1).padStart(2, "0")} — ${sc.title}`
+                )
+              )
+            )
+          ),
+          h(
+            "div",
+            { className: "rev-quick-scope-row" },
+            ...QUICK_SCOPES.map((sc) =>
+              h(
+                "button",
+                {
+                  key: sc.id,
+                  type: "button",
+                  className: `rev-quick-scope-pill ${quickScope === sc.id ? "is-active" : ""}`,
+                  "data-scope": sc.id,
+                  disabled: quickBusy,
+                  onClick: () => setQuickScope(sc.id),
+                },
+                sc.label
+              )
+            )
+          ),
+          h("textarea", {
+            className: "studio-textarea rev-quick-textarea",
+            rows: 2,
+            value: quickDesc,
+            disabled: quickBusy,
+            onChange: (e) => setQuickDesc(e.target.value),
+            placeholder: "Mô tả ngắn điểm cần sửa (lời thoại, sơ đồ, animation, giọng đọc)...",
+          }),
+          h(
+            "div",
+            { className: "rev-quick-footer" },
+            h(
+              "button",
+              {
+                type: "submit",
+                className: "rev-quick-submit",
+                disabled: quickBusy || !quickDesc.trim(),
+              },
+              quickBusy ? "⏳ Đang thêm..." : "+ Thêm yêu cầu"
+            )
+          )
+        )
+      : null,
+
     // Filter pills
     h(
       "div",
@@ -272,20 +443,23 @@ export function RevisionPanel({
       )
     ),
 
-    // Quick toolbar (Create Revision + Copy Agent Prompt + Direct TTS & Render in Player mode)
-    (openOrProgressCount > 0 || (mode === "episode" && (episode?.has_script || episode?.has_video)))
+    // Action bar (Primary AI Rewrite + Copy Agent Prompt + Conditional Production Retry)
+    (mode === "episode" || openOrProgressCount > 0)
       ? h(
           "div",
           { className: "rev-toolbar-actions" },
-          mode === "episode" && onCreateRevision && (episode?.has_script || episode?.has_video)
+          mode === "episode"
             ? h(
                 "button",
                 {
                   type: "button",
-                  className: "rev-btn-create",
-                  onClick: () => onCreateRevision(),
+                  className: "rev-btn-ai-rewrite",
+                  onClick: () => onOpenAiRewrite && onOpenAiRewrite(),
+                  title: "Mở AI Script Modal để AI sửa lại kịch bản kèm toàn bộ yêu cầu đang mở",
                 },
-                "⚠️ Tạo yêu cầu sửa"
+                openOrProgressCount > 0
+                  ? `🔄 Gửi AI Sửa Kịch Bản (${openOrProgressCount} yêu cầu)`
+                  : "🔄 Gửi AI Sửa Kịch Bản"
               )
             : null,
           openOrProgressCount > 0
@@ -300,7 +474,7 @@ export function RevisionPanel({
                 copyStatus || "📋 Copy Prompt cho Agent"
               )
             : null,
-          mode === "episode" && onTriggerProduction && episode?.has_script
+          mode === "episode" && onTriggerProduction && episode?.has_script && hasOpenProductionTicket
             ? h(
                 "button",
                 {
@@ -330,7 +504,7 @@ export function RevisionPanel({
           { className: "empty-feed" },
           allTickets.length === 0
             ? mode === "episode"
-              ? "Chưa có yêu cầu sửa nào. Bấm \"⚠️ Yêu cầu sửa\" để tạo ticket mới."
+              ? "Chưa có yêu cầu sửa nào. Dùng form ở trên để thêm yêu cầu hoặc bấm \"🔄 Gửi AI Sửa Kịch Bản\"."
               : "Chưa có yêu cầu sửa nào. Mở chi tiết từng tập để tạo yêu cầu sửa mới."
             : "Không có ticket nào ở trạng thái đang lọc."
         )

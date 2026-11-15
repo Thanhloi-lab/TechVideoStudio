@@ -112,8 +112,20 @@ export function inspectEpisodeArtifacts(courseDir, epId) {
   let audio_count = 0;
   const audioDir = path.join(epDir, "audio");
   if (fs.existsSync(audioDir) && fs.statSync(audioDir).isDirectory()) {
-    const audioFiles = fs.readdirSync(audioDir);
-    audio_count = audioFiles.filter((f) => /\.(mp3|wav)$/i.test(f)).length;
+    const countAudioRecursive = (dirPath) => {
+      let count = 0;
+      const entries = fs.readdirSync(dirPath, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(dirPath, entry.name);
+        if (entry.isDirectory()) {
+          count += countAudioRecursive(fullPath);
+        } else if (entry.isFile() && /\.(mp3|wav)$/i.test(entry.name)) {
+          count += 1;
+        }
+      }
+      return count;
+    };
+    audio_count = countAudioRecursive(audioDir);
   }
 
   let video_file = null;

@@ -25,11 +25,29 @@ const DEFAULT_CUSTOM_FORM = {
   sample_text: "Xin chào, đây là giọng đọc tùy chỉnh cho khóa học kỹ thuật.",
 };
 
+function sanitizeTrackKey(id) {
+  return String(id || "").replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "default";
+}
+
+function findTrackForProfile(voiceTracks, profileId) {
+  if (!profileId || !voiceTracks || typeof voiceTracks !== "object") return null;
+  if (voiceTracks[profileId]) return { key: profileId, track: voiceTracks[profileId] };
+  const safe = sanitizeTrackKey(profileId);
+  if (voiceTracks[safe]) return { key: safe, track: voiceTracks[safe] };
+  for (const [key, track] of Object.entries(voiceTracks)) {
+    if (track && track.tts_profile === profileId) {
+      return { key, track };
+    }
+  }
+  return null;
+}
+
 export function VoiceStudioModal({
   isOpen,
   mode = "course", // "course" | "episode"
   course,
   episode = null,
+  script = null,
   onClose,
   onAssigned,
   onRunProduction,
@@ -53,17 +71,45 @@ export function VoiceStudioModal({
 
   const previewAudioRef = useRef(null);
 
+  const effectiveScript = script || episode?.script || null;
+  const voiceTracks =
+    effectiveScript?.voice_tracks && typeof effectiveScript.voice_tracks === "object"
+      ? effectiveScript.voice_tracks
+      : {};
+  const activeTrackKey = effectiveScript?.active_voice_track || "";
+  const activeTrackObj = activeTrackKey ? voiceTracks[activeTrackKey] : null;
+  const activeTrackVoice = activeTrackObj?.tts_profile || activeTrackKey || "";
+
   const courseDefaultVoice = course?.meta?.tts_profile || course?.meta?.tts_voice || "";
-  const episodeOverrideVoice =
+  const explicitEpOverride =
     episode?.state?.voice_override?.tts_profile ||
-    episode?.tts_profile ||
+    episode?.voice_override?.tts_profile ||
     "";
+  const resolvedEpisodeVoice = useMemo(() => {
+    if (mode !== "episode") return "";
+    if (activeTrackVoice && !explicitEpOverride) return activeTrackVoice;
+    if (activeTrackVoice && explicitEpOverride && activeTrackVoice !== explicitEpOverride) {
+      const ovAt = episode?.state?.voice_override?.updated_at || "";
+      const trAt = activeTrackObj?.activated_at || activeTrackObj?.generated_at || "";
+      if (trAt && ovAt && trAt >= ovAt) return activeTrackVoice;
+      if (!ovAt) return activeTrackVoice;
+    }
+    return explicitEpOverride || activeTrackVoice || episode?.tts_profile || "";
+  }, [
+    mode,
+    activeTrackVoice,
+    explicitEpOverride,
+    episode?.state?.voice_override?.updated_at,
+    episode?.tts_profile,
+    activeTrackObj?.activated_at,
+    activeTrackObj?.generated_at,
+  ]);
   const activeVoiceId =
     mode === "episode"
-      ? episodeOverrideVoice || courseDefaultVoice || defaultProfileId
+      ? resolvedEpisodeVoice || courseDefaultVoice || defaultProfileId
       : courseDefaultVoice || defaultProfileId;
 
-  const loadVoices = useCallback(async (withDiscover = false) => {
+  const loadVoices = useCallback(async (withDiscover = false, resetSelection = false) => {
     if (withDiscover) {
       setScanning(true);
     } else {
@@ -84,9 +130,9 @@ export function VoiceStudioModal({
         setDiscovered(data.discovered_voicestudio);
       }
       setSelectedId((prev) => {
-        if (prev && list.some((p) => p.id === prev)) return prev;
+        if (!resetSelection && prev && list.some((p) => p.id === prev)) return prev;
         const preferred =
-          (mode === "episode" ? episodeOverrideVoice : "") ||
+          (mode === "episode" ? resolvedEpisodeVoice : "") ||
           courseDefaultVoice ||
           data.default_profile ||
           list[0]?.id ||
@@ -99,14 +145,14 @@ export function VoiceStudioModal({
       setLoading(false);
       setScanning(false);
     }
-  }, [mode, courseDefaultVoice, episodeOverrideVoice]);
+  }, [mode, courseDefaultVoice, resolvedEpisodeVoice]);
 
   useEffect(() => {
     if (!isOpen) return;
     setFeedback(null);
     setPreviewState(null);
     setShowAddForm(false);
-    loadVoices(false);
+    loadVoices(false, true);
   }, [isOpen, loadVoices]);
 
   useEffect(() => {
@@ -687,12 +733,19 @@ export function VoiceStudioModal({
                 const isSelected = p.id === selectedId;
                 const isSysDefault = p.id === defaultProfileId;
                 const isCourseActive = p.id === courseDefaultVoice;
-                const isEpActive = mode === "episode" && p.id === episodeOverrideVoice;
+                const trackMatch = mode === "episode" ? findTrackForProfile(voiceTracks, p.id) : null;
+                const hasSavedTrack = Boolean(trackMatch);
+                const isActiveTrack = Boolean(
+                  trackMatch && activeTrackKey && trackMatch.key === activeTrackKey
+                );
+                const isEpActive =
+                  mode === "episode" &&
+                  (isActiveTrack || (resolvedEpisodeVoice && p.id === resolvedEpisodeVoice));
                 return h(
                   "div",
                   {
                     key: p.id,
-                    className: `voice-card ${isSelected ? "is-selected" : ""}`,
+                    className: `voice-card ${isSelected ? "is-selected" : ""} ${hasSavedTrack ? "has-saved-track" : ""}`,
                     onClick: () => setSelectedId(p.id),
                   },
                   h(
@@ -709,6 +762,18 @@ export function VoiceStudioModal({
                       { className: "voice-card-badges" },
                       isEpActive
                         ? h("span", { className: "voice-flag is-ep" }, "Đang dùng (Tập)")
+                        : null,
+                      hasSavedTrack
+                        ? h(
+                            "span",
+                            {
+                              className: "voice-flag is-saved-track",
+                              title: trackMatch.track?.total_duration_sec
+                                ? `Đã có bản thu (${Math.round(trackMatch.track.total_duration_sec)}s)`
+                                : "Đã có bản thu audio trong tập này",
+                            },
+                            "🎵 Đã có audio"
+                          )
                         : null,
                       isCourseActive
                         ? h("span", { className: "voice-flag is-course" }, "Mặc định Khóa")
