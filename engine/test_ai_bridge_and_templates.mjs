@@ -15,6 +15,7 @@ import {
   getSceneBurstInfo,
 } from "./src/motion/kernel.mjs";
 import { validateScriptDiagrams } from "./src/diagram_validator.mjs";
+import { resolveOutputFilename } from "./src/exporter.mjs";
 import { inspectEpisodeArtifacts } from "./state_cli.mjs";
 import {
   checkAiEnvKeys,
@@ -272,6 +273,43 @@ function httpRequestJson(port, method, urlPath, body = null, timeoutMs = 10_000)
     req.on("timeout", () => req.destroy(new Error(`HTTP timeout on ${method} ${urlPath}`)));
     req.on("error", reject);
     if (payload !== null) req.write(payload);
+    req.end();
+  });
+}
+
+function httpRequestBinary(port, method, urlPath, bufferBody, headers = {}, timeoutMs = 10_000) {
+  return new Promise((resolve, reject) => {
+    const buf = Buffer.isBuffer(bufferBody) ? bufferBody : Buffer.from(bufferBody || "");
+    const req = http.request(
+      {
+        host: "127.0.0.1",
+        port,
+        path: urlPath,
+        method,
+        headers: {
+          "Content-Length": buf.length,
+          ...headers,
+        },
+        timeout: timeoutMs,
+      },
+      (res) => {
+        const chunks = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () => {
+          const text = Buffer.concat(chunks).toString("utf-8");
+          let json = null;
+          try {
+            json = text ? JSON.parse(text) : {};
+          } catch {
+            json = { raw: text };
+          }
+          resolve({ status: res.statusCode || 500, body: json });
+        });
+      }
+    );
+    req.on("timeout", () => req.destroy(new Error(`HTTP timeout on ${method} ${urlPath}`)));
+    req.on("error", reject);
+    req.write(buf);
     req.end();
   });
 }
@@ -1731,6 +1769,7 @@ async function runTests() {
         const hasTtsCheckbox = Boolean(popover?.querySelector('.export-tts-check-row input[type="checkbox"]'));
         const hasExportCta = Boolean(popover?.querySelector('.export-cta-btn'));
         const hasDownloadLink = Boolean(popover?.querySelector('.export-download-link'));
+        const hasAnyDownloadBtn = Boolean(document.querySelector('.job-act-btn.is-download, a[href*="/api/download-video"]'));
         popover?.querySelector('.jobs-popover-close')?.click();
         await new Promise(r => setTimeout(r, 100));
 
@@ -1786,6 +1825,7 @@ async function runTests() {
           hasTtsCheckbox,
           hasExportCta,
           hasDownloadLink,
+          hasAnyDownloadBtn,
           hasPlayhead,
           stepRowsCount,
           hasStampBtn,
@@ -1806,7 +1846,8 @@ async function runTests() {
     assert.ok(uiPlayerCheck.qualityPillCount >= 8);
     assert.equal(uiPlayerCheck.hasTtsCheckbox, true);
     assert.equal(uiPlayerCheck.hasExportCta, true);
-    assert.equal(uiPlayerCheck.hasDownloadLink, true);
+    assert.equal(uiPlayerCheck.hasDownloadLink, false);
+    assert.equal(uiPlayerCheck.hasAnyDownloadBtn, false);
     assert.equal(uiPlayerCheck.hasPlayhead, true);
     assert.ok(uiPlayerCheck.stepRowsCount >= 2);
     assert.equal(uiPlayerCheck.hasStampBtn, true);
@@ -2322,6 +2363,272 @@ async function runTests() {
     });
     assert.equal(delLastRes.status, 400);
     console.log("PASS: Multi-voice A/B preservation, activate/delete APIs, 2-layer Subtitle-Cue & Playhead alignment, and recursive audio count verified.");
+
+    console.log("=== 13. Video Files List, Custom Export Filename, Overwrite Warning, Preview Modal & Video Delete ===");
+    // 1) Unit checks for resolveOutputFilename & render_video.mjs --output CLI flag
+    assert.equal(resolveOutputFilename("ep04-test-60fps.mp4", "ep04-test", "webm"), "ep04-test-60fps.webm");
+    assert.equal(resolveOutputFilename("  custom name  ", "ep04-test", "mp4"), "custom-name.mp4");
+    assert.equal(resolveOutputFilename("", "ep04-test", "mp4"), "ep04-test.mp4");
+    assert.equal(resolveOutputFilename("../evil/stem.mp4", "ep04-test", "mp4"), "evilstem.mp4");
+    const renderHelp = spawnSync(process.execPath, [path.join(ENGINE_DIR, "render_video.mjs"), "--help"], {
+      cwd: ENGINE_DIR,
+      encoding: "utf-8",
+    });
+    assert.equal(renderHelp.status, 0);
+    assert.ok(renderHelp.stdout.includes("--output"), "render_video.mjs --help must document --output");
+
+    // 2) Verify GET /api/download-video is removed (404)
+    const removedDownloadRes = await httpRequestJson(
+      testPort,
+      "GET",
+      "/api/download-video?course=TESTCOURSE&episode=ep04-test"
+    );
+    assert.equal(removedDownloadRes.status, 404);
+
+    // 3) Verify validateRenderOptions + sanitizeVideoOutputStem via POST /api/jobs/run-production
+    const badStemProdRes = await httpRequestJson(testPort, "POST", "/api/jobs/run-production", {
+      course: "TESTCOURSE",
+      episode: "ep05-test",
+      mode: "render_only",
+      format: "mp4",
+      codec: "h264",
+      output_filename: "../evil.mp4",
+    });
+    assert.equal(badStemProdRes.status, 400);
+    assert.ok(String(badStemProdRes.body?.error || "").includes("không hợp lệ"));
+
+    const validStemNoAudioRes = await httpRequestJson(testPort, "POST", "/api/jobs/run-production", {
+      course: "TESTCOURSE",
+      episode: "ep05-test",
+      mode: "render_only",
+      format: "mp4",
+      codec: "h264",
+      output_filename: "ep05-custom 60fps.mp4",
+    });
+    assert.equal(validStemNoAudioRes.status, 400);
+    assert.ok(
+      String(validStemNoAudioRes.body?.error || "").includes("chưa có file audio"),
+      `Expected missing-audio 400 after valid stem passed validateRenderOptions, got: ${JSON.stringify(validStemNoAudioRes.body)}`
+    );
+
+    // 4) Verify handleSaveVideo preserves custom stems & fallback ext without overwriting distinct stems
+    const badSaveVideoRes = await httpRequestBinary(
+      testPort,
+      "POST",
+      "/api/save-video?course=TESTCOURSE&episode=ep04-test&format=mp4&filename=../evil.mp4",
+      Buffer.alloc(1024, 0x22),
+      { "Content-Type": "video/mp4" }
+    );
+    assert.equal(badSaveVideoRes.status, 400);
+
+    const saveCustomMp4Res = await httpRequestBinary(
+      testPort,
+      "POST",
+      "/api/save-video?course=TESTCOURSE&episode=ep04-test&format=mp4&filename=ep04-test-60fps.mp4",
+      Buffer.alloc(4096, 0x33),
+      { "Content-Type": "video/mp4" }
+    );
+    assert.equal(saveCustomMp4Res.status, 200);
+    assert.equal(saveCustomMp4Res.body.file, "ep04-test-60fps.mp4");
+
+    // Simulate WebCodecs->MediaRecorder fallback saving .webm while preserving custom stem
+    const saveFallbackWebmRes = await httpRequestBinary(
+      testPort,
+      "POST",
+      "/api/save-video?course=TESTCOURSE&episode=ep04-test&format=webm&filename=ep04-test-60fps.mp4",
+      Buffer.alloc(3072, 0x44),
+      { "Content-Type": "video/webm" }
+    );
+    assert.equal(saveFallbackWebmRes.status, 200);
+    assert.equal(saveFallbackWebmRes.body.file, "ep04-test-60fps.webm");
+
+    const saveDefaultMp4Res = await httpRequestBinary(
+      testPort,
+      "POST",
+      "/api/save-video?course=TESTCOURSE&episode=ep04-test&format=mp4&filename=ep04-test.mp4",
+      Buffer.alloc(5120, 0x55),
+      { "Content-Type": "video/mp4" }
+    );
+    assert.equal(saveDefaultMp4Res.status, 200);
+    assert.equal(saveDefaultMp4Res.body.file, "ep04-test.mp4");
+
+    // Verify inspectEpisodeArtifacts multi-file video_files[] scanning & metadata
+    const ep4MultiArtifacts = inspectEpisodeArtifacts(courseDir, "ep04-test");
+    assert.equal(ep4MultiArtifacts.video_files.length, 4);
+    assert.ok(typeof ep4MultiArtifacts.video_file === "string" && ep4MultiArtifacts.video_file.length > 0);
+    const scannedNames = ep4MultiArtifacts.video_files.map((f) => f.filename);
+    assert.ok(scannedNames.includes("ep04-test.webm"));
+    assert.ok(scannedNames.includes("ep04-test.mp4"));
+    assert.ok(scannedNames.includes("ep04-test-60fps.mp4"));
+    assert.ok(scannedNames.includes("ep04-test-60fps.webm"));
+    const defaultEntry = ep4MultiArtifacts.video_files.find((f) => f.filename === "ep04-test.mp4");
+    const customEntry = ep4MultiArtifacts.video_files.find((f) => f.filename === "ep04-test-60fps.mp4");
+    assert.equal(defaultEntry?.is_default, true);
+    assert.equal(customEntry?.is_default, false);
+    assert.equal(customEntry?.format, "mp4");
+    assert.equal(customEntry?.size_bytes, 4096);
+
+    // Verify GET /api/courses exposes video_files[] with playback URLs
+    const coursesMultiRes = await httpRequestJson(testPort, "GET", "/api/courses");
+    assert.equal(coursesMultiRes.status, 200);
+    const testCourseApi = (coursesMultiRes.body.courses || []).find((c) => c.id === "TESTCOURSE");
+    const ep4Api = (testCourseApi?.episodes || []).find((e) => e.id === "ep04-test");
+    assert.equal(ep4Api?.video_files?.length, 4);
+    assert.ok(ep4Api.video_files.every((f) => f.url && f.url.startsWith("/courses/TESTCOURSE/episodes/ep04-test/")));
+
+    // 5) Headless Chrome UI checks: 📁 Video đã xuất, pre-filled stem, live collision warning + -v2 quick-rename, preview modal
+    const uiVideoFilesCheck = await runChromeUiCheck(
+      testPort,
+      `http://127.0.0.1:${testPort}/?view=player&course=TESTCOURSE&ep=ep04-test&scene=s1_matrix`,
+      `(async () => {
+        const deadline = Date.now() + 8000;
+        while (Date.now() < deadline) {
+          if (document.querySelector('.ep-video-files-card') && document.querySelectorAll('.ep-video-file-row').length === 4) {
+            break;
+          }
+          await new Promise(r => setTimeout(r, 100));
+        }
+
+        const filesTitle = document.querySelector('.ep-video-files-title')?.textContent?.trim() || '';
+        const rowCount = document.querySelectorAll('.ep-video-file-row').length;
+        const hasAnyDownload = Boolean(
+          document.querySelector('.export-download-link, .job-act-btn.is-download, a[href*="/api/download-video"]')
+        );
+
+        // Open unified Export popover -> defaults to ep04-test + .mp4 -> collides with ep04-test.mp4
+        document.querySelector('.btn-export-unified').click();
+        await new Promise(r => setTimeout(r, 150));
+
+        const filenameInput = document.querySelector('.export-filename-input');
+        const initialStem = filenameInput ? filenameInput.value : '';
+        const initialExt = document.querySelector('.export-filename-ext')?.textContent?.trim() || '';
+        const initialCollisionText = document.querySelector('.export-collision-warn')?.textContent?.trim() || '';
+        const initialCtaOverwrite = Boolean(document.querySelector('.export-cta-btn.is-overwrite'));
+        const suggestBtn = document.querySelector('.export-suggest-btn');
+        const suggestText = suggestBtn ? suggestBtn.textContent.trim() : '';
+
+        if (!suggestBtn) throw new Error('Expected .export-suggest-btn on filename collision');
+        suggestBtn.click();
+        await new Promise(r => setTimeout(r, 150));
+
+        const renamedStem = filenameInput ? filenameInput.value : '';
+        const collisionAfterRename = Boolean(document.querySelector('.export-collision-warn'));
+        const targetPathAfterRename = document.querySelector('.export-target-path')?.textContent?.trim() || '';
+        const ctaOverwriteAfterRename = Boolean(document.querySelector('.export-cta-btn.is-overwrite'));
+
+        // Close popover
+        document.querySelector('.export-menu-popover .jobs-popover-close')?.click();
+        await new Promise(r => setTimeout(r, 120));
+
+        // Click ✏️ Chọn tên on a WEBM row to verify prefill + format switch to .webm
+        const rows = Array.from(document.querySelectorAll('.ep-video-file-row'));
+        const webmRow = rows.find((r) => r.textContent.includes('ep04-test-60fps.webm'));
+        const pickNameBtn = Array.from(webmRow?.querySelectorAll('.ep-video-act-btn') || []).find((b) =>
+          b.textContent.includes('Chọn tên')
+        );
+        if (!pickNameBtn) throw new Error('Pick filename button not found on webm row');
+        pickNameBtn.click();
+        await new Promise(r => setTimeout(r, 150));
+
+        const pickedStem = document.querySelector('.export-filename-input')?.value || '';
+        const pickedExt = document.querySelector('.export-filename-ext')?.textContent?.trim() || '';
+        const pickedCollision = Boolean(document.querySelector('.export-collision-warn'));
+        document.querySelector('.export-menu-popover .jobs-popover-close')?.click();
+        await new Promise(r => setTimeout(r, 120));
+
+        // Open ▶ Xem thử modal and close it
+        const previewBtn = document.querySelector('.ep-video-act-btn.is-preview');
+        if (!previewBtn) throw new Error('Preview button not found');
+        previewBtn.click();
+        await new Promise(r => setTimeout(r, 150));
+
+        const modalOpen = Boolean(document.querySelector('.ep-video-modal-backdrop'));
+        const hasVideoElement = Boolean(document.querySelector('.ep-video-preview-modal video.ep-video-preview-player'));
+        const closePreviewBtn = document.querySelector('.ep-video-preview-modal .studio-modal-close');
+        if (!closePreviewBtn) throw new Error('Preview modal close button not found');
+        closePreviewBtn.click();
+        await new Promise(r => setTimeout(r, 120));
+        const modalClosed = !document.querySelector('.ep-video-modal-backdrop');
+
+        return {
+          filesTitle,
+          rowCount,
+          hasAnyDownload,
+          initialStem,
+          initialExt,
+          initialCollisionText,
+          initialCtaOverwrite,
+          suggestText,
+          renamedStem,
+          collisionAfterRename,
+          targetPathAfterRename,
+          ctaOverwriteAfterRename,
+          pickedStem,
+          pickedExt,
+          pickedCollision,
+          modalOpen,
+          hasVideoElement,
+          modalClosed,
+        };
+      })()`
+    );
+    assert.ok(uiVideoFilesCheck.filesTitle.includes("Video đã xuất (4)"));
+    assert.equal(uiVideoFilesCheck.rowCount, 4);
+    assert.equal(uiVideoFilesCheck.hasAnyDownload, false);
+    assert.equal(uiVideoFilesCheck.initialStem, "ep04-test");
+    assert.equal(uiVideoFilesCheck.initialExt, ".mp4");
+    assert.ok(uiVideoFilesCheck.initialCollisionText.includes("ep04-test.mp4"));
+    assert.equal(uiVideoFilesCheck.initialCtaOverwrite, true);
+    assert.ok(uiVideoFilesCheck.suggestText.includes("ep04-test-v2.mp4"));
+    assert.equal(uiVideoFilesCheck.renamedStem, "ep04-test-v2");
+    assert.equal(uiVideoFilesCheck.collisionAfterRename, false);
+    assert.ok(uiVideoFilesCheck.targetPathAfterRename.includes("TESTCOURSE/episodes/ep04-test/ep04-test-v2.mp4"));
+    assert.equal(uiVideoFilesCheck.ctaOverwriteAfterRename, false);
+    assert.equal(uiVideoFilesCheck.pickedStem, "ep04-test-60fps");
+    assert.equal(uiVideoFilesCheck.pickedExt, ".webm");
+    assert.equal(uiVideoFilesCheck.pickedCollision, true);
+    assert.equal(uiVideoFilesCheck.modalOpen, true);
+    assert.equal(uiVideoFilesCheck.hasVideoElement, true);
+    assert.equal(uiVideoFilesCheck.modalClosed, true);
+
+    // 6) Verify POST /api/episodes/video/delete (invalid check, partial delete, last-file delete state reset)
+    const badDelVideoRes = await httpRequestJson(testPort, "POST", "/api/episodes/video/delete", {
+      course: "TESTCOURSE",
+      episode: "ep04-test",
+      filename: "../evil.mp4",
+    });
+    assert.equal(badDelVideoRes.status, 400);
+
+    const delOneVideoRes = await httpRequestJson(testPort, "POST", "/api/episodes/video/delete", {
+      course: "TESTCOURSE",
+      episode: "ep04-test",
+      filename: "ep04-test-60fps.mp4",
+    });
+    assert.equal(delOneVideoRes.status, 200);
+    assert.equal(delOneVideoRes.body.deleted, "ep04-test-60fps.mp4");
+    assert.equal(delOneVideoRes.body.video_files.length, 3);
+    assert.equal(fs.existsSync(path.join(ep4Dir, "ep04-test-60fps.mp4")), false);
+
+    const ep4StateMidDelete = JSON.parse(fs.readFileSync(path.join(stateDir, "ep04-test.json"), "utf-8"));
+    assert.equal(ep4StateMidDelete.production?.video_done, true);
+
+    for (const remFile of ["ep04-test-60fps.webm", "ep04-test.mp4", "ep04-test.webm"]) {
+      const delRem = await httpRequestJson(testPort, "POST", "/api/episodes/video/delete", {
+        course: "TESTCOURSE",
+        episode: "ep04-test",
+        filename: remFile,
+      });
+      assert.equal(delRem.status, 200);
+    }
+
+    const ep4AfterAllDeleted = inspectEpisodeArtifacts(courseDir, "ep04-test");
+    assert.equal(ep4AfterAllDeleted.video_files.length, 0);
+    assert.equal(ep4AfterAllDeleted.video_file, null);
+    const ep4StateCleared = JSON.parse(fs.readFileSync(path.join(stateDir, "ep04-test.json"), "utf-8"));
+    assert.equal(ep4StateCleared.production?.video_done, false);
+    assert.equal(ep4StateCleared.production?.verified, false);
+    assert.equal(ep4StateCleared.production?.status, "pending");
+    console.log("PASS: Video files list, custom export filename, collision warning, preview modal, and delete API verified.");
 
     console.log("\nALL TESTS PASSED!");
   } finally {

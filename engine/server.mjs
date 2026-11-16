@@ -290,6 +290,16 @@ function listCourseDirs() {
   return dirs;
 }
 
+function mapEpisodeVideoFiles(courseName, epId, artifacts) {
+  const encodedCourse = encodeURIComponent(courseName);
+  const encodedEp = encodeURIComponent(epId);
+  const list = Array.isArray(artifacts?.video_files) ? artifacts.video_files : [];
+  return list.map((f) => ({
+    ...f,
+    url: `/courses/${encodedCourse}/episodes/${encodedEp}/${encodeURIComponent(f.filename)}`,
+  }));
+}
+
 function buildEpisodePayload(courseName, courseDir, stateDir, epMeta, courseMeta = {}) {
   const epId = epMeta.id;
   const epPath = path.join(courseDir, "episodes", epId);
@@ -327,7 +337,8 @@ function buildEpisodePayload(courseName, courseDir, stateDir, epMeta, courseMeta
 
   const encodedCourse = encodeURIComponent(courseName);
   const encodedEp = encodeURIComponent(epId);
-  const videoFile = artifacts.video_file;
+  const videoFile = artifacts.video_file || null;
+  const videoFiles = mapEpisodeVideoFiles(courseName, epId, artifacts);
 
   const activeTrack =
     script?.active_voice_track && script?.voice_tracks?.[script.active_voice_track]
@@ -376,9 +387,11 @@ function buildEpisodePayload(courseName, courseDir, stateDir, epMeta, courseMeta
     has_script: Boolean(script),
     has_audio: audioCount > 0,
     has_video: Boolean(videoFile),
+    video_file: videoFile,
     video_url: videoFile
       ? `/courses/${encodedCourse}/episodes/${encodedEp}/${encodeURIComponent(videoFile)}`
       : null,
+    video_files: videoFiles,
     base_url: `/courses/${encodedCourse}/episodes/${encodedEp}`,
     script,
     notes,
@@ -1993,6 +2006,8 @@ function sanitizeJobForApi(job) {
     step: job.step,
     progress: job.progress,
     queue_position: job.queue_position ?? null,
+    output_stem: job.output_stem ?? null,
+    output_filename: job.output_filename ?? null,
     output_file: job.output_file ?? null,
     logs: [...job.logs],
     error: job.error ?? null,
@@ -2347,6 +2362,8 @@ async function executeProductionJob(job) {
     );
 
     const renderTimeoutMs = renderTimeoutForJob(job);
+    const targetOutputFilename =
+      job.output_filename || `${job.output_stem || job.episode}.${job.format}`;
     const renderArgs = [
       RENDER_SCRIPT_PATH,
       "--course",
@@ -2367,6 +2384,8 @@ async function executeProductionJob(job) {
       String(job.fps),
       "--speed",
       String(job.speed),
+      "--output",
+      targetOutputFilename,
       "--timeout-ms",
       String(renderTimeoutMs),
     ];
@@ -2423,12 +2442,26 @@ async function executeProductionJob(job) {
       return;
     }
 
-    const expectedFilename = `${job.episode}.${job.format}`;
+    const outputStem = job.output_stem || job.episode;
+    const expectedFilename = `${outputStem}.${job.format}`;
+    const fallbackWebmFilename = `${outputStem}.webm`;
     const expectedPath = path.join(epDir, expectedFilename);
+    const fallbackWebmPath = path.join(epDir, fallbackWebmFilename);
     const artifacts = inspectEpisodeArtifacts(courseDir, job.episode);
-    const outputFile = fs.existsSync(expectedPath)
-      ? expectedFilename
-      : artifacts.video_file || expectedFilename;
+
+    let outputFile = artifacts.video_file || expectedFilename;
+    const hasExpected = fs.existsSync(expectedPath);
+    const hasFallbackWebm =
+      fallbackWebmFilename !== expectedFilename && fs.existsSync(fallbackWebmPath);
+    if (hasExpected && hasFallbackWebm) {
+      const expectedMtime = fs.statSync(expectedPath).mtimeMs;
+      const fallbackMtime = fs.statSync(fallbackWebmPath).mtimeMs;
+      outputFile = fallbackMtime > expectedMtime ? fallbackWebmFilename : expectedFilename;
+    } else if (hasExpected) {
+      outputFile = expectedFilename;
+    } else if (hasFallbackWebm) {
+      outputFile = fallbackWebmFilename;
+    }
 
     const nowFinal = new Date().toISOString();
     mutateState(
@@ -2498,6 +2531,35 @@ function handleGetJobs(res, parsedUrl) {
   return sendJson(res, 200, { ok: true, jobs: listSortedJobs({ course, episode }) });
 }
 
+function sanitizeVideoOutputStem(rawName, episodeId = "") {
+  let stem = String(rawName ?? "").trim();
+  stem = stem.replace(/\.(mp4|webm)$/i, "").trim();
+  stem = stem.replace(/\s+/g, "-");
+  if (!stem) {
+    stem = String(episodeId ?? "")
+      .trim()
+      .replace(/\.(mp4|webm)$/i, "")
+      .trim()
+      .replace(/\s+/g, "-");
+  }
+  if (!stem) {
+    return { ok: false, error: "Tên file đầu ra không được để trống." };
+  }
+  if (
+    stem.includes("/") ||
+    stem.includes("\\") ||
+    stem.includes("..") ||
+    !/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,95}$/.test(stem)
+  ) {
+    return {
+      ok: false,
+      error:
+        'Tên file đầu ra không hợp lệ. Chỉ dùng chữ, số, "_", "-", "." (tối đa 96 ký tự, không chứa "/", "\\", "..").',
+    };
+  }
+  return { ok: true, stem };
+}
+
 function validateRenderOptions(raw = {}, { requireScriptCheck = false } = {}) {
   const mode = String(raw.mode || "tts_and_render").trim();
   const rawProfileId = raw.profile_id ?? raw.tts_profile ?? null;
@@ -2511,6 +2573,8 @@ function validateRenderOptions(raw = {}, { requireScriptCheck = false } = {}) {
   const resolution = String(raw.resolution || "1080p").trim().toLowerCase();
   const fps = raw.fps !== undefined && raw.fps !== null && raw.fps !== "" ? Number(raw.fps) : 60;
   const speed = raw.speed !== undefined && raw.speed !== null && raw.speed !== "" ? Number(raw.speed) : 1;
+  const rawOutputName = raw.output_filename ?? raw.output_name ?? "";
+  const episodeFallback = raw.episode ? String(raw.episode).trim() : "";
 
   if (!VALID_JOB_MODES.has(mode)) {
     return { ok: false, status: 400, error: 'mode must be "tts_and_render", "tts_only", or "render_only"' };
@@ -2556,6 +2620,18 @@ function validateRenderOptions(raw = {}, { requireScriptCheck = false } = {}) {
   if (!VALID_SPEEDS.has(speed)) {
     return { ok: false, status: 400, error: "speed must be 1, 1.25, 1.5, or 2" };
   }
+
+  let output_stem = null;
+  let output_filename = null;
+  if (String(rawOutputName).trim() !== "" || episodeFallback !== "") {
+    const stemRes = sanitizeVideoOutputStem(rawOutputName, episodeFallback);
+    if (!stemRes.ok) {
+      return { ok: false, status: 400, error: stemRes.error };
+    }
+    output_stem = stemRes.stem;
+    output_filename = `${output_stem}.${format}`;
+  }
+
   if (profile_id && (mode !== "render_only" || !requireScriptCheck)) {
     const voicesData = loadVoicesConfig();
     if (!voicesData.profiles.some((p) => p && p.id === profile_id)) {
@@ -2578,6 +2654,8 @@ function validateRenderOptions(raw = {}, { requireScriptCheck = false } = {}) {
       resolution,
       fps,
       speed,
+      output_stem,
+      output_filename,
     },
   };
 }
@@ -2607,7 +2685,11 @@ function enqueueProductionJob(params = {}) {
     resolution,
     fps,
     speed,
+    output_stem,
+    output_filename,
   } = optsRes.options;
+  const resolvedStem = output_stem || episode;
+  const resolvedOutputFilename = output_filename || `${resolvedStem}.${format}`;
 
   const courseDir = safeResolve(WORKSPACE_ROOT, [course]);
   const epDir = safeResolve(WORKSPACE_ROOT, [course, "episodes", episode]);
@@ -2677,6 +2759,8 @@ function enqueueProductionJob(params = {}) {
     resolution,
     fps,
     speed,
+    output_stem: resolvedStem,
+    output_filename: resolvedOutputFilename,
     status: "queued",
     step: "queued",
     progress: 0,
@@ -2690,7 +2774,7 @@ function enqueueProductionJob(params = {}) {
   };
   appendJobLog(
     job,
-    `Queued ${mode} (${resolution} @ ${fps}fps, ${speed}x, ${format}/${codec}, hw=${hardware})`
+    `Queued ${mode} (${resolution} @ ${fps}fps, ${speed}x, ${format}/${codec}, hw=${hardware}, output=${resolvedOutputFilename})`
   );
 
   jobs.set(job.id, job);
@@ -3192,12 +3276,22 @@ function handleSaveVideo(req, res, parsedUrl) {
     return sendJson(res, 400, { ok: false, error: "Only webm or mp4 formats are supported" });
   }
 
+  const rawRequestedName =
+    parsedUrl.searchParams.get("filename") ||
+    parsedUrl.searchParams.get("output_filename") ||
+    (typeof req.headers["x-video-filename"] === "string" ? req.headers["x-video-filename"] : "") ||
+    "";
+  const stemRes = sanitizeVideoOutputStem(rawRequestedName, episode);
+  if (!stemRes.ok) {
+    return sendJson(res, 400, { ok: false, error: stemRes.error });
+  }
+
   const epDir = safeResolve(WORKSPACE_ROOT, [course, "episodes", episode]);
   if (!epDir || !fs.existsSync(epDir)) {
     return sendJson(res, 404, { ok: false, error: "Episode directory not found" });
   }
 
-  const filename = `${episode}.${ext}`;
+  const filename = `${stemRes.stem}.${ext}`;
   const outPath = safeResolve(epDir, [filename]);
   if (!outPath) {
     return sendJson(res, 403, { ok: false, error: "Forbidden" });
@@ -3209,18 +3303,20 @@ function handleSaveVideo(req, res, parsedUrl) {
     const buf = Buffer.concat(chunks);
     fs.writeFileSync(outPath, buf);
 
-    // Auto-update state/<episode>.json if it exists
     const courseDir = path.join(WORKSPACE_ROOT, course);
+    const artifacts = inspectEpisodeArtifacts(courseDir, episode);
+    if (!artifacts.video_file) {
+      artifacts.video_file = filename;
+    }
+
+    // Auto-update state/<episode>.json if it exists
     const stateDir = path.join(courseDir, "state");
     const statePath = path.join(stateDir, `${episode}.json`);
     if (fs.existsSync(statePath)) {
       const state = readEpisodeState(stateDir, episode);
       if (state) {
         const now = new Date().toISOString();
-        state.artifacts = inspectEpisodeArtifacts(courseDir, episode);
-        if (!state.artifacts.video_file) {
-          state.artifacts.video_file = filename;
-        }
+        state.artifacts = artifacts;
         state.production = state.production || {};
         state.production.video_done = true;
         state.updated_at = now;
@@ -3239,14 +3335,25 @@ function handleSaveVideo(req, res, parsedUrl) {
       }
     }
 
+    const videoFiles = mapEpisodeVideoFiles(course, episode, artifacts);
+    broadcastSse("courses_updated", {
+      course,
+      episode_id: episode,
+      video_file: artifacts.video_file || filename,
+      ts: new Date().toISOString(),
+    });
+
     const videoUrl = `/courses/${encodeURIComponent(course)}/episodes/${encodeURIComponent(episode)}/${encodeURIComponent(filename)}`;
     sendJson(res, 200, {
       ok: true,
+      file: filename,
       filename,
       format: ext,
       path: outPath,
       bytes: buf.length,
       video_url: videoUrl,
+      video_file: artifacts.video_file || filename,
+      video_files: videoFiles,
     });
   });
   req.on("error", (err) => {
@@ -3254,13 +3361,40 @@ function handleSaveVideo(req, res, parsedUrl) {
   });
 }
 
-function handleDownloadVideo(req, res, parsedUrl) {
-  const course = String(parsedUrl.searchParams.get("course") || "").trim();
-  const episode = String(parsedUrl.searchParams.get("ep") || parsedUrl.searchParams.get("episode") || "").trim();
-  const requestedFile = String(parsedUrl.searchParams.get("file") || "").trim();
+async function handleDeleteEpisodeVideo(req, res) {
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch (err) {
+    return sendJson(res, 400, { ok: false, error: err.message });
+  }
+
+  const course = String(body.course || "").trim();
+  const episode = String(body.episode || "").trim();
+  const filename = String(body.filename || "").trim();
 
   if (!/^[A-Za-z0-9_-]+$/.test(course) || !/^[A-Za-z0-9_-]+$/.test(episode)) {
     return sendJson(res, 400, { ok: false, error: "Invalid course or episode identifier" });
+  }
+  if (
+    !filename ||
+    filename.includes("/") ||
+    filename.includes("\\") ||
+    filename.includes("..") ||
+    !/^[A-Za-z0-9_.-]+\.(mp4|webm)$/i.test(filename)
+  ) {
+    return sendJson(res, 400, { ok: false, error: "Invalid video filename" });
+  }
+
+  const jobKey = `${course}:${episode}`;
+  if (activeJobByEp.has(jobKey)) {
+    const existingJob = jobs.get(activeJobByEp.get(jobKey));
+    if (existingJob && (existingJob.status === "queued" || existingJob.status === "running")) {
+      return sendJson(res, 409, {
+        ok: false,
+        error: `Tập ${episode} đang có tác vụ TTS/Render đang chạy hoặc chờ xử lý. Vui lòng đợi hoàn tất trước khi xóa video.`,
+      });
+    }
   }
 
   const courseDir = safeResolve(WORKSPACE_ROOT, [course]);
@@ -3269,44 +3403,68 @@ function handleDownloadVideo(req, res, parsedUrl) {
     return sendJson(res, 404, { ok: false, error: "Episode directory not found" });
   }
 
-  let filename = requestedFile;
-  if (filename) {
-    if (
-      filename.includes("/") ||
-      filename.includes("\\") ||
-      filename.includes("..") ||
-      !/^[A-Za-z0-9_.-]+\.(mp4|webm)$/i.test(filename)
-    ) {
-      return sendJson(res, 400, { ok: false, error: "Invalid video filename" });
-    }
-  } else {
-    const artifacts = inspectEpisodeArtifacts(courseDir, episode);
-    filename = artifacts.video_file || "";
-    if (!filename) {
-      return sendJson(res, 404, { ok: false, error: `No video file found for ${course}/${episode}` });
-    }
-  }
-
   const targetPath = safeResolve(epDir, [filename]);
-  if (!targetPath) {
+  if (!targetPath || targetPath === path.resolve(epDir)) {
     return sendJson(res, 403, { ok: false, error: "Forbidden" });
   }
-  if (!fs.existsSync(targetPath) || fs.statSync(targetPath).isDirectory()) {
-    return sendJson(res, 404, { ok: false, error: `Video file not found: ${filename}` });
+  if (fs.existsSync(targetPath)) {
+    if (fs.statSync(targetPath).isDirectory()) {
+      return sendJson(res, 400, { ok: false, error: "Target is a directory" });
+    }
+    fs.unlinkSync(targetPath);
   }
 
-  const stat = fs.statSync(targetPath);
-  const ext = path.extname(filename).toLowerCase();
-  const contentType = MIME_TYPES[ext] || "application/octet-stream";
+  const artifacts = inspectEpisodeArtifacts(courseDir, episode);
+  const remainingVideos = Array.isArray(artifacts.video_files) ? artifacts.video_files.length : 0;
+  const videoFiles = mapEpisodeVideoFiles(course, episode, artifacts);
 
-  res.writeHead(200, {
-    "Content-Length": stat.size,
-    "Accept-Ranges": "bytes",
-    "Content-Type": contentType,
-    "Content-Disposition": `attachment; filename="${filename}"`,
-    "Cache-Control": "no-store",
+  const stateDir = path.join(courseDir, "state");
+  const statePath = path.join(stateDir, `${episode}.json`);
+  if (fs.existsSync(stateDir) || fs.existsSync(statePath)) {
+    mutateEpisodeStateForJob(
+      course,
+      episode,
+      (state, freshArtifacts) => {
+        const count = Array.isArray(freshArtifacts.video_files)
+          ? freshArtifacts.video_files.length
+          : 0;
+        if (count === 0) {
+          state.production = state.production || {};
+          state.production.video_done = false;
+          state.production.verified = false;
+          state.production.stale = false;
+          state.production.stale_reason = null;
+          if (state.production.status === "completed") {
+            state.production.status = "pending";
+            state.production.completed_at = null;
+          }
+        }
+      },
+      {
+        type: "video_file_deleted",
+        filename,
+        remaining_count: remainingVideos,
+        video_file: artifacts.video_file || null,
+        message: `Deleted rendered video ${filename}`,
+      }
+    );
+  }
+
+  broadcastSse("courses_updated", {
+    course,
+    episode_id: episode,
+    deleted: filename,
+    video_file: artifacts.video_file || null,
+    video_files: videoFiles,
+    ts: new Date().toISOString(),
   });
-  fs.createReadStream(targetPath).pipe(res);
+
+  return sendJson(res, 200, {
+    ok: true,
+    deleted: filename,
+    video_file: artifacts.video_file || null,
+    video_files: videoFiles,
+  });
 }
 
 const server = http.createServer((req, res) => {
@@ -3353,6 +3511,10 @@ const server = http.createServer((req, res) => {
     return void handleSceneTimings(req, res);
   }
 
+  if (req.method === "POST" && pathname === "/api/episodes/video/delete") {
+    return void handleDeleteEpisodeVideo(req, res);
+  }
+
   if (req.method === "GET" && pathname.startsWith("/api/voices/preview-file/")) {
     const filename = pathname.slice("/api/voices/preview-file/".length);
     if (!filename || filename.includes("/") || filename.includes("\\") || filename.includes("..")) {
@@ -3387,10 +3549,6 @@ const server = http.createServer((req, res) => {
 
   if (pathname === "/mcp") {
     return void handleMcpHttp(req, res);
-  }
-
-  if (req.method === "GET" && pathname === "/api/download-video") {
-    return handleDownloadVideo(req, res, parsedUrl);
   }
 
   if (req.method === "GET" && pathname === "/api/stream") {

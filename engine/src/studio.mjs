@@ -16,7 +16,6 @@ import { VoiceStudioModal } from "./components/VoiceStudioModal.mjs";
 import { ParticleStage } from "./motion/ParticleStage.mjs";
 import { computeSceneEnvelope, getSceneBurstInfo, parseSubtitleSegments } from "./motion/kernel.mjs";
 import { renderMarkdownToHtml } from "./markdown.mjs";
-import { exportEpisodeVideo } from "./exporter.mjs";
 
 const h = React.createElement;
 
@@ -141,6 +140,83 @@ function formatJobModeTitle(mode) {
   if (mode === "tts_only") return "🎙️ Tạo Audio (TTS)";
   if (mode === "render_only") return "🎬 Xuất Video (Server)";
   return "🎬 Tạo Audio & Render Video";
+}
+
+function sanitizeOutputFilenameInput(raw) {
+  let note = "";
+  let s = String(raw || "");
+  if (/\.(mp4|webm)$/i.test(s.trim())) {
+    s = s.trim().replace(/\.(mp4|webm)$/i, "");
+    note = "Đã tự bỏ đuôi .mp4/.webm (định dạng được khóa tự động theo codec).";
+  }
+  const withoutForbidden = s.replace(/[/\\:*?"<>|\x00-\x1f]/g, "");
+  if (withoutForbidden !== s) {
+    s = withoutForbidden;
+    note = "Đã loại bỏ ký tự đường dẫn không hợp lệ (/ \\ : * ? \" < > |).";
+  }
+  if (s.includes("..")) {
+    while (s.includes("..")) {
+      s = s.replace(/\.\./g, ".");
+    }
+    note = "Đã loại bỏ chuỗi '..' không hợp lệ trong tên file.";
+  }
+  s = s.replace(/^[.\s]+/, "").replace(/\s+/g, "-");
+  if (s.length > 96) {
+    s = s.slice(0, 96);
+  }
+  return { stem: s, note };
+}
+
+function resolveOutputFilenameStem(rawStem, fallbackId) {
+  const { stem } = sanitizeOutputFilenameInput(rawStem);
+  const clean = stem.replace(/[.\s]+$/g, "");
+  if (!clean) {
+    return String(fallbackId || "video").trim() || "video";
+  }
+  return clean;
+}
+
+function suggestNextVideoFilenameStem(stem, ext, videoFiles) {
+  const existing = new Set(
+    (Array.isArray(videoFiles) ? videoFiles : [])
+      .map((f) => String(f?.filename || "").toLowerCase())
+      .filter(Boolean)
+  );
+  const base = String(stem || "video").replace(/-v\d+$/i, "") || String(stem || "video");
+  let n = 2;
+  while (n < 999) {
+    const candidate = `${base}-v${n}`;
+    if (!existing.has(`${candidate}.${ext}`.toLowerCase())) {
+      return candidate;
+    }
+    n += 1;
+  }
+  return `${base}-v${Date.now()}`;
+}
+
+function formatVideoFileSize(bytes) {
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n < 0) return "0 MB";
+  if (n < 1024 * 1024) {
+    return `${Math.max(1, Math.round(n / 1024))} KB`;
+  }
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatVideoTimestamp(isoOrMs) {
+  if (!isoOrMs) return "";
+  try {
+    const d = new Date(isoOrMs);
+    if (Number.isNaN(d.getTime())) return String(isoOrMs);
+    return d.toLocaleString("vi-VN", {
+      day: "2-digit",
+      month: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return String(isoOrMs);
+  }
 }
 
 function formatTime(sec) {
@@ -483,6 +559,10 @@ function StudioApp() {
   const [renderPrefs, setRenderPrefs] = useState(loadInitialRenderPrefs);
   const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const [includeTtsBeforeExport, setIncludeTtsBeforeExport] = useState(false);
+  const [outputFilenameStem, setOutputFilenameStem] = useState("");
+  const [filenameSanitizeNote, setFilenameSanitizeNote] = useState("");
+  const [previewVideoFile, setPreviewVideoFile] = useState(null);
+  const [deletingVideoFile, setDeletingVideoFile] = useState("");
   const [guardrailNote, setGuardrailNote] = useState("");
   const [audioVersion, setAudioVersion] = useState(1);
   const [revisionToast, setRevisionToast] = useState(null);
@@ -496,6 +576,7 @@ function StudioApp() {
   const sseRefreshTimerRef = useRef(null);
   const pendingSceneIdRef = useRef(initialRoute.scene || "");
   const renderSettingsRef = useRef(null);
+  const exportFilenameInputRef = useRef(null);
   const notifiedJobStatesRef = useRef(new Set());
 
   selectedCourseIdRef.current = selectedCourseId;
@@ -512,6 +593,9 @@ function StudioApp() {
   useEffect(() => {
     if (!exportMenuOpen) return undefined;
     const onMouseDown = (e) => {
+      if (e.target?.closest && e.target.closest("[data-export-trigger]")) {
+        return;
+      }
       if (renderSettingsRef.current && !renderSettingsRef.current.contains(e.target)) {
         setExportMenuOpen(false);
       }
@@ -528,6 +612,17 @@ function StudioApp() {
       window.removeEventListener("keydown", onKeyDown);
     };
   }, [exportMenuOpen]);
+
+  useEffect(() => {
+    if (!previewVideoFile) return undefined;
+    const onKeyDown = (e) => {
+      if (e.key === "Escape") {
+        setPreviewVideoFile(null);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [previewVideoFile]);
 
   const updateRenderPrefs = useCallback((patch) => {
     setRenderPrefs((prev) => {
@@ -963,6 +1058,12 @@ function StudioApp() {
     setIncludeTtsBeforeExport(!currentTrackHasAudio || isEpStaleVal);
   }, [currentEpisode?.id, currentTrackHasAudio, isEpStaleVal, activeVoiceTrackId]);
 
+  useEffect(() => {
+    setOutputFilenameStem(currentEpisode?.id || "");
+    setFilenameSanitizeNote("");
+    setPreviewVideoFile(null);
+  }, [currentEpisode?.id]);
+
   const isStoryboardMode = Boolean(
     currentEpisode &&
       currentScene &&
@@ -1211,30 +1312,6 @@ function StudioApp() {
     }
   };
 
-  const handleExport = async () => {
-    if (!currentCourse || !currentEpisode) return;
-    if (isPlaying) {
-      if (audioRef.current) audioRef.current.pause();
-      setIsPlaying(false);
-    }
-    try {
-      setExportStatus({ phase: "starting", label: "Đang khởi tạo bộ xuất video...", percent: 2 });
-      const res = await exportEpisodeVideo({
-        courseId: currentCourse.id,
-        episode: currentEpisode,
-        onProgress: setExportStatus,
-      });
-      const url = URL.createObjectURL(res.blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${currentEpisode.id}.webm`;
-      a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    } catch (err) {
-      setExportStatus({ phase: "error", label: `Lỗi xuất video: ${err.message}`, percent: 0 });
-    }
-  };
-
   const handleStateAction = useCallback(
     async (payload) => {
       const res = await fetch("/api/state", {
@@ -1417,6 +1494,7 @@ function StudioApp() {
       resolution,
       fps,
       speed,
+      output_filename,
     }) => {
       try {
         const prefFmt = splitFormatCodec(renderPrefs.formatCodec);
@@ -1445,6 +1523,9 @@ function StudioApp() {
           body.resolution = resolvedResolution;
           body.fps = resolvedFps;
           body.speed = resolvedSpeed;
+          if (output_filename) {
+            body.output_filename = output_filename;
+          }
         }
         if (profile_id) body.profile_id = profile_id;
 
@@ -1487,6 +1568,8 @@ function StudioApp() {
     setExportStatus(null);
     setExportMenuOpen(false);
     const { format, codec } = splitFormatCodec(renderPrefs.formatCodec);
+    const resolvedStem = resolveOutputFilenameStem(outputFilenameStem, currentEpisode.id);
+    const resolvedFilename = `${resolvedStem}.${format}`;
     try {
       await handleRunProduction({
         course: currentCourse.id,
@@ -1498,6 +1581,7 @@ function StudioApp() {
         resolution: renderPrefs.resolution,
         fps: renderPrefs.fps,
         speed: playbackRate,
+        output_filename: resolvedFilename,
       });
     } catch {
       // Error toast is already surfaced by handleRunProduction
@@ -1508,9 +1592,105 @@ function StudioApp() {
     handleRunProduction,
     includeTtsBeforeExport,
     isPlaying,
+    outputFilenameStem,
     playbackRate,
     renderPrefs,
   ]);
+
+  const openExportMenuWithFocus = useCallback(() => {
+    setExportMenuOpen(true);
+    setTimeout(() => {
+      if (exportFilenameInputRef.current) {
+        exportFilenameInputRef.current.focus();
+        exportFilenameInputRef.current.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }
+    }, 30);
+  }, []);
+
+  const handlePickFilenameForExport = useCallback(
+    (file) => {
+      if (!file?.filename) return;
+      const rawName = String(file.filename);
+      const stem = rawName.replace(/\.(mp4|webm)$/i, "");
+      const targetFormat = String(
+        file.format || (rawName.toLowerCase().endsWith(".webm") ? "webm" : "mp4")
+      ).toLowerCase();
+      const currentFormat = splitFormatCodec(renderPrefs.formatCodec).format;
+
+      setOutputFilenameStem(stem || currentEpisode?.id || "");
+      setFilenameSanitizeNote("");
+      if (targetFormat !== currentFormat) {
+        updateRenderPrefs({
+          formatCodec: targetFormat === "webm" ? "webm:vp9" : "mp4:h264",
+        });
+      }
+      openExportMenuWithFocus();
+    },
+    [currentEpisode?.id, openExportMenuWithFocus, renderPrefs.formatCodec, updateRenderPrefs]
+  );
+
+  const handleCopyVideoPath = useCallback(
+    async (file) => {
+      if (!currentCourse || !currentEpisode || !file?.filename) return;
+      const relPath = `${currentCourse.id}/episodes/${currentEpisode.id}/${file.filename}`;
+      try {
+        if (navigator?.clipboard?.writeText) {
+          await navigator.clipboard.writeText(relPath);
+        } else {
+          const ta = document.createElement("textarea");
+          ta.value = relPath;
+          ta.style.position = "fixed";
+          ta.style.opacity = "0";
+          document.body.appendChild(ta);
+          ta.select();
+          document.execCommand("copy");
+          document.body.removeChild(ta);
+        }
+        showToast(true, `📋 Đã sao chép đường dẫn: ${relPath}`);
+      } catch (err) {
+        showToast(false, `⚠️ Không thể sao chép đường dẫn: ${err.message}`);
+      }
+    },
+    [currentCourse, currentEpisode, showToast]
+  );
+
+  const handleDeleteVideoFile = useCallback(
+    async (file) => {
+      if (!currentCourse || !currentEpisode || !file?.filename || deletingVideoFile) return;
+      const confirmed = window.confirm(
+        `Xóa vĩnh viễn file video "${file.filename}" khỏi thư mục ${currentCourse.id}/episodes/${currentEpisode.id}/?`
+      );
+      if (!confirmed) return;
+
+      setDeletingVideoFile(file.filename);
+      try {
+        const res = await fetch("/api/episodes/video/delete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            course: currentCourse.id,
+            episode: currentEpisode.id,
+            filename: file.filename,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok || data.ok === false) {
+          throw new Error(data.error || `HTTP ${res.status}`);
+        }
+        if (previewVideoFile?.filename === file.filename) {
+          setPreviewVideoFile(null);
+        }
+        await fetchCourses();
+        await fetchEvents(currentCourse.id);
+        showToast(true, `🗑️ Đã xóa file video ${file.filename}.`);
+      } catch (err) {
+        showToast(false, `⚠️ Không thể xóa ${file.filename}: ${err.message}`);
+      } finally {
+        setDeletingVideoFile("");
+      }
+    },
+    [currentCourse, currentEpisode, deletingVideoFile, fetchCourses, fetchEvents, previewVideoFile?.filename, showToast]
+  );
 
   const handleActivateVoiceTrack = useCallback(
     async (profileId) => {
@@ -1854,13 +2034,38 @@ function StudioApp() {
   );
   const activeFormatSpec = splitFormatCodec(renderPrefs.formatCodec);
   const renderSettingsSummary = formatRenderPrefsPill(renderPrefs, playbackRate);
-  const existingVideoDownloadUrl =
-    currentCourse && currentEpisode && currentEpisode.has_video
-      ? `/api/download-video?${new URLSearchParams({
-          course: currentCourse.id,
-          ep: currentEpisode.id,
-        }).toString()}`
-      : "";
+  const epVideoFiles = Array.isArray(currentEpisode?.video_files) ? currentEpisode.video_files : [];
+  const activeExt = activeFormatSpec.format === "webm" ? "webm" : "mp4";
+  const resolvedOutputStem = resolveOutputFilenameStem(
+    outputFilenameStem,
+    currentEpisode?.id || "video"
+  );
+  const resolvedOutputFilename = `${resolvedOutputStem}.${activeExt}`;
+  const collidingVideoFile =
+    epVideoFiles.find(
+      (f) => String(f?.filename || "").toLowerCase() === resolvedOutputFilename.toLowerCase()
+    ) || null;
+  const suggestedNextStem = collidingVideoFile
+    ? suggestNextVideoFilenameStem(resolvedOutputStem, activeExt, epVideoFiles)
+    : "";
+  const isEpJobCompleted = Boolean(
+    activeEpJob &&
+      (activeEpJob.status === "completed" ||
+        activeEpJob.status === "done" ||
+        activeEpJob.status === "succeeded")
+  );
+  const activeEpJobPreviewFile =
+    isEpJobCompleted && activeEpJob.mode !== "tts_only"
+      ? activeEpJob.output_file
+        ? epVideoFiles.find(
+            (f) => String(f?.filename || "").toLowerCase() === String(activeEpJob.output_file).toLowerCase()
+          ) || {
+            filename: activeEpJob.output_file,
+            format: String(activeEpJob.output_file).toLowerCase().endsWith(".webm") ? "webm" : "mp4",
+            url: `/courses/${encodeURIComponent(activeEpJob.course)}/episodes/${encodeURIComponent(activeEpJob.episode)}/${encodeURIComponent(activeEpJob.output_file)}`,
+          }
+        : epVideoFiles[0] || null
+      : null;
 
   return h(
     "div",
@@ -2234,6 +2439,68 @@ function StudioApp() {
                   )
                 ),
 
+                h(
+                  "div",
+                  { className: "render-pop-group" },
+                  h("div", { className: "render-pop-label" }, "Tên file đầu ra"),
+                  h(
+                    "div",
+                    { className: "export-filename-wrap" },
+                    h("input", {
+                      ref: exportFilenameInputRef,
+                      type: "text",
+                      className: "export-filename-input",
+                      value: outputFilenameStem,
+                      placeholder: currentEpisode?.id || "ep01-video",
+                      "aria-label": "Tên file đầu ra",
+                      spellCheck: false,
+                      onChange: (e) => {
+                        const { stem, note } = sanitizeOutputFilenameInput(e.target.value);
+                        setOutputFilenameStem(stem);
+                        setFilenameSanitizeNote(note);
+                      },
+                    }),
+                    h("span", { className: "export-filename-ext" }, `.${activeExt}`)
+                  ),
+                  !String(outputFilenameStem || "").trim()
+                    ? h(
+                        "div",
+                        { className: "export-filename-helper" },
+                        `Để trống sẽ tự dùng tên mặc định: ${currentEpisode?.id || "video"}.${activeExt}`
+                      )
+                    : null,
+                  filenameSanitizeNote
+                    ? h("div", { className: "export-filename-helper is-note" }, `ℹ️ ${filenameSanitizeNote}`)
+                    : null,
+                  collidingVideoFile
+                    ? h(
+                        "div",
+                        { className: "export-collision-warn", role: "alert" },
+                        h(
+                          "div",
+                          { className: "export-collision-text" },
+                          `⚠️ File "${collidingVideoFile.filename}" đã tồn tại (${formatVideoFileSize(collidingVideoFile.size_bytes)}, ${formatVideoTimestamp(collidingVideoFile.modified_at)}) — nếu không đổi tên sẽ GHI ĐÈ lên file cũ`
+                        ),
+                        h(
+                          "button",
+                          {
+                            type: "button",
+                            className: "export-suggest-btn",
+                            onClick: () => {
+                              setOutputFilenameStem(suggestedNextStem);
+                              setFilenameSanitizeNote("");
+                            },
+                          },
+                          `✨ Đổi sang ${suggestedNextStem}.${activeExt}`
+                        )
+                      )
+                    : h(
+                        "div",
+                        { className: "export-target-path" },
+                        `📄 Sẽ lưu tại: ${currentCourse?.id || ""}/episodes/${currentEpisode?.id || ""}/${resolvedOutputFilename}`
+                      )
+                ),
+
                 guardrailNote
                   ? h("div", { className: "render-guardrail-note" }, `ℹ️ ${guardrailNote}`)
                   : h(
@@ -2249,25 +2516,16 @@ function StudioApp() {
                     "button",
                     {
                       type: "button",
-                      className: "export-cta-btn",
+                      className: `export-cta-btn ${collidingVideoFile ? "is-overwrite" : ""}`,
                       disabled: !currentEpisode?.has_script || isEpJobRunning,
                       onClick: handleUnifiedExport,
                     },
                     isEpJobRunning
                       ? "⏳ Đang xử lý trên Server..."
-                      : "🚀 Bắt đầu Xuất Video"
-                  ),
-                  existingVideoDownloadUrl
-                    ? h(
-                        "a",
-                        {
-                          className: "export-download-link",
-                          href: existingVideoDownloadUrl,
-                          download: true,
-                        },
-                        "⬇ Tải video hiện có"
-                      )
-                    : null
+                      : collidingVideoFile
+                        ? `⚠️ Ghi đè "${resolvedOutputFilename}"`
+                        : "🚀 Bắt đầu Xuất Video"
+                  )
                 )
               )
             : null
@@ -2504,20 +2762,25 @@ function StudioApp() {
                           "✕ Hủy"
                         )
                       : null,
-                    (activeEpJob.status === "completed" || activeEpJob.status === "done" || activeEpJob.status === "succeeded") &&
-                    (activeEpJob.output_file || activeEpJob.mode !== "tts_only")
+                    activeEpJob.output_file && isEpJobCompleted && activeEpJob.mode !== "tts_only"
                       ? h(
-                          "a",
+                          "span",
                           {
-                            className: "job-act-btn is-download",
-                            href: `/api/download-video?${new URLSearchParams({
-                              course: activeEpJob.course,
-                              ep: activeEpJob.episode,
-                              file: activeEpJob.output_file || `${activeEpJob.episode}.${activeEpJob.format || "mp4"}`,
-                            }).toString()}`,
-                            download: activeEpJob.output_file || `${activeEpJob.episode}.${activeEpJob.format || "mp4"}`,
+                            className: "job-saved-file-pill",
+                            title: `${activeEpJob.course}/episodes/${activeEpJob.episode}/${activeEpJob.output_file}`,
                           },
-                          "⬇ Tải về"
+                          `📁 ${activeEpJob.output_file}`
+                        )
+                      : null,
+                    activeEpJobPreviewFile
+                      ? h(
+                          "button",
+                          {
+                            type: "button",
+                            className: "job-act-btn is-watch",
+                            onClick: () => setPreviewVideoFile(activeEpJobPreviewFile),
+                          },
+                          "▶ Xem thử"
                         )
                       : null
                   )
@@ -2546,7 +2809,134 @@ function StudioApp() {
                 )
               )
             : null
-        )
+        ),
+
+        // Existing Video Files Panel for this Lesson
+        currentEpisode
+          ? h(
+              "div",
+              { className: "ep-video-files-card" },
+              h(
+                "div",
+                { className: "ep-video-files-head" },
+                h(
+                  "div",
+                  { className: "ep-video-files-title" },
+                  `📁 Video đã xuất (${epVideoFiles.length})`
+                ),
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    className: "ep-video-new-btn",
+                    "data-export-trigger": "true",
+                    disabled: !currentEpisode?.has_script,
+                    onClick: openExportMenuWithFocus,
+                  },
+                  "+ Xuất bản mới"
+                )
+              ),
+              epVideoFiles.length === 0
+                ? h(
+                    "div",
+                    { className: "ep-video-files-empty" },
+                    "Chưa có file video nào trong thư mục bài học. Bấm \"+ Xuất bản mới\" hoặc \"🎬 Xuất Video ▾\" để render và lưu trực tiếp tại đây."
+                  )
+                : h(
+                    "div",
+                    { className: "ep-video-files-list" },
+                    ...epVideoFiles.map((file) => {
+                      const fmtUpper = String(
+                        file.format || (String(file.filename || "").toLowerCase().endsWith(".webm") ? "webm" : "mp4")
+                      ).toUpperCase();
+                      const isDeletingThis = deletingVideoFile === file.filename;
+                      const previewUrl =
+                        file.url ||
+                        `/courses/${encodeURIComponent(currentCourse?.id || "")}/episodes/${encodeURIComponent(currentEpisode?.id || "")}/${encodeURIComponent(file.filename || "")}`;
+                      return h(
+                        "div",
+                        { key: file.filename, className: "ep-video-file-row" },
+                        h(
+                          "div",
+                          { className: "ep-video-file-info" },
+                          h(
+                            "div",
+                            { className: "ep-video-file-main" },
+                            h(
+                              "span",
+                              {
+                                className: `ep-video-fmt-badge ${fmtUpper === "WEBM" ? "is-webm" : "is-mp4"}`,
+                              },
+                              fmtUpper
+                            ),
+                            h(
+                              "span",
+                              { className: "ep-video-file-name", title: file.filename },
+                              file.filename
+                            ),
+                            file.is_default
+                              ? h("span", { className: "ep-video-default-pill" }, "Mặc định")
+                              : null
+                          ),
+                          h(
+                            "div",
+                            { className: "ep-video-file-meta" },
+                            `${formatVideoFileSize(file.size_bytes)}${
+                              file.modified_at ? ` · ${formatVideoTimestamp(file.modified_at)}` : ""
+                            }`
+                          )
+                        ),
+                        h(
+                          "div",
+                          { className: "ep-video-file-actions" },
+                          h(
+                            "button",
+                            {
+                              type: "button",
+                              className: "ep-video-act-btn is-preview",
+                              onClick: () => setPreviewVideoFile({ ...file, url: previewUrl }),
+                              title: `Xem thử ${file.filename}`,
+                            },
+                            "▶ Xem thử"
+                          ),
+                          h(
+                            "button",
+                            {
+                              type: "button",
+                              className: "ep-video-act-btn",
+                              "data-export-trigger": "true",
+                              onClick: () => handlePickFilenameForExport(file),
+                              title: "Điền sẵn tên file này vào bảng Xuất Video",
+                            },
+                            "✏️ Chọn tên"
+                          ),
+                          h(
+                            "button",
+                            {
+                              type: "button",
+                              className: "ep-video-act-btn",
+                              onClick: () => handleCopyVideoPath(file),
+                              title: `Sao chép ${currentCourse?.id}/episodes/${currentEpisode?.id}/${file.filename}`,
+                            },
+                            "📋 Copy path"
+                          ),
+                          h(
+                            "button",
+                            {
+                              type: "button",
+                              className: "ep-video-act-btn is-danger",
+                              disabled: Boolean(deletingVideoFile),
+                              onClick: () => handleDeleteVideoFile(file),
+                              title: `Xóa ${file.filename}`,
+                            },
+                            isDeletingThis ? "⏳" : "🗑️ Xóa"
+                          )
+                        )
+                      );
+                    })
+                  )
+            )
+          : null
       ),
 
       // Right Column: Scene List / Cheat-Sheet Notes / Revisions / Course Curriculum
@@ -2846,7 +3236,96 @@ function StudioApp() {
         );
       },
       onRunProduction: handleRunProduction,
-    })
+    }),
+
+    // In-App Video Preview Modal
+    previewVideoFile
+      ? h(
+          "div",
+          {
+            className: "studio-modal-backdrop ep-video-modal-backdrop",
+            onClick: (e) => {
+              if (e.target === e.currentTarget) setPreviewVideoFile(null);
+            },
+          },
+          h(
+            "div",
+            {
+              className: "studio-modal studio-modal-wide ep-video-preview-modal",
+              role: "dialog",
+              "aria-modal": "true",
+              "aria-label": `Xem thử ${previewVideoFile.filename}`,
+            },
+            h(
+              "div",
+              { className: "studio-modal-header" },
+              h(
+                "div",
+                null,
+                h(
+                  "h3",
+                  { className: "studio-modal-title ep-video-modal-title" },
+                  h(
+                    "span",
+                    {
+                      className: `ep-video-fmt-badge ${
+                        String(previewVideoFile.format || "").toLowerCase() === "webm" ||
+                        String(previewVideoFile.filename || "").toLowerCase().endsWith(".webm")
+                          ? "is-webm"
+                          : "is-mp4"
+                      }`,
+                    },
+                    String(
+                      previewVideoFile.format ||
+                        (String(previewVideoFile.filename || "").toLowerCase().endsWith(".webm")
+                          ? "webm"
+                          : "mp4")
+                    ).toUpperCase()
+                  ),
+                  h("span", null, previewVideoFile.filename)
+                ),
+                h(
+                  "div",
+                  { className: "studio-modal-sub" },
+                  `${currentCourse?.id || ""}/episodes/${currentEpisode?.id || ""}/${previewVideoFile.filename}${
+                    previewVideoFile.size_bytes
+                      ? ` · ${formatVideoFileSize(previewVideoFile.size_bytes)}`
+                      : ""
+                  }${
+                    previewVideoFile.modified_at
+                      ? ` · ${formatVideoTimestamp(previewVideoFile.modified_at)}`
+                      : ""
+                  }`
+                )
+              ),
+              h(
+                "button",
+                {
+                  type: "button",
+                  className: "studio-modal-close",
+                  onClick: () => setPreviewVideoFile(null),
+                  "aria-label": "Đóng xem thử",
+                },
+                "✕"
+              )
+            ),
+            h(
+              "div",
+              { className: "studio-modal-body ep-video-modal-body" },
+              h("video", {
+                key: previewVideoFile.url || previewVideoFile.filename,
+                className: "ep-video-preview-player",
+                src:
+                  previewVideoFile.url ||
+                  `/courses/${encodeURIComponent(currentCourse?.id || "")}/episodes/${encodeURIComponent(currentEpisode?.id || "")}/${encodeURIComponent(previewVideoFile.filename || "")}`,
+                controls: true,
+                autoPlay: true,
+                playsInline: true,
+              })
+            )
+          )
+        )
+      : null
   );
 }
 

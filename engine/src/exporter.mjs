@@ -2509,10 +2509,32 @@ async function decodeSceneAudioBuffers(episode, scenes, onProgress, speed = 1) {
   return buffers;
 }
 
-async function saveVideoToServer(courseId, episodeId, ext, blob, mimeType) {
+export function resolveOutputFilename(rawName, episodeId, actualExt = "webm") {
+  const safeExt = String(actualExt || "").toLowerCase() === "mp4" ? "mp4" : "webm";
+  const fallbackStem =
+    String(episodeId || "video")
+      .trim()
+      .replace(/[\\/]+/g, "")
+      .replace(/\.(mp4|webm)$/i, "") || "video";
+
+  let stem = String(rawName ?? "").trim();
+  // Strip path separators and parent-traversal sequences safely
+  stem = stem.replace(/[\\/]+/g, "").replace(/\.\.+/g, ".");
+  while (/\.(mp4|webm)$/i.test(stem)) {
+    stem = stem.replace(/\.(mp4|webm)$/i, "");
+  }
+  stem = stem.replace(/\s+/g, "-").replace(/[^A-Za-z0-9._-]/g, "");
+  stem = stem.replace(/^\.+/, "").slice(0, 96);
+  if (!stem || !/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,95}$/.test(stem)) {
+    stem = fallbackStem;
+  }
+  return `${stem}.${safeExt}`;
+}
+
+async function saveVideoToServer(courseId, episodeId, ext, blob, mimeType, rawFilename) {
   const safeExt = ext === "mp4" ? "mp4" : "webm";
   const resolvedMime = mimeType || (safeExt === "mp4" ? "video/mp4" : "video/webm");
-  const filename = `${episodeId}.${safeExt}`;
+  const filename = resolveOutputFilename(rawFilename, episodeId, safeExt);
   const saveResp = await fetch(
     `/api/save-video?course=${encodeURIComponent(courseId)}&episode=${encodeURIComponent(episodeId)}&ext=${encodeURIComponent(safeExt)}&filename=${encodeURIComponent(filename)}`,
     {
@@ -2543,6 +2565,8 @@ async function exportEpisodeMediaRecorder({
   resolution = "1080p",
   fps = 60,
   speed = 1,
+  outputFilename,
+  filename,
   onProgress,
   throwOnSaveError = false,
 }) {
@@ -2675,22 +2699,25 @@ async function exportEpisodeMediaRecorder({
   const blob = await stoppedPromise;
   await audioCtx.close();
 
-  onProgress?.({ phase: "saving", label: "Đang lưu file .webm vào ổ đĩa...", percent: 97 });
+  const resolvedFilename = resolveOutputFilename(outputFilename ?? filename, episode.id, "webm");
+  onProgress?.({ phase: "saving", label: `Đang lưu file ${resolvedFilename} vào ổ đĩa...`, percent: 97 });
   let saved = null;
   try {
-    saved = await saveVideoToServer(courseId, episode.id, "webm", blob, "video/webm");
+    saved = await saveVideoToServer(courseId, episode.id, "webm", blob, "video/webm", resolvedFilename);
     onProgress?.({ phase: "done", label: `Đã lưu thành công: ${saved.path}`, percent: 100 });
   } catch (err) {
     if (throwOnSaveError) throw err;
     onProgress?.({
       phase: "done",
-      label: `Đã xuất .webm (tải trực tiếp qua trình duyệt; lưu server thất bại: ${err.message})`,
+      label: `Đã xuất ${resolvedFilename} (tải trực tiếp qua trình duyệt; lưu server thất bại: ${err.message})`,
       percent: 100,
     });
   }
+  const savedFile = saved?.file || resolvedFilename;
   return {
     blob,
     saved,
+    savedFile,
     format: "webm",
     ext: "webm",
     codec: "vp9",
@@ -2701,7 +2728,7 @@ async function exportEpisodeMediaRecorder({
     fps: opts.fps,
     speed: opts.speed,
     mimeType: "video/webm",
-    filename: `${episode.id}.webm`,
+    filename: savedFile,
     durationSec: totalDur,
     bytes: blob.size,
   };
@@ -2716,6 +2743,8 @@ export async function exportEpisodeFast({
   resolution = "1080p",
   fps = 60,
   speed = 1,
+  outputFilename,
+  filename,
   onProgress,
   throwOnSaveError = false,
 }) {
@@ -2723,6 +2752,7 @@ export async function exportEpisodeFast({
   const scenes = script?.scenes || [];
   if (!scenes.length) throw new Error("Tập học chưa có phân cảnh nào.");
 
+  const requestedFilename = outputFilename ?? filename;
   const profile = await resolveWebCodecsProfile({ format, codec, hardware, resolution, fps, speed });
   if (!profile) {
     onProgress?.({
@@ -2736,6 +2766,7 @@ export async function exportEpisodeFast({
       resolution,
       fps,
       speed,
+      outputFilename: requestedFilename,
       onProgress,
       throwOnSaveError,
     });
@@ -2944,30 +2975,32 @@ export async function exportEpisodeFast({
 
   muxer.finalize();
   const blob = new Blob([target.buffer], { type: profile.mimeType });
-  const filename = `${episode.id}.${profile.ext}`;
+  const resolvedFilename = resolveOutputFilename(requestedFilename, episode.id, profile.ext);
 
   onProgress?.({
     phase: "saving",
-    label: `Đang lưu file ${filename} vào ổ đĩa...`,
+    label: `Đang lưu file ${resolvedFilename} vào ổ đĩa...`,
     percent: 98,
   });
 
   let saved = null;
   try {
-    saved = await saveVideoToServer(courseId, episode.id, profile.ext, blob, profile.mimeType);
+    saved = await saveVideoToServer(courseId, episode.id, profile.ext, blob, profile.mimeType, resolvedFilename);
     onProgress?.({ phase: "done", label: `Đã lưu thành công: ${saved.path}`, percent: 100 });
   } catch (err) {
     if (throwOnSaveError) throw err;
     onProgress?.({
       phase: "done",
-      label: `Đã xuất ${filename} (tải trực tiếp qua trình duyệt; lưu server thất bại: ${err.message})`,
+      label: `Đã xuất ${resolvedFilename} (tải trực tiếp qua trình duyệt; lưu server thất bại: ${err.message})`,
       percent: 100,
     });
   }
 
+  const savedFile = saved?.file || resolvedFilename;
   return {
     blob,
     saved,
+    savedFile,
     format: profile.format,
     ext: profile.ext,
     codec: profile.codec,
@@ -2979,7 +3012,7 @@ export async function exportEpisodeFast({
     fps: outFps,
     speed: outSpeed,
     mimeType: profile.mimeType,
-    filename,
+    filename: savedFile,
     durationSec: totalDur,
     bytes: blob.size,
   };
@@ -2995,6 +3028,8 @@ export async function exportEpisodeVideo({
   resolution = "1080p",
   fps = 60,
   speed = 1,
+  outputFilename,
+  filename,
 }) {
   return exportEpisodeFast({
     courseId,
@@ -3005,6 +3040,8 @@ export async function exportEpisodeVideo({
     resolution,
     fps,
     speed,
+    outputFilename,
+    filename,
     onProgress,
     throwOnSaveError: false,
   });
@@ -3020,6 +3057,8 @@ if (typeof window !== "undefined") {
     resolution = "1080p",
     fps = 60,
     speed = 1,
+    outputFilename,
+    filename,
   } = {}) => {
     if (!courseId || !episodeId) {
       throw new Error("Thiếu courseId hoặc episodeId.");
@@ -3051,6 +3090,8 @@ if (typeof window !== "undefined") {
       resolution,
       fps,
       speed,
+      outputFilename,
+      filename,
       throwOnSaveError: true,
       onProgress: (p) => {
         if (
@@ -3063,10 +3104,12 @@ if (typeof window !== "undefined") {
       },
     });
 
+    const savedFile = result.saved?.file || result.savedFile || result.filename;
     return {
       ok: true,
       path: result.saved?.path || "",
-      filename: result.filename,
+      savedFile,
+      filename: savedFile,
       bytes: result.saved?.bytes ?? result.bytes,
       format: result.format,
       ext: result.ext,

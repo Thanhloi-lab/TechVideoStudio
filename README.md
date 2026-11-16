@@ -73,7 +73,8 @@ Khởi chạy qua `engine/server.mjs` và đồng bộ real-time bằng Server-S
 3. **Studio Player (`?view=player`):**
    - Phát đồng bộ 16:9, chế độ **Storyboard Preview Mode** (xem trước khi chưa có audio), deep-link tới từng cảnh (`&scene=<scene_id>`).
    - **Multi-Voice A/B Switcher** trên topbar cho phép chuyển nhanh giữa các track giọng đã tạo (`POST /api/episodes/voice-track/activate`) hoặc xóa track không dùng (`/api/episodes/voice-track/delete`).
-   - Nút gộp **`🎬 Xuất Video ▾`** (`Export Menu Popover`) gom cấu hình chất lượng (Hardware, Format/Codec, 720p–4K, FPS, Speed), tùy chọn tạo lại TTS, nút **`🚀 Bắt đầu Xuất Video`**, và link tải video hiện có **`⬇ Tải video hiện có`**.
+   - Nút gộp **`🎬 Xuất Video ▾`** (`Export Menu Popover`) gom cấu hình chất lượng (Hardware, Format/Codec, 720p–4K, FPS, Speed), tùy chọn tạo lại TTS, ô **`Tên file đầu ra`** (điền sẵn `<ep-id>`, giữ đuôi `.mp4`/`.webm` khớp codec, tự **cảnh báo ghi đè** theo thời gian thực khi trùng tên kèm nút 1-click **`✨ Đổi sang <stem>-v2.<ext>`**), và nút **`🚀 Bắt đầu Xuất Video`**. *(Đã bỏ hoàn toàn các nút/API tải video vì video được xuất trực tiếp vào `<COURSE>/episodes/<ep-id>/`.)*
+   - Khung **`📁 Video đã xuất (<N>)`** ngay dưới timeline trong Chi tiết bài học liệt kê toàn bộ file `.mp4`/`.webm` hiện có, hỗ trợ **`▶ Xem thử`** trực tiếp qua modal `<video>` trong app, **`✏️ Chọn tên`** (nạp lại tên file vào popover xuất), **`📋 Copy path`**, và **`🗑️ Xóa`** (`POST /api/episodes/video/delete`).
    - Tab **`🎬 Phân cảnh`** tích hợp hộp **`⏱️ Khớp nhịp Animation`** gắn với Playhead; tab **`🛠️ Sửa`** có form thêm nhanh yêu cầu sửa (tự bám theo cảnh đang xem, cho phép chọn đổi cảnh) và nút **`🔄 Gửi AI Sửa Kịch Bản`** để mở ngay `AiScriptModal`.
 
 ### 1.6. Render Video Offline bằng Headless Chrome (`engine/render_video.mjs`)
@@ -159,7 +160,7 @@ Mở trình duyệt tại **`http://localhost:3030`**.
 | **2a. Biên kịch trên Web UI (9 Brand AI)** | Bấm **`🤖 AI Worker & Models`** -> chọn provider/model -> bấm **`✍️ Biên kịch`** (tập mới), hoặc **`☑️ Chọn nhiều`** -> **`✍️ Biên kịch hàng loạt (1 Model)`**; để sửa/viết lại tập đã có kịch bản, mở tập đó -> tab **`🛠️ Sửa`** -> **`🔄 Gửi AI Sửa Kịch Bản`** | Tự kiểm tra sơ đồ, tự lưu `last_selection`, hỗ trợ `⏸️` tạm dừng & **`▶ Tiếp tục (Resume / Đổi Model)`** khi hết quota. |
 | **2b. Biên kịch qua MCP Worker (`studio-worker`)** | Mở chat Antigravity mới và nhắn **`Bật VideoMaker Worker`** (chạy `worker_wait.mjs` với 0 token khi rảnh) | Thực thi các job `script_episode` / `script_batch` (tối đa 5 tập/lượt). |
 | **2c. Biên kịch `$0` Thủ công (`manual_web`)** | Chọn **Manual Web** trong `AiScriptModal` -> **`📋 Tạo Prompt Pack`** -> dán JSON -> **`✅ Kiểm tra & Lưu Kịch bản`** | Không tốn phí API key, vẫn validate sơ đồ & cập nhật state chuẩn. |
-| **3. Audio, Đồng bộ & Video (`video-renderer`)** | Chạy `tts_pipeline.py` + `render_video.mjs`, hoặc trong Studio Player bấm **`🎙️ Tạo Audio (TTS)`** / chuyển giọng A/B / căn **`⏱️ Khớp nhịp Animation`** / mở **`🎬 Xuất Video ▾`** -> **`🚀 Bắt đầu Xuất Video`** | Bảo toàn track giọng cũ trong `audio/<profile_id>/`, tự đánh dấu `production.stale` khi đổi track/timing. |
+| **3. Audio, Đồng bộ & Video (`video-renderer`)** | Chạy `tts_pipeline.py` + `render_video.mjs`, hoặc trong Studio Player bấm **`🎙️ Tạo Audio (TTS)`** / chuyển giọng A/B / căn **`⏱️ Khớp nhịp Animation`** / mở **`🎬 Xuất Video ▾`** -> sửa tên file nếu muốn giữ nhiều phiên bản -> **`🚀 Bắt đầu Xuất Video`** | Bảo toàn track giọng cũ trong `audio/<profile_id>/`, lưu trực tiếp nhiều file video trong `<COURSE>/episodes/<ep-id>/` (quản lý & xem thử tại **`📁 Video đã xuất`**), tự đánh dấu `production.stale` khi đổi track/timing. |
 
 ---
 
@@ -188,9 +189,9 @@ python engine/tts_pipeline.py --list-profiles
 python engine/tts_pipeline.py --discover-voicestudio --json
 python engine/tts_pipeline.py --preview --profile edge-hoaimy --text "Xin chào" --out preview.mp3
 
-node engine/render_video.mjs --course <COURSE> --episode <EP_ID> --port 3030 --format mp4 --codec h264 --resolution 1080p --fps 60 --speed 1 --hardware auto
+node engine/render_video.mjs --course <COURSE> --episode <EP_ID> --port 3030 --format mp4 --codec h264 --resolution 1080p --fps 60 --speed 1 --hardware auto [--output <TEN_FILE>]
 
-# Chạy bộ kiểm thử E2E + UI Headless Chrome (12 phần)
+# Chạy bộ kiểm thử E2E + UI Headless Chrome (13 phần)
 node engine/test_ai_bridge_and_templates.mjs
 ```
 
@@ -206,6 +207,8 @@ node engine/test_ai_bridge_and_templates.mjs
 | `POST /api/ai/manual-prompt` & `manual-submit` | Tạo Prompt Pack `$0` và validate/lưu JSON kịch bản dán vào. |
 | `POST /api/episodes/voice-track/activate` & `delete` | Chuyển đổi tức thì giữa các track giọng A/B đã tạo (`0` gọi TTS) hoặc xóa track dư. |
 | `POST /api/episodes/scene-timings` | Lưu timing Playhead (`action: "save"`) hoặc chạy Layer 1 (`action: "auto_align"` qua `--realign-only`). |
+| `POST /api/jobs/run-production` | Khởi chạy TTS/Render (`output_filename` tùy chọn để giữ nhiều bản render khác tên trong thư mục bài học). |
+| `POST /api/episodes/video/delete` | Xóa một file `.mp4`/`.webm` cụ thể trong thư mục bài học và đồng bộ lại `state/<ep>.json` (chặn nếu tập đang render). |
 | `GET\|POST /mcp` | Loopback HTTP Streamable MCP endpoint (9 `studio_*` tools + 4 `studio://*` resources). |
 
 ### 5.4. Biến môi trường hữu ích
@@ -249,7 +252,7 @@ TechVideoStudio/
 │   ├── state_cli.mjs                 # Quản lý state phân mảnh, revision queue & validate sơ đồ
 │   ├── tts_pipeline.py               # Tổng hợp giọng đọc đa track A/B, subtitles & khớp nhịp Lớp 1 (pure Python stdlib)
 │   ├── render_video.mjs              # Headless Chrome CDP video exporter
-│   ├── test_ai_bridge_and_templates.mjs  # Bộ kiểm thử E2E & Chrome UI 12 phần
+│   ├── test_ai_bridge_and_templates.mjs  # Bộ kiểm thử E2E & Chrome UI 13 phần
 │   ├── voices.json                   # Danh mục profile giọng đọc
 │   ├── MOTION_SPEC.md                # Đặc tả motion engine V2
 │   ├── TTS_VOICE_SPEC.md             # Đặc tả tích hợp custom TTS provider

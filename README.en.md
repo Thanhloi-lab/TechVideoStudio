@@ -73,7 +73,8 @@ Served by `engine/server.mjs` with live Server-Sent Events (`/api/stream`):
 3. **Studio Player (`?view=player`):**
    - Synchronized 16:9 playback, silent **Storyboard Preview Mode**, `&scene=<scene_id>` deep-linking, and per-episode voice override picker.
    - **Multi-Voice A/B Switcher** in the top bar to swap active tracks (`POST /api/episodes/voice-track/activate`) or delete unused tracks (`/api/episodes/voice-track/delete`).
-   - **Unified `🎬 Xuất Video ▾` Popover:** Combines render quality presets (Hardware, Format/Codec, 720p–4K, FPS, Speed), optional TTS re-synthesis toggle, primary **`🚀 Bắt đầu Xuất Video`** CTA, and existing video download link (`⬇ Tải video hiện có`).
+   - **Unified `🎬 Xuất Video ▾` Popover:** Combines render quality presets (Hardware, Format/Codec, 720p–4K, FPS, Speed), optional TTS re-synthesis toggle, an editable **`Tên file đầu ra`** field (pre-filled with `<ep-id>`, locked `.mp4`/`.webm` extension badge matching the selected codec, real-time **overwrite collision warning** + 1-click **`✨ Đổi sang <stem>-v2.<ext>`** rename helper), and the primary **`🚀 Bắt đầu Xuất Video`** CTA. *(All video download links/APIs were removed because exports are saved directly into `<COURSE>/episodes/<ep-id>/`.)*
+   - **Lesson Detail `📁 Video đã xuất (<N>)` Panel:** Lists every rendered `.mp4`/`.webm` file directly below the Player timeline with **`▶ Xem thử`** (in-app `<video>` preview modal), **`✏️ Chọn tên`** (pre-fills the export filename popover), **`📋 Copy path`**, and **`🗑️ Xóa`** (`POST /api/episodes/video/delete`).
    - **`🎬 Phân cảnh`** tab houses the collapsible **`⏱️ Khớp nhịp Animation`** playhead calibrator; **`🛠️ Sửa`** tab includes an inline quick-add revision form (auto-tracks `currentSceneId` until manually switched) and **`🔄 Gửi AI Sửa Kịch Bản`** launching `AiScriptModal`.
 
 ### 1.6. Offline Headless Video Exporter (`engine/render_video.mjs`)
@@ -159,7 +160,7 @@ Open **`http://localhost:3030`** in your browser.
 | **2a. Web UI Scripting (9 AI Brands)** | Click **`🤖 AI Worker & Models`** -> select provider/model -> click **`✍️ Biên kịch`** (unscripted), or **`☑️ Chọn nhiều`** -> **`✍️ Biên kịch hàng loạt (1 Model)`**; to revise a scripted episode, open it -> **`🛠️ Sửa`** tab -> **`🔄 Gửi AI Sửa Kịch Bản`** | Auto-validates diagrams, persists `last_selection`, supports `⏸️` pause & **`▶ Tiếp tục (Resume / Đổi Model)`** on quota exhaustion. |
 | **2b. MCP Worker (`studio-worker`)** | Open an Antigravity chat and type **`Bật VideoMaker Worker`** (runs `worker_wait.mjs` at 0 idle token cost) | Executes `script_episode` / `script_batch` (max 5 episodes/batch). |
 | **2c. `$0` Manual Web (`manual_web`)** | Select **Manual Web** in `AiScriptModal` -> **`📋 Tạo Prompt Pack`** -> paste JSON -> **`✅ Kiểm tra & Lưu Kịch bản`** | Zero API cost while preserving full schema & diagram validation. |
-| **3. Audio, Sync & Video (`video-renderer`)** | Run `tts_pipeline.py` + `render_video.mjs`, or in Studio Player click **`🎙️ Tạo Audio (TTS)`** / swap A/B voice tracks / calibrate **`⏱️ Khớp nhịp Animation`** / open **`🎬 Xuất Video ▾`** -> **`🚀 Bắt đầu Xuất Video`** | Preserves prior voice tracks in `audio/<profile_id>/` and flags `production.stale` on track/timing changes. |
+| **3. Audio, Sync & Video (`video-renderer`)** | Run `tts_pipeline.py` + `render_video.mjs`, or in Studio Player click **`🎙️ Tạo Audio (TTS)`** / swap A/B voice tracks / calibrate **`⏱️ Khớp nhịp Animation`** / open **`🎬 Xuất Video ▾`** -> customize filename if keeping multiple versions -> **`🚀 Bắt đầu Xuất Video`** | Preserves prior voice tracks in `audio/<profile_id>/`, saves multiple named videos directly in `<COURSE>/episodes/<ep-id>/` (preview/manage in **`📁 Video đã xuất`**), and flags `production.stale` on track/timing changes. |
 
 ---
 
@@ -188,9 +189,9 @@ python engine/tts_pipeline.py --list-profiles
 python engine/tts_pipeline.py --discover-voicestudio --json
 python engine/tts_pipeline.py --preview --profile edge-hoaimy --text "Xin chào" --out preview.mp3
 
-node engine/render_video.mjs --course <COURSE> --episode <EP_ID> --port 3030 --format mp4 --codec h264 --resolution 1080p --fps 60 --speed 1 --hardware auto
+node engine/render_video.mjs --course <COURSE> --episode <EP_ID> --port 3030 --format mp4 --codec h264 --resolution 1080p --fps 60 --speed 1 --hardware auto [--output <FILENAME>]
 
-# Run the 12-section automated E2E + headless Chrome UI test suite
+# Run the 13-section automated E2E + headless Chrome UI test suite
 node engine/test_ai_bridge_and_templates.mjs
 ```
 
@@ -206,6 +207,8 @@ node engine/test_ai_bridge_and_templates.mjs
 | `POST /api/ai/manual-prompt` & `manual-submit` | Generates a `$0` Prompt Pack and validates/saves pasted script JSON. |
 | `POST /api/episodes/voice-track/activate` & `delete` | Instantly swaps active Multi-Voice A/B tracks (`0` TTS calls) or deletes unused tracks. |
 | `POST /api/episodes/scene-timings` | Persists Playhead calibration (`action: "save"`) or invokes Layer 1 (`action: "auto_align"` via `--realign-only`). |
+| `POST /api/jobs/run-production` | Starts TTS/Render production (accepts optional `output_filename` to keep multiple distinct renders per episode). |
+| `POST /api/episodes/video/delete` | Deletes a specific `.mp4`/`.webm` file from an episode folder and reconciles `state/<ep>.json` (guarded against active jobs). |
 | `GET\|POST /mcp` | Loopback HTTP Streamable MCP endpoint (9 `studio_*` tools + 4 `studio://*` resources). |
 
 ### 5.4. Environment Variables
@@ -249,7 +252,7 @@ TechVideoStudio/
 │   ├── state_cli.mjs                 # Sharded state, revision queue & diagram validator
 │   ├── tts_pipeline.py               # Pure-stdlib Multi-Voice A/B TTS, subtitles & Layer 1 alignment
 │   ├── render_video.mjs              # Headless Chrome CDP video exporter
-│   ├── test_ai_bridge_and_templates.mjs  # 12-section automated E2E & Chrome UI test suite
+│   ├── test_ai_bridge_and_templates.mjs  # 13-section automated E2E & Chrome UI test suite
 │   ├── voices.json                   # Voice profile catalog
 │   ├── MOTION_SPEC.md                # V2 motion engine specification
 │   ├── TTS_VOICE_SPEC.md             # Custom TTS provider specification

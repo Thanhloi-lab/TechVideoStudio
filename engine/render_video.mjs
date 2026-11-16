@@ -27,8 +27,29 @@ function sleep(ms) {
 
 function printUsage() {
   console.log(
-    `Usage: node render_video.mjs --course <COURSE> --episode <EP_ID> [--port 3030] [--format mp4|webm] [--codec h264|hevc|vp9] [--hardware auto|gpu|cpu] [--resolution 720p|1080p|1440p|2160p] [--fps 24|30|60] [--speed 1|1.25|1.5|2] [--timeout-ms 900000]`
+    `Usage: node render_video.mjs --course <COURSE> --episode <EP_ID> [--port 3030] [--format mp4|webm] [--codec h264|hevc|vp9] [--hardware auto|gpu|cpu] [--resolution 720p|1080p|1440p|2160p] [--fps 24|30|60] [--speed 1|1.25|1.5|2] [--output <filename>] [--timeout-ms 900000]`
   );
+}
+
+function resolveExpectedOutputFilename(rawName, episodeId, actualExt) {
+  const safeExt = String(actualExt || "").toLowerCase() === "mp4" ? "mp4" : "webm";
+  const fallbackStem =
+    String(episodeId || "video")
+      .trim()
+      .replace(/[\\/]+/g, "")
+      .replace(/\.(mp4|webm)$/i, "") || "video";
+
+  let stem = String(rawName ?? "").trim();
+  stem = stem.replace(/[\\/]+/g, "").replace(/\.\.+/g, ".");
+  while (/\.(mp4|webm)$/i.test(stem)) {
+    stem = stem.replace(/\.(mp4|webm)$/i, "");
+  }
+  stem = stem.replace(/\s+/g, "-").replace(/[^A-Za-z0-9._-]/g, "");
+  stem = stem.replace(/^\.+/, "").slice(0, 96);
+  if (!stem || !/^[A-Za-z0-9_-][A-Za-z0-9._-]{0,95}$/.test(stem)) {
+    stem = fallbackStem;
+  }
+  return `${stem}.${safeExt}`;
 }
 
 function defaultTimeoutForOptions(opts) {
@@ -52,6 +73,7 @@ function parseArgs(argv) {
     resolution: "1080p",
     fps: 60,
     speed: 1,
+    output: "",
     timeoutMs: null,
     help: false,
   };
@@ -78,6 +100,8 @@ function parseArgs(argv) {
       opts.fps = Number(argv[++i] || 60);
     } else if (arg === "--speed") {
       opts.speed = Number(argv[++i] || 1);
+    } else if (arg === "--output") {
+      opts.output = String(argv[++i] || "").trim();
     } else if (arg === "--timeout-ms") {
       opts.timeoutMs = Number(argv[++i] || 900_000);
     } else {
@@ -340,20 +364,23 @@ async function waitForOfflineRenderer(cdp, timeoutMs = 25_000) {
 
   while (Date.now() < deadline) {
     const check = await cdp.send("Runtime.evaluate", {
-      expression: `({ ready: document.readyState, hasFn: typeof window.__STUDIO_RENDER_OFFLINE__ === "function" })`,
+      expression: `({ isHttp: typeof location === "object" && String(location.protocol || "").startsWith("http"), ready: document.readyState, hasFn: typeof window.__STUDIO_RENDER_OFFLINE__ === "function" })`,
       returnByValue: true,
-    });
+    }).catch(() => null);
     const val = check?.result?.value;
-    if (val?.hasFn) {
+    if (val?.isHttp && val?.hasFn) {
       return;
     }
-    if (val?.ready === "complete" && !injectedFallback) {
-      injectedFallback = true;
-      await cdp.send("Runtime.evaluate", {
+    if (val?.isHttp && val?.ready === "complete" && !injectedFallback) {
+      const importResp = await cdp.send("Runtime.evaluate", {
         expression: `import("/src/exporter.mjs").then(() => typeof window.__STUDIO_RENDER_OFFLINE__ === "function")`,
         awaitPromise: true,
         returnByValue: true,
-      }).catch(() => {});
+      }).catch(() => null);
+      if (!importResp?.exceptionDetails && importResp?.result?.value === true) {
+        injectedFallback = true;
+        return;
+      }
     }
     await sleep(250);
   }
@@ -529,6 +556,7 @@ async function main() {
       resolution: opts.resolution,
       fps: opts.fps,
       speed: opts.speed,
+      outputFilename: opts.output || "",
     };
 
     console.log(
@@ -560,7 +588,12 @@ async function main() {
     }
 
     const actualExt = result.format || opts.format;
-    const expectedOutPath = path.join(epDir, `${opts.episode}.${actualExt}`);
+    const expectedFilename = resolveExpectedOutputFilename(
+      result.savedFile || result.filename || opts.output,
+      opts.episode,
+      actualExt
+    );
+    const expectedOutPath = path.join(epDir, expectedFilename);
     if (!fs.existsSync(expectedOutPath)) {
       throw new Error(`Expected output file missing on disk: ${expectedOutPath}`);
     }

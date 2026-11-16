@@ -129,17 +129,47 @@ export function inspectEpisodeArtifacts(courseDir, epId) {
   }
 
   let video_file = null;
+  const video_files = [];
   if (fs.existsSync(epDir) && fs.statSync(epDir).isDirectory()) {
-    const mp4Name = `${epId}.mp4`;
-    const webmName = `${epId}.webm`;
-    if (fs.existsSync(path.join(epDir, mp4Name))) {
-      video_file = mp4Name;
-    } else if (fs.existsSync(path.join(epDir, webmName))) {
-      video_file = webmName;
-    } else {
-      const files = fs.readdirSync(epDir);
-      const anyVideo = files.find((f) => /\.(mp4|webm)$/i.test(f));
-      if (anyVideo) video_file = anyVideo;
+    const epLower = String(epId || "").toLowerCase();
+    const entries = fs.readdirSync(epDir, { withFileTypes: true });
+    const rawVideos = [];
+    for (const entry of entries) {
+      if (!/\.(mp4|webm)$/i.test(entry.name)) continue;
+      const fullPath = path.join(epDir, entry.name);
+      let stat;
+      try {
+        stat = fs.statSync(fullPath);
+      } catch {
+        continue;
+      }
+      if (!stat.isFile()) continue;
+      const format = path.extname(entry.name).slice(1).toLowerCase();
+      const lowerName = entry.name.toLowerCase();
+      const is_default =
+        Boolean(epLower) &&
+        (lowerName === `${epLower}.mp4` || lowerName === `${epLower}.webm`);
+      rawVideos.push({
+        filename: entry.name,
+        format,
+        size_bytes: stat.size,
+        modified_at: stat.mtime.toISOString(),
+        is_default,
+        _mtimeMs: stat.mtimeMs,
+      });
+    }
+    rawVideos.sort((a, b) => {
+      const mtimeDiff = b._mtimeMs - a._mtimeMs;
+      if (mtimeDiff !== 0) return mtimeDiff;
+      if (a.is_default !== b.is_default) return a.is_default ? -1 : 1;
+      if (a.format !== b.format) return a.format === "mp4" ? -1 : 1;
+      return a.filename.localeCompare(b.filename);
+    });
+    for (const { _mtimeMs, ...meta } of rawVideos) {
+      video_files.push(meta);
+    }
+    if (video_files.length > 0) {
+      video_file = video_files[0].filename;
     }
   }
 
@@ -149,6 +179,7 @@ export function inspectEpisodeArtifacts(courseDir, epId) {
     audio_count,
     subtitles,
     video_file,
+    video_files,
   };
 }
 

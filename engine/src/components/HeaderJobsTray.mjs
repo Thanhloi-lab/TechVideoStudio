@@ -110,16 +110,6 @@ function formatSpecSummary(job) {
   return parts.join(" · ");
 }
 
-function getDownloadHref(job) {
-  const file = job.output_file || `${job.episode}.${job.format || "mp4"}`;
-  const params = new URLSearchParams({
-    course: job.course || "",
-    ep: job.episode || "",
-    file,
-  });
-  return `/api/download-video?${params.toString()}`;
-}
-
 function getJobOrderScore(job) {
   if (job.status === "running") return 0;
   if (job.status === "paused") return 1;
@@ -407,7 +397,7 @@ export function HeaderJobsTray({
               ? h(
                   "div",
                   { className: "jobs-empty" },
-                  "Chưa có tác vụ nào. Dùng \"⬇ Xuất Video\" hoặc \"🎬 Tạo Audio & Render\" trong Player để xuất ngầm trên Server."
+                  "Chưa có tác vụ nào. Dùng \"🎬 Xuất Video ▾\" hoặc \"🎬 Tạo Audio & Render\" trong Player để xuất ngầm trên Server."
                 )
               : sortedJobs.map((job) => {
                   const isAi = job.kind === "ai_script";
@@ -441,8 +431,6 @@ export function HeaderJobsTray({
                       : "") ||
                     job.message ||
                     "";
-                  const hasDownloadableVideo =
-                    !isAi && completed && (Boolean(job.output_file) || job.mode !== "tts_only");
 
                   return h(
                     "div",
@@ -549,15 +537,23 @@ export function HeaderJobsTray({
                             busyCancelIds[job.id] ? "Đang hủy..." : "✕ Hủy"
                           )
                         : null,
-                      hasDownloadableVideo
+                      !isAi && completed && job.output_file
                         ? h(
-                            "a",
+                            "button",
                             {
-                              className: "job-act-btn is-download",
-                              href: getDownloadHref(job),
-                              download: job.output_file || `${job.episode}.${job.format || "mp4"}`,
+                              type: "button",
+                              className: "job-saved-file-badge",
+                              title: `Đã lưu tại ${job.course}/episodes/${job.episode}/${job.output_file} — Bấm để mở Player`,
+                              onClick: () => {
+                                setOpen(false);
+                                if (onNavigateToPlayer) {
+                                  onNavigateToPlayer(job.course, primaryEp);
+                                } else {
+                                  window.location.href = `?course=${encodeURIComponent(job.course)}&ep=${encodeURIComponent(primaryEp)}&view=player`;
+                                }
+                              },
                             },
-                            "⬇ Tải về"
+                            `📁 ${job.output_file}`
                           )
                         : null,
                       completed && primaryEp

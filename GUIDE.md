@@ -35,7 +35,7 @@ Khi người dùng yêu cầu làm theo `GUIDE.md`, Agent thực hiện tuần t
    ```powershell
    node setup.mjs --check --json
    node engine/state_cli.mjs summary --course AWS
-   node engine/test_ai_bridge_and_templates.mjs   # Chạy bộ test tự động 12 phần + Chrome UI
+   node engine/test_ai_bridge_and_templates.mjs   # Chạy bộ test tự động 13 phần + Chrome UI
    ```
    *(Nếu repo chưa có khóa học nào hoặc bạn tạo khóa mới, bỏ qua bước `state_cli.mjs`. Toàn bộ khóa học cục bộ `<COURSE>/`, `*.mp3`, `*.mp4`, adapter `.agents/`, `.claude/`, `.mcp.json` và file key/cache `engine/.ai_*.json`, `.env` đều đã được loại trừ trong `.gitignore`.)*
 
@@ -116,4 +116,4 @@ Mở terminal tại thư mục gốc của repo vừa clone và chạy:
 - **Bật Antigravity Worker (`studio-worker`):**
   Mở một chat mới và gõ: `Bật VideoMaker Worker` (chạy 0 token khi chờ qua `engine/worker_wait.mjs` + MCP `tech-video-studio`).
 - **Tạo giọng đọc Multi-Voice A/B, Khớp nhịp 2 lớp & Render video Full HD (Conversation 3):**
-  Dùng skill `video-renderer`, hoặc ngay trên **Studio Player** (`http://localhost:3030`): bấm **`🎙️ Tạo Audio (TTS)`** (bảo toàn các giọng cũ để đổi A/B tức thì), mở **`⏱️ Khớp nhịp Animation`** trong tab **`🎬 Phân cảnh`** để tinh chỉnh timing theo playhead, và mở **`🎬 Xuất Video ▾`** để chọn chất lượng & bấm **`🚀 Bắt đầu Xuất Video`** (hoặc tải video sẵn có).
+  Dùng skill `video-renderer`, hoặc ngay trên **Studio Player** (`http://localhost:3030`): bấm **`🎙️ Tạo Audio (TTS)`** (bảo toàn các giọng cũ để đổi A/B tức thì), mở **`⏱️ Khớp nhịp Animation`** trong tab **`🎬 Phân cảnh`** để tinh chỉnh timing theo playhead, và mở **`🎬 Xuất Video ▾`** để chọn chất lượng, đặt/sửa **Tên file đầu ra** (điền sẵn `<ep-id>`, tự cảnh báo ghi đè kèm nút đổi tên `-v2` nếu trùng) rồi bấm **`🚀 Bắt đầu Xuất Video`**. Toàn bộ file xuất được lưu thẳng vào `<COURSE>/episodes/<ep-id>/` và hiển thị tại khung **`📁 Video đã xuất`** ngay dưới timeline (hỗ trợ **`▶ Xem thử`** trong app, **`✏️ Chọn tên`**, **`📋 Copy path`**, **`🗑️ Xóa`**; không cần nút download lặp lại).
