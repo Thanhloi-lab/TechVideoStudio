@@ -3,7 +3,7 @@
 Every new conversation operating in this VideoMaker workspace must follow these workspace rules, state-discovery steps, onboarding interviews, diagram rules, and model allocation policies strictly.
 
 > **New machine & multi-agent setup:** Read [`GUIDE.md`](GUIDE.md) or run `node setup.mjs` (default Antigravity workspace plugin) or `node setup.mjs --agents all` (Antigravity + Claude Code `.claude/skills/` & `.mcp.json` + Codex `.agents/skills/`; add `--claude-desktop` to merge into Claude Desktop config with `.bak` backup).
-
+ 
 ---
 
 ## 1. State Discovery First (Mandatory on Every New Conversation)
