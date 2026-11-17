@@ -1,0 +1,2 @@
+/* esm.sh - shiki@4.6.0/dist/engine-oniguruma-XLVxwJtN */
+import{n as r,t as o}from"./rolldown-runtime-782esTHO.mjs";import*as i from"../../../@shikijs/engine-oniguruma@4.6.0/es2022/engine-oniguruma.mjs";var _=o({});r(_,i);export{_ as t};

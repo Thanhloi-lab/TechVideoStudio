@@ -1,0 +1,2 @@
+/* esm.sh - framer-motion@14.14.0/dist/es/motion/features/load-features */
+import{setFeatureDefinitions as o}from"../../../../../../../motion-dom@14.14.0/es2022/motion-dom.mjs";import{getInitializedFeatureDefinitions as n}from"./definitions.mjs";function s(e){let i=n();for(let t in e)i[t]={...i[t],...e[t]};o(i)}export{s as loadFeatures};

@@ -22,6 +22,7 @@ const WORKER_WATCHER_TTL_MS = Math.max(1000, Number(process.env.VIDEO_MAKER_WATC
 const WORKER_SCHEDULE_TTL_MS = Math.max(5000, Number(process.env.VIDEO_MAKER_SCHEDULE_TTL_MS) || 90_000);
 const WORKER_SWEEP_INTERVAL_MS = Math.max(500, Number(process.env.VIDEO_MAKER_SWEEP_INTERVAL_MS) || 3000);
 const ALLOWED_AI_TASK_TYPES = new Set(["script_episode", "script_batch"]);
+const VALID_AI_GENERATION_MODES = new Set(["auto", "two_pass", "single_pass", "storyboard_only"]);
 const MAX_AI_BATCH_MCP = 5;
 const MAX_AI_BATCH_BUILTIN = 100;
 const MAX_AI_CUSTOM_INSTRUCTIONS_LEN = 1200;
@@ -186,6 +187,9 @@ export function createAiBroker(deps) {
       execution_mode: job.execution_mode || "mcp",
       provider_id: job.provider_id || "antigravity",
       model: job.model || job.claimed_model || null,
+      mode: job.mode || "auto",
+      compiler_provider_id: job.compiler_provider_id || null,
+      compiler_model: job.compiler_model || null,
       episode_ids: [...(job.episode_ids || [])],
       episode_titles: { ...(job.episode_titles || {}) },
       current_episode: job.current_episode || null,
@@ -495,6 +499,9 @@ export function createAiBroker(deps) {
           const generated = await generateEpisodeScript({
             provider_id: job.provider_id,
             model: job.model,
+            compiler_provider_id: job.compiler_provider_id || null,
+            compiler_model: job.compiler_model || null,
+            mode: job.mode || "auto",
             courseJson: ctx.courseJson,
             curriculumMd: ctx.curriculumMd,
             episodeMeta: ctx.epMeta,
@@ -504,6 +511,13 @@ export function createAiBroker(deps) {
             customInstructions: job.custom_instructions,
             rewriteNote: epRewriteNote,
             validateScriptFn: validateScriptDiagrams,
+            onProgress: ({ phase, message }) => {
+              if (phase) job.step = String(phase);
+              if (message) appendAiJobLog(job, `[${epId}] ${message}`);
+              job.updated_at = new Date().toISOString();
+              persistAiQueue();
+              broadcastSse("ai_job_update", { job: sanitizeAiJobForApi(job) });
+            },
             engineDir: ENGINE_DIR,
           });
 
@@ -512,23 +526,63 @@ export function createAiBroker(deps) {
             return;
           }
 
-          const summaryNote = epRewriteNote
-            ? `Viết lại KB bởi ${ownerLabel}: ${epRewriteNote.slice(0, 120)}`
-            : `Script biên soạn bởi ${ownerLabel} (${generated.attempts} lần gọi)`;
+          if (generated.mode === "storyboard_only") {
+            fs.mkdirSync(ctx.epDir, { recursive: true });
+            const storyboardPath = path.join(ctx.epDir, "storyboard.json");
+            writeJsonAtomic(storyboardPath, {
+              course_id: job.course,
+              episode_id: epId,
+              generated_at: new Date().toISOString(),
+              provider_id: job.provider_id,
+              model: job.model,
+              storyboard: generated.storyboard,
+            });
+            if (generated.notes_md) {
+              const tmpNotes = `${ctx.notesPath}.${process.pid}.${Date.now()}.tmp`;
+              fs.writeFileSync(tmpNotes, String(generated.notes_md), "utf-8");
+              fs.renameSync(tmpNotes, ctx.notesPath);
+            }
+            try {
+              mutateEpisodeStateForJob(
+                job.course,
+                epId,
+                (epState, artifacts) => {
+                  epState.scripting = epState.scripting || {};
+                  epState.scripting.status = artifacts.script ? "completed" : "planning";
+                  epState.scripting.phase = "storyboard_only";
+                  epState.scripting.owner = ownerLabel;
+                  epState.scripting.notes = `Storyboard Pass 1 saved (${generated.storyboard?.scenes?.length || 0} scenes)`;
+                  epState.last_error = null;
+                },
+                {
+                  type: "ai_storyboard_saved",
+                  job_id: job.id,
+                  owner: ownerLabel,
+                  message: `Đã lưu storyboard.json (${generated.storyboard?.scenes?.length || 0} scenes) cho ${epId}`,
+                }
+              );
+            } catch {
+              // ignore if state file missing
+            }
+          } else {
+            const summaryNote = epRewriteNote
+              ? `Viết lại KB bởi ${ownerLabel}: ${epRewriteNote.slice(0, 120)}`
+              : `Script biên soạn bởi ${ownerLabel} (${generated.attempts} lần gọi${generated.mode_used === "two_pass" ? ", 2-pass" : ""})`;
 
-          saveEpisodeArtifactsAndState({
-            course: job.course,
-            episodeId: epId,
-            epDir: ctx.epDir,
-            scriptPath: ctx.scriptPath,
-            notesPath: ctx.notesPath,
-            scriptJson: generated.script_json,
-            notesMd: generated.notes_md,
-            ownerLabel,
-            summaryNote,
-            jobId: job.id,
-            validation: generated.validation,
-          });
+            saveEpisodeArtifactsAndState({
+              course: job.course,
+              episodeId: epId,
+              epDir: ctx.epDir,
+              scriptPath: ctx.scriptPath,
+              notesPath: ctx.notesPath,
+              scriptJson: generated.script_json,
+              notesMd: generated.notes_md,
+              ownerLabel,
+              summaryNote,
+              jobId: job.id,
+              validation: generated.validation,
+            });
+          }
 
           if (!job.completed_episodes.includes(epId)) {
             job.completed_episodes.push(epId);
@@ -605,7 +659,7 @@ export function createAiBroker(deps) {
       releaseAiEpLocks(job);
 
       const spawned = [];
-      if (job.auto_produce) {
+      if (job.auto_produce && job.mode !== "storyboard_only") {
         for (const epId of job.episode_ids) {
           const prodRes = enqueueProductionJob({
             course: job.course,
@@ -957,6 +1011,31 @@ export function createAiBroker(deps) {
       episode_titles[epId] = courseEps.get(epId)?.title || epId;
     }
 
+    const requestedMode =
+      body.mode !== undefined && body.mode !== null && String(body.mode).trim() !== ""
+        ? String(body.mode).trim().toLowerCase()
+        : "auto";
+    if (!VALID_AI_GENERATION_MODES.has(requestedMode)) {
+      return sendJson(res, 400, {
+        ok: false,
+        code: "INVALID_MODE",
+        error: `Invalid generation mode "${requestedMode}". Allowed: ${Array.from(VALID_AI_GENERATION_MODES).join(", ")}.`,
+      });
+    }
+    const compiler_provider_id = body.compiler_provider_id
+      ? String(body.compiler_provider_id).trim().slice(0, 80)
+      : null;
+    if (compiler_provider_id && !isBuiltinProviderId(compiler_provider_id)) {
+      return sendJson(res, 400, {
+        ok: false,
+        code: "INVALID_PROVIDER",
+        error: `Compiler provider "${compiler_provider_id}" must be a builtin provider.`,
+      });
+    }
+    const compiler_model = body.compiler_model
+      ? String(body.compiler_model).trim().slice(0, 160)
+      : null;
+
     const custom_instructions = String(body.custom_instructions || "")
       .trim()
       .slice(0, MAX_AI_CUSTOM_INSTRUCTIONS_LEN);
@@ -986,6 +1065,9 @@ export function createAiBroker(deps) {
       execution_mode,
       provider_id,
       model: resolvedModel,
+      mode: requestedMode,
+      compiler_provider_id,
+      compiler_model,
       episode_ids,
       episode_titles,
       current_episode: episode_ids[0],
@@ -1012,7 +1094,7 @@ export function createAiBroker(deps) {
     };
     appendAiJobLog(
       aiJob,
-      `Queued ${type} [${execution_mode}:${provider_id}${resolvedModel ? `/${resolvedModel}` : ""}] for ${course} (${episode_ids.length} ep; auto_produce=${auto_produce})`
+      `Queued ${type} [${execution_mode}:${provider_id}${resolvedModel ? `/${resolvedModel}` : ""}; mode=${requestedMode}${compiler_model ? `; compiler=${compiler_provider_id || provider_id}/${compiler_model}` : ""}] for ${course} (${episode_ids.length} ep; auto_produce=${auto_produce})`
     );
 
     aiJobs.set(aiJob.id, aiJob);
@@ -1164,6 +1246,32 @@ export function createAiBroker(deps) {
         ...(job.rewrite_notes || {}),
         ...normalizeRewriteNotes(body),
       };
+    }
+
+    if (body.mode !== undefined && body.mode !== null && String(body.mode).trim() !== "") {
+      const resumedMode = String(body.mode).trim().toLowerCase();
+      if (!VALID_AI_GENERATION_MODES.has(resumedMode)) {
+        return sendJson(res, 400, {
+          ok: false,
+          code: "INVALID_MODE",
+          error: `Invalid generation mode "${resumedMode}". Allowed: ${Array.from(VALID_AI_GENERATION_MODES).join(", ")}.`,
+        });
+      }
+      job.mode = resumedMode;
+    }
+    if (body.compiler_provider_id !== undefined) {
+      const cp = body.compiler_provider_id ? String(body.compiler_provider_id).trim().slice(0, 80) : null;
+      if (cp && !isBuiltinProviderId(cp)) {
+        return sendJson(res, 400, {
+          ok: false,
+          code: "INVALID_PROVIDER",
+          error: `Compiler provider "${cp}" must be a builtin provider.`,
+        });
+      }
+      job.compiler_provider_id = cp;
+    }
+    if (body.compiler_model !== undefined) {
+      job.compiler_model = body.compiler_model ? String(body.compiler_model).trim().slice(0, 160) : null;
     }
 
     job.execution_mode = execution_mode;

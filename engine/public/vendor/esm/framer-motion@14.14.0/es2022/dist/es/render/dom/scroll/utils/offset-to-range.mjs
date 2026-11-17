@@ -1,0 +1,2 @@
+/* esm.sh - framer-motion@14.14.0/dist/es/render/dom/scroll/utils/offset-to-range */
+import{resolveOffset as i}from"../offsets/offset.mjs";import{ScrollOffset as f}from"../offsets/presets.mjs";var l=n=>{if(/v/u.test(n))return[];let t=i(n,0,0,0);return[i(n,0,1,0)-t,t-i(n,1,0,0),t]},c=([n,t,e])=>!e&&(t===0||t===1)&&`${t?"entry":"exit"}-crossing ${n*100}%`;function u(n=f.All){if(n.length!==2)return;let[t,e]=n.map(l),o=[c(t),c(e)],r=e[0]-t[0],s=t[1]-e[1];if(o[0]&&o[1]&&(r||s))return{points:o,a:r,b:s,cover:!t[0]&&r===1&&s===1}}export{u as offsetToViewTimelineRange};

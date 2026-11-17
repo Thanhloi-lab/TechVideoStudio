@@ -1,0 +1,2 @@
+/* esm.sh - framer-motion@14.14.0/dist/es/render/dom/utils/is-svg-component */
+import{lowercaseSVGElements as r}from"../../svg/lowercase-elements.mjs";function s(e){return typeof e!="string"||e.includes("-")?!1:!!(r.indexOf(e)>-1||/[A-Z]/u.test(e))}export{s as isSVGComponent};

@@ -1,0 +1,2 @@
+/* esm.sh - framer-motion@14.14.0/dist/es/animation/animators/waapi/animate-style */
+import{GroupAnimationWithThen as r}from"../../../../../../../motion-dom@14.14.0/es2022/motion-dom.mjs";import{animateElements as a}from"./animate-elements.mjs";var m=n=>{function t(e,i,o){return new r(a(e,i,o,n))}return t},s=m();export{s as animateMini,m as createScopedWaapiAnimate};

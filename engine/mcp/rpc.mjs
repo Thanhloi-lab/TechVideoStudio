@@ -1,5 +1,5 @@
 import http from "node:http";
-import { SUPPORTED_VISUAL_TYPES } from "../src/motion/kernel.mjs";
+import { buildTemplatesSchemaDoc } from "../src/template_schema.mjs";
 
 export const SERVER_INFO = { name: "tech-video-studio", version: "1.1.0" };
 
@@ -89,7 +89,7 @@ export const TOOLS = [
   {
     name: "studio_validate_script",
     description:
-      "Validate script.json diagrams & visual templates (architecture, comparison_matrix, timeline_flow, kpi_metrics) before submitting.",
+      "Validate script.json scene metadata and all 7 visual templates (architecture, console_setup, code_cli, exam_tips, comparison_matrix, timeline_flow, kpi_metrics) before submitting.",
     inputSchema: {
       type: "object",
       properties: {
@@ -227,29 +227,6 @@ export function createStudioHttpRequester({ host = "127.0.0.1", port = 3030 } = 
       if (payload !== null) req.write(payload);
       req.end();
     });
-  };
-}
-
-function buildTemplatesSchemaDoc() {
-  return {
-    parts: ["problem", "architecture", "setup", "exam_tips"],
-    supported_visual_types: [...SUPPORTED_VISUAL_TYPES],
-    v2_motion_fields: {
-      "scene.highlight_words": "string[] — technical keywords accented in box-free subtitles",
-      "flow_step.camera_focus": "{ x: 0..100, y: 0..100, zoom: 1.0..1.25 } — 16:9 camera focus target",
-      "highlight_phase.code_override": "string[] | string — updated code snapshot for code_cli morphing",
-      "highlight_phase.laser_scan": "boolean | number[] — red laser scanline highlight for risk/error lines",
-    },
-    architecture_rules: {
-      zones: "roles: client|network|compute|security|data|danger; max 2 nested levels via parent_zone; use node_ids[] or x,y,w,h in 0..100",
-      routing: "auto (default) | straight | orthogonal | curved (only for bidirectional pairs or skip-node arcs)",
-      layout: "clean directional flow left-to-right or top-to-bottom without overlapping nodes or crossing unrelated nodes",
-    },
-    template_limits: {
-      comparison_matrix: { columns: "2..4", rows: "1..6" },
-      timeline_flow: { orientation: "horizontal|vertical", milestones: "2..6" },
-      kpi_metrics: { cards: "1..4", chart_series: "1..8" },
-    },
   };
 }
 

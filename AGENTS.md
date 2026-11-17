@@ -67,12 +67,13 @@ Work is split into three focused conversation roles connected by `<COURSE>/state
    - `flow_step.camera_focus` (`{ x, y, zoom }`): explicit 16:9 camera rig pan/zoom target (`x`/`y` in `0..100`, `zoom` in `1.0..1.25`) for `architecture` scenes.
    - `highlight_phase.code_override` (`string[] | string`): updated code snapshot per phase for `@shikijs/magic-move` morphing in `code_cli` scenes.
    - `highlight_phase.laser_scan` (`boolean | number[]`): triggers red laser scanline sweep and danger highlight on risk/error code phases in `code_cli` scenes.
-5. **Architecture Diagram Zones & Clean Routing Rules (`visual_type: "architecture"`):**
+5. **Architecture Diagram Zones, Auto-Layout & Clean Routing Rules (`visual_type: "architecture"`):**
+   - **Auto-Layout (`visual_data.layout_mode: "auto"`):** Set `layout_mode: "auto"` (or omit manual node `x, y`) to run Zero-LLM Layered DAG Auto-Layout in `engine/src/motion/kernel.mjs` (supports `orientation: "LR" | "TB"`, optional `node.tier`, zone-aware barycenter ordering, `[8..92] x [14..84]` bounds, and symmetric curved upgrade for bidirectional `routing: "auto"` edges). Supplying finite `x, y` on all nodes with `layout_mode !== "auto"` preserves manual coordinates verbatim.
    - **Zones (`visual_data.zones[]`):** Group related nodes into clear visual containers (max **2 nested levels** via `parent_zone`; roles: `client`, `network`, `compute`, `security`, `data`, `danger`; supply `node_ids` for auto-bounding or explicit `x, y, w, h` in `0..100`).
    - **Directional Layout:** Flow **User -> Server -> Cloud** cleanly left-to-right or top-to-bottom so nodes never collide.
    - **Clean Edge Routing (`edge.routing`):** Default to `"auto"` (straight for aligned unidirectional pairs, orthogonal rounded-elbow otherwise), `"straight"`, or `"orthogonal"`. Use `"curved"` **ONLY** for bidirectional pairs (`A <-> B`) or unavoidable skip-node arcs.
    - **Short Non-Overlapping Labels:** Keep edge `label` and `packet_label` concise so labels never overlap nodes or other labels.
-   - **Automated Diagram Validation:** Run `node "engine/state_cli.mjs" validate-diagrams --course <COURSE>` (also enforced automatically by `state_cli.mjs set --stage scripting --status completed`).
+   - **Automated 7-Template Validation & 2-Pass AI Scripting:** SSOT schema lives in `engine/src/template_schema.mjs`; run `node "engine/state_cli.mjs" validate-diagrams --course <COURSE>` (validates all 7 templates + scene metadata, also enforced automatically by `state_cli.mjs set --stage scripting --status completed`). Built-in AI runs (`engine/ai/runner.mjs` & `queue_broker.mjs`) support 2-Pass Storyboard -> Compiler (`mode: "auto" | "two_pass" | "single_pass" | "storyboard_only"`, `normalizeCompiledScript`) and targeted scene-level self-repair (`repairInvalidScenes`).
 6. Preview scripts visually before audio generation using **Storyboard Preview Mode** in the Studio Player (`http://localhost:3030/?course=<COURSE>&ep=<EP_ID>&view=player`).
 
 ### Conversation 3 — Video Factory (Producer + Verifier, `episode-producer` + `video-renderer` skills)
@@ -80,13 +81,13 @@ Work is split into three focused conversation roles connected by `<COURSE>/state
    ```powershell
    node "engine/state_cli.mjs" next --course <COURSE> --stage production --limit 5
    ```
-2. Synthesize Vietnamese TTS audio (`audio/<profile_id>/*.mp3` or `.wav`) and subtitles (`subtitles.srt` + `subtitles.<profile_id>.srt`) using 3-tier voice inheritance (`CLI / script.json` -> `course.json` -> [`engine/voices.json`](engine/voices.json) default; see [`engine/TTS_VOICE_SPEC.md`](engine/TTS_VOICE_SPEC.md) for custom voices). `tts_pipeline.py` preserves existing `voice_tracks` and automatically runs **Layer 1 Subtitle-Cue Alignment** from `scene._base_timings` (also runnable standalone via `--realign-only [--scene <SCENE_ID>]`):
+2. Synthesize Vietnamese TTS audio (`audio/<profile_id>/*.mp3` or `.wav`) and subtitles (`subtitles.srt` + `subtitles.<profile_id>.srt`) using 3-tier voice inheritance (`CLI / script.json` -> `course.json` -> [`engine/voices.json`](engine/voices.json) default; see [`engine/TTS_VOICE_SPEC.md`](engine/TTS_VOICE_SPEC.md) for custom voices). `tts_pipeline.py` preserves existing `voice_tracks`, runs **Layer 1 Subtitle-Cue Alignment** from `scene._base_timings` (also runnable standalone via `--realign-only [--scene <SCENE_ID>]`), and logs/persists `tts_fallback_reason` in `script.json` (cleared when primary Edge TTS succeeds, surfaced via `/api/courses`):
    ```powershell
    node "engine/state_cli.mjs" set --course <COURSE> --ep <EP_ID> --stage production --status tts_processing --owner "<agent>"
    python "engine/tts_pipeline.py" --episode "<COURSE>/episodes/<EP_ID>/script.json" --course "<COURSE>/course.json"
    node "engine/state_cli.mjs" set --course <COURSE> --ep <EP_ID> --stage production --status rendering --tts-done true
    ```
-3. Render the 1920x1080 video offline via headless Chrome (`WebCodecs` + `MediaRecorder` fallback):
+3. Render the 1920x1080 video offline via headless Chrome (`WebCodecs` + `MediaRecorder` fallback, modular Canvas 2D templates in `engine/src/canvas_templates/*.mjs` with `tokyo-night` syntax highlighting, and offline ESM vendoring in `engine/public/vendor/esm/` via `node "engine/scripts/vendor_libs.mjs"` + `engine/public/styles.css`):
    ```powershell
    node "engine/render_video.mjs" --course <COURSE> --episode <EP_ID> [--port 3030] [--format webm|mp4]
    ```

@@ -9,14 +9,38 @@ import { fileURLToPath } from "node:url";
 
 import {
   SUPPORTED_VISUAL_TYPES,
+  computeArchitectureLayout,
   computeComparisonMatrixState,
   computeKpiMetricsState,
   computeTimelineFlowState,
   getSceneBurstInfo,
 } from "./src/motion/kernel.mjs";
-import { validateScriptDiagrams } from "./src/diagram_validator.mjs";
+import {
+  TEMPLATE_SPECS,
+  TEMPLATE_LAYOUT_BUDGETS,
+  buildTemplatesSchemaDoc,
+  getSchemaPromptSpec,
+} from "./src/template_schema.mjs";
+import {
+  validateArchitectureData,
+  validateScriptDiagrams,
+  validateSingleScene,
+} from "./src/diagram_validator.mjs";
+import {
+  extractRelevantCurriculumContext,
+  generateEpisodeScript,
+  normalizeCompiledScript,
+} from "./ai/runner.mjs";
+import { wrapText } from "./src/canvas_templates/shared.mjs";
+import {
+  TOKYO_NIGHT_PALETTE,
+  drawCodeCliScene,
+  registerShikiTokens,
+  tokenizeCodeLine,
+} from "./src/canvas_templates/code_cli.mjs";
+import { createMediaHandlers } from "./routes/media.mjs";
 import { resolveOutputFilename } from "./src/exporter.mjs";
-import { inspectEpisodeArtifacts } from "./state_cli.mjs";
+import { inspectEpisodeArtifacts, readEpisodeState } from "./state_cli.mjs";
 import {
   checkAiEnvKeys,
   inspectWorkspaceAdapters,
@@ -2629,6 +2653,560 @@ async function runTests() {
     assert.equal(ep4StateCleared.production?.verified, false);
     assert.equal(ep4StateCleared.production?.status, "pending");
     console.log("PASS: Video files list, custom export filename, collision warning, preview modal, and delete API verified.");
+
+    console.log("=== 14. 7-Template SSOT Schema, Full Validator, Scene Metadata & Legacy Compat ===");
+    assert.deepEqual(Object.keys(TEMPLATE_SPECS).sort(), [...SUPPORTED_VISUAL_TYPES].sort());
+    assert.deepEqual(Object.keys(TEMPLATE_LAYOUT_BUDGETS).sort(), [...SUPPORTED_VISUAL_TYPES].sort());
+    const schemaDoc = buildTemplatesSchemaDoc();
+    assert.equal(schemaDoc.supported_visual_types.length, 7);
+    assert.equal(Object.keys(schemaDoc.templates).length, 7);
+    assert.equal(Object.keys(schemaDoc.layout_budgets).length, 7);
+    assert.ok(schemaDoc.v2_motion_fields && schemaDoc.scene_metadata);
+    assert.ok(getSchemaPromptSpec({ compact: false, pass: 1 }).includes("Pass 1"));
+    assert.ok(getSchemaPromptSpec({ compact: true, pass: 1 }).includes("Pass 1"));
+    assert.ok(getSchemaPromptSpec({ compact: false, pass: 2 }).includes("console_setup"));
+    assert.ok(getSchemaPromptSpec({ compact: true, pass: 2 }).includes("exam_tips"));
+
+    // console_setup validation (error on empty steps, warn on >4 fields & long tip)
+    const badConsole = validateSingleScene({
+      id: "cs_bad",
+      part: "setup",
+      narration: "Test",
+      visual_type: "console_setup",
+      visual_data: { steps: [] },
+    });
+    assert.equal(badConsole.valid, false);
+    const warnConsole = validateSingleScene({
+      id: "cs_warn",
+      part: "setup",
+      narration: "Test",
+      visual_type: "console_setup",
+      visual_data: {
+        steps: [
+          {
+            step_number: 1,
+            progress_start: 0,
+            progress_end: 1,
+            heading: "Step 1",
+            fields: [1, 2, 3, 4, 5].map((n) => ({ label: `Field ${n}`, type: "text", value: "val" })),
+            tip: "T".repeat(120),
+          },
+        ],
+      },
+    });
+    assert.equal(warnConsole.valid, true);
+    assert.equal(warnConsole.warnings.length, 2);
+
+    // code_cli validation (reject invalid 1-based line, warn instead of failing on legacy layout: "code_only")
+    const badCodeLine = validateSingleScene({
+      id: "cc_bad",
+      part: "setup",
+      narration: "Test",
+      visual_type: "code_cli",
+      visual_data: {
+        code_lines: ["line1", "line2"],
+        highlight_phases: [{ progress_start: 0, progress_end: 1, lines: [3] }],
+      },
+    });
+    assert.equal(badCodeLine.valid, false);
+    const legacyCodeOnly = validateSingleScene({
+      id: "cc_legacy",
+      part: "setup",
+      narration: "Test",
+      visual_type: "code_cli",
+      visual_data: {
+        layout: "code_only",
+        code_lines: ["line1", "line2"],
+        highlight_phases: [{ progress_start: 0, progress_end: 1, lines: [1, 2] }],
+      },
+    });
+    assert.equal(legacyCodeOnly.valid, true);
+    assert.equal(legacyCodeOnly.warnings.some((w) => w.code === "legacy-layout"), true);
+
+    // exam_tips validation
+    const badExam = validateSingleScene({
+      id: "ex_bad",
+      part: "exam_tips",
+      narration: "Test",
+      visual_type: "exam_tips",
+      visual_data: {
+        quiz: {
+          question: "Which?",
+          options: [
+            { key: "A", text: "One" },
+            { key: "B", text: "Two" },
+          ],
+          correct_key: "Z",
+        },
+      },
+    });
+    assert.equal(badExam.valid, false);
+    const goodExam = validateSingleScene({
+      id: "ex_good",
+      part: "exam_tips",
+      narration: "Test",
+      visual_type: "exam_tips",
+      visual_data: {
+        comparisons: [{ title: "Trap", wrong: "Static Key", right: "IAM Role" }],
+        quiz: {
+          question: "Which?",
+          options: [
+            { key: "A", text: "Static Key" },
+            { key: "B", text: "IAM Role" },
+          ],
+          correct_key: "B",
+        },
+      },
+    });
+    assert.equal(goodExam.valid, true);
+
+    // architecture flow_steps unknown ref + duplicate scene.id + invalid metadata
+    const badFlowRef = validateSingleScene({
+      id: "arch_bad_ref",
+      part: "architecture",
+      narration: "Test",
+      visual_type: "architecture",
+      visual_data: {
+        layout_mode: "auto",
+        nodes: [{ id: "n1", label: "Node 1" }],
+        edges: [],
+        flow_steps: [{ progress_start: 0, progress_end: 1, active_nodes: ["ghost_node"], active_edges: ["ghost_edge"] }],
+      },
+    });
+    assert.equal(badFlowRef.valid, false);
+    assert.equal(badFlowRef.errors.some((e) => e.code === "flow-step-unknown-node"), true);
+    assert.equal(badFlowRef.errors.some((e) => e.code === "flow-step-unknown-edge"), true);
+
+    const dupSceneRes = validateScriptDiagrams({
+      scenes: [
+        { id: "dup_id", part: "wrong_part", narration: "", visual_type: "exam_tips", visual_data: { comparisons: [{ title: "T", wrong: "W", right: "R" }] } },
+        { id: "dup_id", part: "exam_tips", narration: "Valid", visual_type: "exam_tips", visual_data: { comparisons: [{ title: "T", wrong: "W", right: "R" }] } },
+      ],
+    });
+    assert.equal(dupSceneRes.valid, false);
+    assert.ok(dupSceneRes.errors.some((e) => typeof e === "string" && e.includes("Duplicate scene.id")));
+    assert.ok(dupSceneRes.errors.some((e) => typeof e === "string" && e.includes('valid "part"')));
+    assert.ok(dupSceneRes.errors.some((e) => typeof e === "string" && e.includes("narration")));
+    console.log("PASS: 7-template SSOT, full validator, scene metadata, duplicate id & legacy layout compat verified.");
+
+    console.log("=== 15. Zero-LLM Layered DAG Auto-Layout & Manual Coordinate Preservation ===");
+    const autoArchData = {
+      layout_mode: "auto",
+      zones: [
+        { id: "z_client", label: "Client", role: "client", node_ids: ["client"] },
+        { id: "z_edge", label: "Edge", role: "network", node_ids: ["apigw", "auth"] },
+        { id: "z_data", label: "Data", role: "data", node_ids: ["db"] },
+      ],
+      nodes: [
+        { id: "client", label: "Client App", icon: "user", tone: "blue" },
+        { id: "apigw", label: "API Gateway", icon: "apigw", tone: "orange" },
+        { id: "auth", label: "Auth Lambda", icon: "lambda", tone: "purple" },
+        { id: "db", label: "DynamoDB", icon: "dynamodb", tone: "green" },
+      ],
+      edges: [
+        { id: "e_c_g", from: "client", to: "apigw", label: "HTTPS", routing: "auto" },
+        { id: "e_g_a", from: "apigw", to: "auth", label: "Verify", routing: "auto" },
+        { id: "e_a_g", from: "auth", to: "apigw", label: "Allow", routing: "auto" },
+        { id: "e_g_d", from: "apigw", to: "db", label: "Query", routing: "auto" },
+      ],
+      flow_steps: [
+        { progress_start: 0, progress_end: 0.5, active_nodes: ["client", "apigw"], active_edges: ["e_c_g"] },
+        { progress_start: 0.5, progress_end: 1, active_nodes: ["apigw", "auth", "db"], active_edges: ["e_g_a", "e_a_g", "e_g_d"] },
+      ],
+    };
+    const autoLayout = computeArchitectureLayout(autoArchData, 1000, 560);
+    assert.equal(autoLayout.layoutMode, "auto");
+    assert.equal(autoLayout.nodes.length, 4);
+    for (const ln of autoLayout.nodes) {
+      assert.ok(ln.xPct >= 8 && ln.xPct <= 92, `xPct out of [8..92]: ${ln.xPct}`);
+      assert.ok(ln.yPct >= 14 && ln.yPct <= 84, `yPct out of [14..84]: ${ln.yPct}`);
+    }
+    const bidirEdges = autoLayout.edges.filter((e) => e.id === "e_g_a" || e.id === "e_a_g");
+    assert.equal(bidirEdges.length, 2);
+    assert.ok(bidirEdges.every((e) => e.routing === "curved"), "Bidirectional auto edges must promote to curved");
+    const autoArchVal = validateArchitectureData(autoArchData, "auto_dag");
+    assert.equal(autoArchVal.valid, true, `Auto-layout failed validation: ${JSON.stringify(autoArchVal.errors)}`);
+
+    const manualArchData = {
+      nodes: [
+        { id: "m1", label: "Left", x: 20, y: 40 },
+        { id: "m2", label: "Right", x: 75, y: 60 },
+      ],
+      edges: [{ id: "me1", from: "m1", to: "m2", label: "Call" }],
+    };
+    const manualLayout = computeArchitectureLayout(manualArchData, 1000, 560);
+    assert.equal(manualLayout.nodes[0].xPct, 20);
+    assert.equal(manualLayout.nodes[0].yPct, 40);
+    assert.equal(manualLayout.nodes[1].xPct, 75);
+    assert.equal(manualLayout.nodes[1].yPct, 60);
+    console.log("PASS: Zero-LLM Layered DAG auto-layout, bidirectional curve upgrade & manual coord preservation verified.");
+
+    console.log("=== 16. Runner 2-Pass Pipeline, Compaction, Normalization & Scene-Level Self-Repair ===");
+    const hugeCurriculum = [
+      "# Kubernetes Mastery",
+      "Overview of cluster architecture.",
+      ...Array.from({ length: 10 }, (_, stIdx) => [
+        `## Stage ${stIdx + 1}: Module ${stIdx + 1}`,
+        Array.from({ length: 8 }, (__, epIdx) => `- ep${stIdx * 8 + epIdx + 1}: Deep dive ${"z".repeat(120)}`).join("\n"),
+      ].join("\n\n")),
+    ].join("\n\n");
+    const compactedCurric = extractRelevantCurriculumContext(hugeCurriculum, {
+      id: "ep45",
+      number: 45,
+      stage: 6,
+      title: "Module 6",
+    });
+    assert.ok(compactedCurric.length <= 2400 && compactedCurric.length > 200);
+    assert.ok(compactedCurric.includes("ep45"));
+
+    const normalizedNorm = normalizeCompiledScript(
+      {
+        scenes: [
+          {
+            id: "norm_arch",
+            part: "architecture",
+            narration: "Auto layout",
+            visual_type: "architecture",
+            visual_data: {
+              nodes: [{ id: "a", label: "A" }, { id: "b", label: "B" }],
+              edges: [{ id: "e1", from: "a", to: "b", label: "Go" }],
+              flow_steps: [{ active_nodes: ["a"], active_edges: [] }, { active_nodes: ["b"], active_edges: ["e1"] }],
+            },
+          },
+        ],
+      },
+      { courseJson: { course: "TESTCOURSE" }, episodeMeta: { id: "ep07-test", number: 7 } }
+    );
+    assert.equal(normalizedNorm.tts_profile, "auto-vi");
+    assert.equal(normalizedNorm.tts_rate, "+6%");
+    assert.equal(normalizedNorm.scenes[0].visual_data.layout_mode, "auto");
+    assert.equal(normalizedNorm.scenes[0].visual_data.flow_steps[0].progress_start, 0);
+    assert.equal(normalizedNorm.scenes[0].visual_data.flow_steps[0].progress_end, 0.5);
+    assert.equal(normalizedNorm.scenes[0].visual_data.flow_steps[1].progress_start, 0.5);
+    assert.equal(normalizedNorm.scenes[0].visual_data.flow_steps[1].progress_end, 1);
+
+    // Isolated OpenAI-compatible mock server for 2-Pass + Scene-Level Repair
+    const twoPassCalls = [];
+    const twoPassSrv = http.createServer((req, res) => {
+      const chunks = [];
+      req.on("data", (c) => chunks.push(c));
+      req.on("end", () => {
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf-8") || "{}");
+        twoPassCalls.push(body);
+        const sys = body.messages?.[0]?.content || "";
+        const sendReply = (obj) => {
+          res.writeHead(200, { "Content-Type": "application/json; charset=utf-8" });
+          res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(obj) } }] }));
+        };
+        if (sys.includes("Scene Repair Assistant")) {
+          return sendReply({
+            scenes: [
+              {
+                id: "s_bad",
+                part: "exam_tips",
+                narration: "Repaired scene",
+                visual_type: "exam_tips",
+                visual_data: { comparisons: [{ title: "Trap", wrong: "Old", right: "New" }] },
+              },
+            ],
+          });
+        }
+        if (sys.includes("Pass 2") && body.model === "compiler-model") {
+          return sendReply({
+            script_json: {
+              title: "Compiled Two-Pass",
+              scenes: [
+                {
+                  id: "s_ok",
+                  part: "problem",
+                  narration: "Valid intro",
+                  visual_type: "exam_tips",
+                  visual_data: { comparisons: [{ title: "T1", wrong: "W1", right: "R1" }] },
+                },
+                {
+                  id: "s_bad",
+                  part: "exam_tips",
+                  narration: "Invalid quiz key",
+                  visual_type: "exam_tips",
+                  visual_data: {
+                    quiz: {
+                      question: "Q?",
+                      options: [{ key: "A", text: "1" }, { key: "B", text: "2" }],
+                      correct_key: "Z",
+                    },
+                  },
+                },
+              ],
+            },
+            notes_md: "# Compiled Notes",
+          });
+        }
+        return sendReply({
+          storyboard: {
+            title: "Pass 1 Storyboard",
+            scenes: [
+              { id: "s_ok", part: "problem", visual_type: "exam_tips", narration: "Valid intro", visual_intent: {} },
+              { id: "s_bad", part: "exam_tips", visual_type: "exam_tips", narration: "Quiz", visual_intent: {} },
+            ],
+          },
+          notes_md: "# Storyboard Notes",
+        });
+      });
+    });
+    await new Promise((resolve) => twoPassSrv.listen(0, "127.0.0.1", resolve));
+    const twoPassPort = twoPassSrv.address().port;
+    const twoPassEngineDir = fs.mkdtempSync(path.join(tmpWorkspace, "runner-p2-"));
+    fs.writeFileSync(
+      path.join(twoPassEngineDir, ".ai_credentials.json"),
+      JSON.stringify({ openai: { api_key: "sk-runner-p2-test-key-7777" } })
+    );
+    const prevOpenAiBase = process.env.VIDEO_MAKER_OPENAI_BASE_URL;
+    const prevOpenAiKey = process.env.OPENAI_API_KEY;
+    process.env.VIDEO_MAKER_OPENAI_BASE_URL = `http://127.0.0.1:${twoPassPort}/v1`;
+    process.env.OPENAI_API_KEY = "sk-runner-p2-test-key-7777";
+    try {
+      const sbOnlyRes = await generateEpisodeScript({
+        provider_id: "openai",
+        model: "planner-model",
+        mode: "storyboard_only",
+        courseJson: { course: "TESTCOURSE" },
+        curriculumMd: hugeCurriculum,
+        episodeMeta: { id: "ep45", number: 45 },
+        engineDir: twoPassEngineDir,
+      });
+      assert.equal(sbOnlyRes.mode, "storyboard_only");
+      assert.equal(sbOnlyRes.storyboard.scenes.length, 2);
+      assert.equal(twoPassCalls.length, 1);
+
+      twoPassCalls.length = 0;
+      const twoPassRes = await generateEpisodeScript({
+        provider_id: "openai",
+        model: "planner-model",
+        compiler_provider_id: "openai",
+        compiler_model: "compiler-model",
+        mode: "two_pass",
+        courseJson: { course: "TESTCOURSE" },
+        curriculumMd: hugeCurriculum,
+        episodeMeta: { id: "ep45", number: 45 },
+        engineDir: twoPassEngineDir,
+      });
+      assert.equal(twoPassRes.mode_used, "two_pass");
+      assert.equal(twoPassRes.validation.valid, true);
+      assert.equal(twoPassRes.script_json.scenes.length, 2);
+      assert.equal(twoPassCalls.length, 3);
+      assert.equal(twoPassCalls[0].model, "planner-model");
+      assert.equal(twoPassCalls[1].model, "compiler-model");
+      const repairPrompt = twoPassCalls[2].messages[1].content;
+      assert.ok(repairPrompt.includes("s_bad") && !repairPrompt.includes("s_ok"));
+    } finally {
+      if (prevOpenAiBase === undefined) delete process.env.VIDEO_MAKER_OPENAI_BASE_URL;
+      else process.env.VIDEO_MAKER_OPENAI_BASE_URL = prevOpenAiBase;
+      if (prevOpenAiKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = prevOpenAiKey;
+      await new Promise((resolve) => twoPassSrv.close(resolve));
+    }
+    console.log("PASS: 2-Pass storyboard/compile, compaction, normalization & targeted scene-level self-repair verified.");
+
+    console.log("=== 17. Offline Vendor/CSS, /courses/* Whitelist, Atomic /api/save-video & Canvas Tokenizer/wrapText ===");
+    const stylesRes = await new Promise((resolve, reject) => {
+      http.get(`http://127.0.0.1:${testPort}/public/styles.css`, (res) => {
+        const c = [];
+        res.on("data", (d) => c.push(d));
+        res.on("end", () => resolve({ status: res.statusCode, type: res.headers["content-type"], len: Buffer.concat(c).length }));
+      }).on("error", reject);
+    });
+    assert.equal(stylesRes.status, 200);
+    assert.ok(String(stylesRes.type || "").includes("text/css"));
+    assert.ok(stylesRes.len > 1000);
+
+    const manifestRes = await httpRequestJson(testPort, "GET", "/vendor/vendor-manifest.json");
+    assert.equal(manifestRes.status, 200);
+    assert.equal(Object.keys(manifestRes.body?.importMap || {}).length, 14);
+
+    const vendorReactRes = await new Promise((resolve, reject) => {
+      http.get(`http://127.0.0.1:${testPort}/vendor/esm/react@18.3.1/index.mjs`, (res) => {
+        res.resume();
+        res.on("end", () => resolve({ status: res.statusCode, type: res.headers["content-type"] }));
+      }).on("error", reject);
+    });
+    assert.equal(vendorReactRes.status, 200);
+    assert.ok(String(vendorReactRes.type || "").includes("javascript"));
+
+    for (const blockedPath of [
+      "/courses/.git/config",
+      "/courses/.agents/skills/test",
+      "/courses/engine/server.mjs",
+      "/courses/NO_COURSE_JSON/foo.txt",
+    ]) {
+      const blocked = await httpRequestJson(testPort, "GET", blockedPath);
+      assert.ok(blocked.status === 403 || blocked.status === 404, `Expected 403/404 for ${blockedPath}, got ${blocked.status}`);
+    }
+    const allowedCourseJson = await httpRequestJson(testPort, "GET", "/courses/TESTCOURSE/course.json");
+    assert.equal(allowedCourseJson.status, 200);
+    assert.equal(allowedCourseJson.body.course, "TESTCOURSE");
+
+    // Atomic streaming /api/save-video size cap (413) & client abort .tmp cleanup on isolated media server
+    const mediaHandlers = createMediaHandlers({
+      ENGINE_DIR,
+      WORKSPACE_ROOT: tmpWorkspace,
+      VOICE_PREVIEW_CACHE_DIR: path.join(tmpWorkspace, ".voice_cache"),
+      safeResolve: (root, segs) => {
+        const target = path.resolve(root, ...segs);
+        const rel = path.relative(root, target);
+        if (rel.startsWith("..") || path.isAbsolute(rel)) return null;
+        return target;
+      },
+      sendJson: (res, status, obj) => {
+        res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify(obj));
+      },
+      readJsonBody: async () => ({}),
+      sanitizeVideoOutputStem: (raw, fallback) => ({
+        ok: true,
+        stem: String(raw || fallback).replace(/\.(mp4|webm)$/i, "") || fallback,
+      }),
+      inspectEpisodeArtifacts,
+      readEpisodeState,
+      recomputeState: (s) => s,
+      writeJsonAtomic: (p, o) => fs.writeFileSync(p, JSON.stringify(o, null, 2)),
+      appendEvent: () => {},
+      scheduleStateBroadcast: () => {},
+      mapEpisodeVideoFiles: () => [],
+      broadcastSse: () => {},
+      activeJobByEp: new Map(),
+      jobs: new Map(),
+      mutateEpisodeStateForJob: () => {},
+    });
+    const mediaSrv = http.createServer((req, res) => {
+      const parsedUrl = new URL(req.url, "http://127.0.0.1");
+      if (req.method === "POST" && parsedUrl.pathname === "/api/save-video") {
+        return mediaHandlers.handleSaveVideo(req, res, parsedUrl);
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise((resolve) => mediaSrv.listen(0, "127.0.0.1", resolve));
+    const mediaPort = mediaSrv.address().port;
+    const prevMaxUpload = process.env.VIDEO_MAKER_MAX_UPLOAD_BYTES;
+    process.env.VIDEO_MAKER_MAX_UPLOAD_BYTES = "2048";
+    const ep5Dir = path.join(courseDir, "episodes", "ep05-test");
+    try {
+      const okSave = await httpRequestBinary(
+        mediaPort,
+        "POST",
+        "/api/save-video?course=TESTCOURSE&episode=ep05-test&format=mp4&filename=ok-stream.mp4",
+        Buffer.alloc(1024, 0x11),
+        { "Content-Type": "video/mp4" }
+      );
+      assert.equal(okSave.status, 200);
+      assert.equal(fs.existsSync(path.join(ep5Dir, "ok-stream.mp4")), true);
+
+      const overCapRes = await httpRequestBinary(
+        mediaPort,
+        "POST",
+        "/api/save-video?course=TESTCOURSE&episode=ep05-test&format=mp4&filename=too-big.mp4",
+        Buffer.alloc(4096, 0x22),
+        { "Content-Type": "video/mp4" }
+      );
+      assert.equal(overCapRes.status, 413);
+      assert.equal(fs.existsSync(path.join(ep5Dir, "too-big.mp4")), false);
+
+      // Client abort mid-stream must remove .tmp file cleanly
+      await new Promise((resolve) => {
+        const req = http.request(
+          {
+            host: "127.0.0.1",
+            port: mediaPort,
+            path: "/api/save-video?course=TESTCOURSE&episode=ep05-test&format=mp4&filename=aborted.mp4",
+            method: "POST",
+            headers: { "Content-Type": "video/mp4", "Content-Length": "1024" },
+          },
+          () => resolve()
+        );
+        req.on("error", () => resolve());
+        req.write(Buffer.alloc(256, 0x33));
+        setTimeout(() => {
+          req.destroy(new Error("Simulated client abort"));
+          setTimeout(resolve, 150);
+        }, 80);
+      });
+      let leftoverTmp = [];
+      for (let i = 0; i < 20; i++) {
+        leftoverTmp = fs.readdirSync(ep5Dir).filter((f) => f.endsWith(".tmp"));
+        if (leftoverTmp.length === 0) break;
+        await sleep(100);
+      }
+      assert.deepEqual(leftoverTmp, [], `Expected 0 leftover .tmp files, got: ${leftoverTmp.join(", ")}`);
+      assert.equal(fs.existsSync(path.join(ep5Dir, "aborted.mp4")), false);
+    } finally {
+      if (prevMaxUpload === undefined) delete process.env.VIDEO_MAKER_MAX_UPLOAD_BYTES;
+      else process.env.VIDEO_MAKER_MAX_UPLOAD_BYTES = prevMaxUpload;
+      await new Promise((resolve) => mediaSrv.close(resolve));
+    }
+
+    // Canvas 2D tokyo-night tokenization + registerShikiTokens + wrapText memoization
+    const jsonToks = tokenizeCodeLine('  "Effect": "Allow", // rule', "json", true);
+    assert.ok(jsonToks.some((t) => t.color === TOKYO_NIGHT_PALETTE.property));
+    assert.ok(jsonToks.some((t) => t.color === TOKYO_NIGHT_PALETTE.string));
+    assert.ok(jsonToks.some((t) => t.color === TOKYO_NIGHT_PALETTE.comment));
+    const pyToks = tokenizeCodeLine("def handler(event): # ok", "python");
+    assert.ok(pyToks.some((t) => t.color === TOKYO_NIGHT_PALETTE.keyword));
+    assert.ok(pyToks.some((t) => t.color === TOKYO_NIGHT_PALETTE.function));
+    const shToks = tokenizeCodeLine("aws s3 ls --recursive", "bash");
+    assert.ok(shToks.some((t) => t.color === TOKYO_NIGHT_PALETTE.keyword));
+    assert.ok(shToks.some((t) => t.color === TOKYO_NIGHT_PALETTE.flag));
+
+    const drawnColors = [];
+    const mockCtx = {
+      font: '500 20px "JetBrains Mono", monospace',
+      fillStyle: "#FFFFFF",
+      strokeStyle: "#FFFFFF",
+      lineWidth: 1,
+      globalAlpha: 1,
+      shadowBlur: 0,
+      shadowColor: "transparent",
+      textAlign: "left",
+      textBaseline: "middle",
+      save() {},
+      restore() {},
+      beginPath() {},
+      roundRect() {},
+      fill() {},
+      stroke() {},
+      fillRect() {},
+      moveTo() {},
+      lineTo() {},
+      measureText(str) {
+        return { width: String(str || "").length * 9 };
+      },
+      fillText(txt) {
+        drawnColors.push({ txt: String(txt), color: this.fillStyle });
+      },
+    };
+    const w1 = wrapText(mockCtx, "Alpha Beta Gamma Delta Epsilon Zeta", 110);
+    const w2 = wrapText(mockCtx, "Alpha Beta Gamma Delta Epsilon Zeta", 110);
+    assert.equal(w1, w2, "wrapText must return memoized array for identical font+maxWidth+text");
+    assert.ok(w1.length >= 2);
+    const customCode = "const secretToken = 42;";
+    registerShikiTokens(customCode, "javascript", [[{ content: customCode, color: "#12ABCD", fontStyle: 2 }]]);
+    drawCodeCliScene(
+      mockCtx,
+      1920,
+      1080,
+      {
+        visual_type: "code_cli",
+        visual_data: {
+          code_language: "javascript",
+          code_title: "shiki-test.js",
+          code_lines: [customCode],
+          highlight_phases: [{ progress_start: 0, progress_end: 1, lines: [1], callout: "Token check" }],
+        },
+      },
+      0.5,
+      1.0
+    );
+    assert.ok(drawnColors.some((d) => d.txt.includes("secretToken") && d.color === "#12ABCD"));
+    console.log("PASS: Offline /vendor & /public/styles.css, /courses/* whitelist, atomic /api/save-video & Canvas tokyo-night/wrapText verified.");
 
     console.log("\nALL TESTS PASSED!");
   } finally {

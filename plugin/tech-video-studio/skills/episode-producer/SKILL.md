@@ -70,12 +70,13 @@ Write `{{WORKSPACE_ROOT}}/<COURSE_CODE>/episodes/<ep-slug>/script.json` matching
 ### Supported `visual_type` schemas
 
 1. **`"architecture"` (`ArchitectureDiagram`)**:
+   - `visual_data.layout_mode` (optional): `"auto"` | `"manual"`. Set `layout_mode: "auto"` (or omit `x, y` on nodes) to run Zero-LLM Layered DAG Auto-Layout in `kernel.mjs` (supports `visual_data.orientation`: `"LR"` default or `"TB"`, optional numeric `node.tier`, zone-aware ordering, `[8..92] x [14..84]` bounds, and automatic curved upgrade for bidirectional `routing: "auto"` edges). Supplying finite `x, y` on all nodes with `layout_mode !== "auto"` preserves manual coordinates verbatim.
    - `visual_data.zones`: array of `{ id, label, sublabel?, role?, parent_zone?, node_ids?, x?, y?, w?, h? }`
      - **Max 2 nested levels** via `parent_zone` (e.g. `aws-cloud` -> `vpc-private`).
      - `role`: `"client" | "network" | "compute" | "security" | "data" | "danger"`.
      - Supply `node_ids` for automatic bounding boxes around member nodes, or explicit `x, y, w, h` in `0..100`. Parent zones auto-expand around child zones.
-   - `visual_data.nodes`: array of `{ id, label, sublabel, icon, x, y, tone }`
-     - `x`, `y` are percentages `0..100` on the stage canvas.
+   - `visual_data.nodes`: array of `{ id, label, sublabel, icon, x?, y?, tier?, tone }`
+     - `x`, `y` are percentages `0..100` on the stage canvas (optional when `layout_mode: "auto"`).
      - `icon`: `"user" | "iam-user" | "iam-group" | "iam-role" | "iam-policy" | "sts" | "ec2" | "s3" | "lambda" | "apigw" | "dynamodb" | "vpc" | "docker" | "database" | "shield" | "hacker" | "code" | "check" | "deny"`
      - `tone`: `"orange" | "blue" | "green" | "purple" | "red" | "slate"`
    - `visual_data.edges`: array of `{ id, from, to, label, style, routing? }`
@@ -97,7 +98,7 @@ Write `{{WORKSPACE_ROOT}}/<COURSE_CODE>/episodes/<ep-slug>/script.json` matching
    - `visual_data.steps`: array of `{ step_number, progress_start, progress_end, heading, fields: [{ label, type, value, options, selected, highlight }], primary_button, highlight_button, tip }`
 
 3. **`"code_cli"` (`TerminalAndCode`)**:
-   - `visual_data.layout`: `"split"` (default) or `"code"` or `"terminal"`
+   - `visual_data.layout`: `"split"` (default), `"code"` / `"code_only"`, or `"terminal"`
    - `visual_data.code_title`: filename e.g. `"s3-read-only-policy.json"`
    - `visual_data.code_language`: `"json" | "python" | "yaml" | "bash"`
    - `visual_data.code_lines`: array of strings (each string is one line)
@@ -136,11 +137,11 @@ Write `{{WORKSPACE_ROOT}}/<COURSE_CODE>/episodes/<ep-slug>/script.json` matching
    - **One-Page Cheat Sheet**: Core definitions, comparison table, and golden rules.
    - **Mẫu cấu hình & Lệnh thực hành**: Copy-pasteable JSON/YAML/CLI/SDK snippets.
    - **3 Câu hỏi trắc nghiệm chuẩn đề thi**: Realistic scenario questions with detailed explanation of why the correct option works and why each distractor fails.
-2. Validate all `architecture` scenes against node/label/edge collisions and zone rules:
+2. Validate all 7 templates (SSOT in `engine/src/template_schema.mjs`) against scene metadata, node/label/edge collisions, zone rules, and template field constraints:
    ```powershell
    node "{{WORKSPACE_ROOT}}/engine/state_cli.mjs" validate-diagrams --course <COURSE_CODE> --ep <ep-slug>
    ```
-   *(Fix any reported node/label/edge overlaps or >2-level zones before approving.)*
+   *(Fix any reported errors before approving; built-in AI jobs in `runner.mjs` / `queue_broker.mjs` also support 2-Pass Storyboard->Compiler generation and targeted scene-level self-repair `repairInvalidScenes`.)*
 3. Preview the episode silently in **Storyboard Preview Mode** on `http://localhost:3030/?course=<COURSE_CODE>&ep=<ep-slug>&view=player` (available as soon as `script.json` exists, even without audio).
 4. If fixing tickets from the Revision Queue (`REV-XXX` with `scope: "script"` or `"visual"`), resolve each fixed ticket first, then approve scripting (`state_cli.mjs set --stage scripting --status completed` also runs `validateScriptDiagrams` automatically):
    ```powershell
@@ -161,4 +162,4 @@ node "{{WORKSPACE_ROOT}}/engine/state_cli.mjs" set --course <COURSE_CODE> --ep <
 ```
 *(Optional: pass `--profile <profile_id>` to test or override a specific voice profile.)*
 
-This writes `audio/<scene_id>.mp3` (or `.wav`) for every scene, writes `subtitles.srt`, and updates `script.json` with `tts_profile`, `tts_voice`, `tts_provider_used`, `duration_sec`, `audio_file`, `subtitles`, and `total_duration_sec`. You can also trigger TTS + Render directly from the Studio Player UI (**`🎙️ Tạo Audio (TTS)`** / **`🎬 Tạo Audio & Render Video`**), or proceed to `video-renderer` (`render_video.mjs`) to generate and verify the final video.
+This writes `audio/<scene_id>.mp3` (or `.wav`) for every scene, writes `subtitles.srt`, and updates `script.json` with `tts_profile`, `tts_voice`, `tts_provider_used`, `tts_fallback_reason` (populated only if Edge TTS falls back to Google TTS, cleared when primary succeeds, and surfaced in `/api/courses`), `duration_sec`, `audio_file`, `subtitles`, and `total_duration_sec`. You can also trigger TTS + Render directly from the Studio Player UI (**`🎙️ Tạo Audio (TTS)`** / **`🎬 Tạo Audio & Render Video`**), or proceed to `video-renderer` (`render_video.mjs`) to generate and verify the final video.

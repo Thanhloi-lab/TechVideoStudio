@@ -1,0 +1,2 @@
+/* esm.sh - motion@14.14.0/react */
+import*as o from"../../../framer-motion@14.14.0/X-ZXJlYWN0LHJlYWN0LWRvbQ/es2022/framer-motion.mjs";export*from"../../../framer-motion@14.14.0/X-ZXJlYWN0LHJlYWN0LWRvbQ/es2022/framer-motion.mjs";var m=o.motion,t=o.m;export{t as m,m as motion};

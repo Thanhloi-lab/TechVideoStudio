@@ -1,0 +1,2 @@
+/* esm.sh - @shikijs/engine-javascript@4.6.0/raw */
+import{n,t as a}from"./dist/string-CFc1qfdw.mjs";function c(){let r={cache:new Map,regexConstructor:()=>{throw new Error("JavaScriptRawEngine: only support precompiled grammar")}};return{createScanner(e){return new n(e,r)},createString:a}}export{c as createJavaScriptRawEngine};

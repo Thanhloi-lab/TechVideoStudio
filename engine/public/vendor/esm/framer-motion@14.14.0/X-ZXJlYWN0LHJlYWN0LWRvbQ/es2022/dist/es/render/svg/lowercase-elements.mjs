@@ -1,0 +1,2 @@
+/* esm.sh - framer-motion@14.14.0/dist/es/render/svg/lowercase-elements */
+var e=["animate","circle","defs","desc","ellipse","g","image","line","filter","marker","mask","metadata","path","pattern","polygon","polyline","rect","stop","switch","symbol","svg","text","tspan","use","view"];export{e as lowercaseSVGElements};

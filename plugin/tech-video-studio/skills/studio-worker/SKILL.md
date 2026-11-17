@@ -44,15 +44,16 @@ When awakened with a queued job (or `job_id`):
    - Report progress: `studio_report_ai_progress({ job_id, worker_id, episode_id, status: "in_progress", progress: ..., message: "..." })`.
    - Author the 4-part Vietnamese tutorial `script.json` (`problem`, `architecture`, `setup`, `exam_tips`) + structured `notes.md`:
      - Follow all rules in `episode-producer` skill and `AGENTS.md`.
-     - Choose the sharpest visual templates among all **7 supported types**:
-       - `architecture` (with `zones[]` & clean `routing: "auto"`)
+     - Choose the sharpest visual templates among all **7 supported types** (SSOT schema in `engine/src/template_schema.mjs` & `studio://templates/schema`):
+       - `architecture` (with `zones[]`, clean `routing: "auto"`, and `layout_mode: "auto"` to omit manual `x, y` via Zero-LLM Layered DAG Auto-Layout — or keep explicit `x, y`)
        - `console_setup`
-       - `code_cli` (with `code_override` / `laser_scan` when teaching refactors or risks)
+       - `code_cli` (supports `layout: "split" | "code" | "code_only" | "terminal"`, `code_override` / `laser_scan`, and Canvas 2D `tokyo-night` syntax highlighting)
        - `exam_tips`
        - `comparison_matrix` (side-by-side comparisons, max 4 columns / 6 rows)
        - `timeline_flow` (step-by-step protocols or request lifecycles, max 6 milestones)
        - `kpi_metrics` (cost/latency/benchmark counters, sparkline + bar chart + alert stamp, max 4 cards)
-   - Validate before submitting: `studio_validate_script({ script_json })`. Fix any schema/collision errors returned!
+   - Validate before submitting: `studio_validate_script({ script_json })` (runs full 7-template + scene metadata validation in `diagram_validator.mjs`; fix only failing scenes if errors occur).
+   - *(Built-in AI jobs in `engine/ai/runner.mjs` / `queue_broker.mjs` also support 2-Pass Storyboard->Compiler generation via `mode: "auto" | "two_pass" | "single_pass" | "storyboard_only"`, `compiler_provider_id`/`compiler_model`, deterministic `normalizeCompiledScript`, and scene-level self-repair `repairInvalidScenes`.)*
    - Submit atomically: `studio_submit_episode_script({ job_id, worker_id, course: job.course, episode_id, script_json, notes_md, summary_note })`. *(Note: If the episode previously had generated audio/video, `studio_submit_episode_script` automatically marks `production.stale = true` so the Video Factory knows to re-synthesize/re-render.)*
      *(For very large scripts, you may also write `<COURSE>/episodes/<ep-id>/script.json` and `notes.md` to disk with `write_file` and call `studio_submit_episode_script` omitting `script_json` so the server validates & promotes the disk files cleanly.)*
 4. **Complete:** Once every episode in `job.episode_ids` is submitted (`script_ready`), call `studio_complete_ai_job({ job_id, worker_id, summary })`. (`server.mjs` only enqueues TTS/Render if the user explicitly enabled `auto_produce` on the job.)

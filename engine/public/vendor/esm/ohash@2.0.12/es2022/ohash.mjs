@@ -1,0 +1,2 @@
+/* esm.sh - ohash@2.0.12 */
+import{isEqual as s,serialize as r}from"./dist/_chunks/is-equal.mjs";import{digest as a,digest as t}from"./crypto.mjs";function m(i){return t(r(i))}export{a as digest,m as hash,s as isEqual,r as serialize};

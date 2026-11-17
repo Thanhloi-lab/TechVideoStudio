@@ -1064,6 +1064,24 @@ function buildOrthogonalCandidates(sx, sy, srcSide, ex, ey, dstSide, obstacleRec
     const detourBelowY = Math.min(H - 18 * (H / 560), maxObsY + 26 * scale);
     candidates.push([pStart, sStub, { x: sStub.x, y: detourAboveY }, { x: dStub.x, y: detourAboveY }, dStub, pEnd]);
     candidates.push([pStart, sStub, { x: sStub.x, y: detourBelowY }, { x: dStub.x, y: detourBelowY }, dStub, pEnd]);
+
+    if (srcSide === dstSide) {
+      let minObsX = Math.min(sx, ex);
+      let maxObsX = Math.max(sx, ex);
+      for (const r of obstacleRects) {
+        if (r.bottom >= Math.min(sy, ey) - 10 && r.y <= Math.max(sy, ey) + 10) {
+          minObsX = Math.min(minObsX, r.x);
+          maxObsX = Math.max(maxObsX, r.right);
+        }
+      }
+      if (srcSide === "right") {
+        const cx = Math.min(W - 16 * (W / 1000), Math.max(sStub.x, dStub.x, maxObsX + 28 * scale));
+        candidates.push([pStart, { x: cx, y: sy }, { x: cx, y: ey }, pEnd]);
+      } else {
+        const cx = Math.max(16 * (W / 1000), Math.min(sStub.x, dStub.x, minObsX - 28 * scale));
+        candidates.push([pStart, { x: cx, y: sy }, { x: cx, y: ey }, pEnd]);
+      }
+    }
   } else if (!isSrcH && !isDstH) {
     const forward =
       (srcSide === "bottom" && dstSide === "top" && ey - sy >= stub * 1.4) ||
@@ -1091,6 +1109,24 @@ function buildOrthogonalCandidates(sx, sy, srcSide, ex, ey, dstSide, obstacleRec
     const detourRightX = Math.min(W - 16 * (W / 1000), maxObsX + 28 * scale);
     candidates.push([pStart, sStub, { x: detourLeftX, y: sStub.y }, { x: detourLeftX, y: dStub.y }, dStub, pEnd]);
     candidates.push([pStart, sStub, { x: detourRightX, y: sStub.y }, { x: detourRightX, y: dStub.y }, dStub, pEnd]);
+
+    if (srcSide === dstSide) {
+      let minObsY = Math.min(sy, ey);
+      let maxObsY = Math.max(sy, ey);
+      for (const r of obstacleRects) {
+        if (r.right >= Math.min(sx, ex) - 10 && r.x <= Math.max(sx, ex) + 10) {
+          minObsY = Math.min(minObsY, r.y);
+          maxObsY = Math.max(maxObsY, r.bottom);
+        }
+      }
+      if (srcSide === "bottom") {
+        const cy = Math.min(H - 18 * (H / 560), Math.max(sStub.y, dStub.y, maxObsY + 26 * scale));
+        candidates.push([pStart, { x: sx, y: cy }, { x: ex, y: cy }, pEnd]);
+      } else {
+        const cy = Math.max(46 * (H / 560), Math.min(sStub.y, dStub.y, minObsY - 26 * scale));
+        candidates.push([pStart, { x: sx, y: cy }, { x: ex, y: cy }, pEnd]);
+      }
+    }
   } else if (isSrcH && !isDstH) {
     // H-first L-shape if exit & entry face the corner cleanly
     const exitForward = sDir.x * (ex - sx) > stub;
@@ -1164,6 +1200,550 @@ function scorePolyline(pts, obstacleRects, placedSegments, W, H, scale) {
   return { score, nodeHits, edgeCrossings, length };
 }
 
+function hasFiniteCoord(val) {
+  return val !== undefined && val !== null && val !== "" && Number.isFinite(Number(val));
+}
+
+const AUTO_X_SLOTS = {
+  1: [50],
+  2: [27, 73],
+  3: [17, 50, 83],
+  4: [11, 37, 63, 89],
+  5: [8, 29, 50, 71, 92],
+};
+
+const AUTO_Y_SLOTS = {
+  1: [49],
+  2: [28, 70],
+  3: [16, 49, 82],
+  4: [14, 37.33, 60.67, 84],
+};
+
+function distributeSlotAxis(count, presetMap, minVal, maxVal) {
+  if (count <= 0) return [];
+  if (presetMap[count]) return presetMap[count].slice();
+  if (count === 1) return [Math.round(((minVal + maxVal) * 0.5) * 100) / 100];
+  const step = (maxVal - minVal) / (count - 1);
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    out.push(Math.round((minVal + i * step) * 100) / 100);
+  }
+  return out;
+}
+
+/**
+ * Zero-LLM Layered DAG Auto-Layout in percentage space [8..92] x [14..84].
+ * Assigns topological layers (longest-path with cycle breaking and node.tier overrides),
+ * groups nodes by zone hierarchy with barycenter crossing minimization, and projects
+ * coordinates with >=18% horizontal and >=22% vertical separation.
+ */
+function computeAutoNodePositions(rawNodes, rawEdges, rawZones, visualData = {}) {
+  const validNodes = [];
+  const nodeById = new Map();
+  const origNodeIdx = new Map();
+
+  for (const n of rawNodes) {
+    if (!n || !n.id || nodeById.has(n.id)) continue;
+    origNodeIdx.set(n.id, validNodes.length);
+    validNodes.push(n);
+    nodeById.set(n.id, n);
+  }
+
+  const posMap = new Map();
+  if (validNodes.length === 0) return posMap;
+
+  const validEdges = [];
+  for (let i = 0; i < rawEdges.length; i++) {
+    const e = rawEdges[i];
+    if (!e || !e.from || !e.to || e.from === e.to) continue;
+    if (!nodeById.has(e.from) || !nodeById.has(e.to)) continue;
+    validEdges.push({ edge: e, index: i });
+  }
+
+  // 1. Cycle-safe DAG edge selection (resolve bidirectional pairs first, then DFS back-edges)
+  const edgeDirLookup = new Map();
+  for (const item of validEdges) {
+    const key = `${item.edge.from}->${item.edge.to}`;
+    if (!edgeDirLookup.has(key)) edgeDirLookup.set(key, item);
+  }
+
+  const candidateEdges = [];
+  for (const item of validEdges) {
+    const { from, to, style } = item.edge;
+    const rev = edgeDirLookup.get(`${to}->${from}`);
+    if (rev) {
+      const fromNode = nodeById.get(from);
+      const toNode = nodeById.get(to);
+      const fromTier = hasFiniteCoord(fromNode?.tier) ? Number(fromNode.tier) : null;
+      const toTier = hasFiniteCoord(toNode?.tier) ? Number(toNode.tier) : null;
+
+      let keepForward = true;
+      if (fromTier !== null && toTier !== null && fromTier !== toTier) {
+        keepForward = fromTier < toTier;
+      } else {
+        const selfDashed = style === "dashed";
+        const revDashed = rev.edge.style === "dashed";
+        if (selfDashed !== revDashed) {
+          keepForward = !selfDashed;
+        } else {
+          keepForward = item.index <= rev.index;
+        }
+      }
+      if (!keepForward) continue;
+    }
+    candidateEdges.push(item);
+  }
+
+  const candOut = new Map();
+  const candInDeg = new Map();
+  for (const n of validNodes) {
+    candOut.set(n.id, []);
+    candInDeg.set(n.id, 0);
+  }
+  for (const item of candidateEdges) {
+    candOut.get(item.edge.from).push(item.edge.to);
+    candInDeg.set(item.edge.to, (candInDeg.get(item.edge.to) || 0) + 1);
+  }
+
+  const dfsOrder = validNodes
+    .map((n) => n.id)
+    .sort((a, b) => {
+      const inA = candInDeg.get(a) || 0;
+      const inB = candInDeg.get(b) || 0;
+      if ((inA === 0) !== (inB === 0)) return inA === 0 ? -1 : 1;
+      const nA = nodeById.get(a);
+      const nB = nodeById.get(b);
+      const tA = hasFiniteCoord(nA.tier) ? Number(nA.tier) : Infinity;
+      const tB = hasFiniteCoord(nB.tier) ? Number(nB.tier) : Infinity;
+      if (tA !== tB) return tA - tB;
+      if (inA !== inB) return inA - inB;
+      return origNodeIdx.get(a) - origNodeIdx.get(b);
+    });
+
+  const color = new Map(); // 0=unvisited, 1=visiting, 2=done
+  const dagOut = new Map();
+  const dagInDeg = new Map();
+  for (const n of validNodes) {
+    color.set(n.id, 0);
+    dagOut.set(n.id, []);
+    dagInDeg.set(n.id, 0);
+  }
+
+  const dfsVisit = (u) => {
+    color.set(u, 1);
+    for (const v of candOut.get(u) || []) {
+      const cv = color.get(v);
+      if (cv === 1) continue; // break cycle back-edge
+      dagOut.get(u).push(v);
+      dagInDeg.set(v, (dagInDeg.get(v) || 0) + 1);
+      if (cv === 0) dfsVisit(v);
+    }
+    color.set(u, 2);
+  };
+
+  for (const id of dfsOrder) {
+    if (color.get(id) === 0) dfsVisit(id);
+  }
+
+  // 2. Topological Sort (Kahn) & Longest-Path Layer Assignment (respecting node.tier)
+  const queue = validNodes
+    .map((n) => n.id)
+    .filter((id) => (dagInDeg.get(id) || 0) === 0);
+  const topoOrder = [];
+  const remIn = new Map(dagInDeg);
+
+  const sortQueue = (arr) =>
+    arr.sort((a, b) => {
+      const tA = hasFiniteCoord(nodeById.get(a).tier) ? Number(nodeById.get(a).tier) : Infinity;
+      const tB = hasFiniteCoord(nodeById.get(b).tier) ? Number(nodeById.get(b).tier) : Infinity;
+      if (tA !== tB) return tA - tB;
+      return origNodeIdx.get(a) - origNodeIdx.get(b);
+    });
+
+  sortQueue(queue);
+  while (queue.length > 0) {
+    const u = queue.shift();
+    topoOrder.push(u);
+    for (const v of dagOut.get(u) || []) {
+      const nextIn = (remIn.get(v) || 0) - 1;
+      remIn.set(v, nextIn);
+      if (nextIn === 0) {
+        queue.push(v);
+        sortQueue(queue);
+      }
+    }
+  }
+  for (const n of validNodes) {
+    if (!topoOrder.includes(n.id)) topoOrder.push(n.id);
+  }
+
+  const rawRank = new Map();
+  for (const n of validNodes) {
+    rawRank.set(n.id, hasFiniteCoord(n.tier) ? Math.round(Number(n.tier)) : 0);
+  }
+  for (const u of topoOrder) {
+    const ru = rawRank.get(u) || 0;
+    for (const v of dagOut.get(u) || []) {
+      const vn = nodeById.get(v);
+      if (!hasFiniteCoord(vn.tier)) {
+        rawRank.set(v, Math.max(rawRank.get(v) || 0, ru + 1));
+      }
+    }
+  }
+
+  // Compress occupied ranks to dense layers 0..numLayers-1
+  const uniqueRanks = Array.from(new Set(rawRank.values())).sort((a, b) => a - b);
+  const rankToLayer = new Map(uniqueRanks.map((r, idx) => [r, idx]));
+  const numLayers = uniqueRanks.length;
+  const layers = Array.from({ length: numLayers }, () => []);
+  const layerOf = new Map();
+
+  for (const n of validNodes) {
+    const li = rankToLayer.get(rawRank.get(n.id)) ?? 0;
+    layers[li].push(n.id);
+    layerOf.set(n.id, li);
+  }
+
+  // 3. Zone-Aware Grouping & Barycenter Edge-Crossing Minimization
+  const rawZoneMap = new Map();
+  const zoneOrigIdx = new Map();
+  for (let i = 0; i < rawZones.length; i++) {
+    const z = rawZones[i];
+    if (z && z.id && !rawZoneMap.has(z.id)) {
+      rawZoneMap.set(z.id, z);
+      zoneOrigIdx.set(z.id, i);
+    }
+  }
+
+  const zoneDepthMap = new Map();
+  for (const [zid, z] of rawZoneMap.entries()) {
+    let d = 0;
+    let curr = z;
+    const seen = new Set([zid]);
+    while (curr.parent_zone && rawZoneMap.has(curr.parent_zone) && !seen.has(curr.parent_zone)) {
+      seen.add(curr.parent_zone);
+      curr = rawZoneMap.get(curr.parent_zone);
+      d++;
+      if (d >= 2) break;
+    }
+    zoneDepthMap.set(zid, Math.min(d, 1));
+  }
+
+  const nodeZones = new Map(); // id -> { outerZone, innerZone }
+  for (const n of validNodes) {
+    let outerZone = null;
+    let innerZone = null;
+    for (const z of rawZones) {
+      if (!z || !z.id || !Array.isArray(z.node_ids) || !z.node_ids.includes(n.id)) continue;
+      const d = zoneDepthMap.get(z.id) ?? 0;
+      if (d === 1 && !innerZone) {
+        innerZone = z.id;
+        if (z.parent_zone && rawZoneMap.has(z.parent_zone)) {
+          outerZone = z.parent_zone;
+        }
+      } else if (d === 0 && !outerZone) {
+        outerZone = z.id;
+      }
+    }
+    if (innerZone && !outerZone) {
+      const parentId = rawZoneMap.get(innerZone)?.parent_zone;
+      outerZone = parentId && rawZoneMap.has(parentId) ? parentId : innerZone;
+    }
+    nodeZones.set(n.id, { outerZone, innerZone });
+  }
+
+  // Initial contiguous zone order within each layer
+  for (let li = 0; li < numLayers; li++) {
+    layers[li].sort((a, b) => {
+      const za = nodeZones.get(a);
+      const zb = nodeZones.get(b);
+      const oa = za.outerZone ? zoneOrigIdx.get(za.outerZone) : Infinity;
+      const ob = zb.outerZone ? zoneOrigIdx.get(zb.outerZone) : Infinity;
+      if (oa !== ob) return oa - ob;
+      const ia = za.innerZone ? zoneOrigIdx.get(za.innerZone) : Infinity;
+      const ib = zb.innerZone ? zoneOrigIdx.get(zb.innerZone) : Infinity;
+      if (ia !== ib) return ia - ib;
+      return origNodeIdx.get(a) - origNodeIdx.get(b);
+    });
+  }
+
+  // Undirected neighbor list across layers for barycenter calculation
+  const allNeighbors = new Map(validNodes.map((n) => [n.id, []]));
+  for (const item of validEdges) {
+    allNeighbors.get(item.edge.from).push(item.edge.to);
+    allNeighbors.get(item.edge.to).push(item.edge.from);
+  }
+
+  const posInLayer = new Map();
+  const refreshLayerPositions = (li) => {
+    const arr = layers[li];
+    for (let i = 0; i < arr.length; i++) {
+      posInLayer.set(arr[i], i);
+    }
+  };
+  for (let li = 0; li < numLayers; li++) refreshLayerPositions(li);
+
+  const normPos = (id) => {
+    const li = layerOf.get(id);
+    const len = layers[li].length;
+    return len > 1 ? posInLayer.get(id) / (len - 1) : 0.5;
+  };
+
+  const orderLayerWithZones = (li, refLayerIdx) => {
+    const arr = layers[li];
+    if (arr.length <= 1) return;
+
+    // Reference outer-zone center in refLayerIdx to keep multi-layer zones aligned
+    const refZoneCenters = new Map();
+    if (refLayerIdx !== null && refLayerIdx >= 0 && refLayerIdx < numLayers) {
+      const sums = new Map();
+      const counts = new Map();
+      for (const rid of layers[refLayerIdx]) {
+        const oz = nodeZones.get(rid).outerZone;
+        if (!oz) continue;
+        sums.set(oz, (sums.get(oz) || 0) + normPos(rid));
+        counts.set(oz, (counts.get(oz) || 0) + 1);
+      }
+      for (const [oz, s] of sums.entries()) {
+        refZoneCenters.set(oz, s / counts.get(oz));
+      }
+    }
+
+    const baryScore = new Map();
+    for (const u of arr) {
+      const nbrs = allNeighbors.get(u) || [];
+      const refNbrs =
+        refLayerIdx !== null ? nbrs.filter((v) => layerOf.get(v) === refLayerIdx) : [];
+      const chosen = refNbrs.length > 0 ? refNbrs : nbrs.filter((v) => layerOf.get(v) !== li);
+      if (chosen.length > 0) {
+        let sum = 0;
+        for (const v of chosen) sum += normPos(v);
+        baryScore.set(u, sum / chosen.length);
+      } else {
+        baryScore.set(u, normPos(u));
+      }
+    }
+
+    // Group hierarchically: top-level (outerZone or singleton node) -> sub-level (innerZone or singleton node)
+    const topBlocks = [];
+    const outerBlockMap = new Map();
+
+    for (let idx = 0; idx < arr.length; idx++) {
+      const u = arr[idx];
+      const { outerZone, innerZone } = nodeZones.get(u);
+      if (!outerZone) {
+        topBlocks.push({
+          key: `node:${u}`,
+          outerZone: null,
+          origOrder: idx,
+          score: baryScore.get(u),
+          nodes: [u],
+        });
+        continue;
+      }
+
+      let outerBlock = outerBlockMap.get(outerZone);
+      if (!outerBlock) {
+        outerBlock = {
+          key: `zone:${outerZone}`,
+          outerZone,
+          origOrder: idx,
+          subBlocks: [],
+          innerBlockMap: new Map(),
+        };
+        outerBlockMap.set(outerZone, outerBlock);
+        topBlocks.push(outerBlock);
+      }
+
+      if (!innerZone) {
+        outerBlock.subBlocks.push({
+          origOrder: outerBlock.subBlocks.length,
+          score: baryScore.get(u),
+          nodes: [u],
+        });
+      } else {
+        let innerBlock = outerBlock.innerBlockMap.get(innerZone);
+        if (!innerBlock) {
+          innerBlock = {
+            origOrder: outerBlock.subBlocks.length,
+            nodes: [],
+          };
+          outerBlock.innerBlockMap.set(innerZone, innerBlock);
+          outerBlock.subBlocks.push(innerBlock);
+        }
+        innerBlock.nodes.push(u);
+      }
+    }
+
+    for (const tb of topBlocks) {
+      if (!tb.subBlocks) continue;
+      let totalBary = 0;
+      let totalCount = 0;
+      for (const sb of tb.subBlocks) {
+        sb.nodes.sort((a, b) => {
+          const diff = baryScore.get(a) - baryScore.get(b);
+          if (Math.abs(diff) > 1e-6) return diff;
+          return posInLayer.get(a) - posInLayer.get(b);
+        });
+        let sbSum = 0;
+        for (const u of sb.nodes) sbSum += baryScore.get(u);
+        sb.score = sbSum / sb.nodes.length;
+        totalBary += sbSum;
+        totalCount += sb.nodes.length;
+      }
+      tb.subBlocks.sort((a, b) => {
+        const diff = a.score - b.score;
+        if (Math.abs(diff) > 1e-6) return diff;
+        return a.origOrder - b.origOrder;
+      });
+      const meanBary = totalBary / Math.max(1, totalCount);
+      const refCenter = refZoneCenters.get(tb.outerZone);
+      tb.score = refCenter !== undefined ? meanBary * 0.8 + refCenter * 0.2 : meanBary;
+      tb.nodes = tb.subBlocks.flatMap((sb) => sb.nodes);
+    }
+
+    topBlocks.sort((a, b) => {
+      const diff = a.score - b.score;
+      if (Math.abs(diff) > 1e-6) return diff;
+      return a.origOrder - b.origOrder;
+    });
+
+    layers[li] = topBlocks.flatMap((tb) => tb.nodes);
+    refreshLayerPositions(li);
+  };
+
+  if (numLayers > 1) {
+    const sweeps = 6;
+    for (let pass = 0; pass < sweeps; pass++) {
+      for (let li = 1; li < numLayers; li++) {
+        orderLayerWithZones(li, li - 1);
+      }
+      for (let li = numLayers - 2; li >= 0; li--) {
+        orderLayerWithZones(li, li + 1);
+      }
+    }
+  }
+
+  // 4. Safe Coordinate Projection into [8..92] x [14..84] with >=18% H and >=22% V separation
+  const isTB = visualData?.orientation === "TB";
+  const maxCrossPerSlice = isTB ? 5 : 4;
+  const maxPrimarySlices = isTB ? 4 : 5;
+  const maxCrossBands = isTB ? 4 : 5;
+
+  // Split any oversized layer into evenly sized sub-slices
+  const slices = [];
+  for (let li = 0; li < numLayers; li++) {
+    const arr = layers[li];
+    if (arr.length <= maxCrossPerSlice) {
+      slices.push({ layer: li, nodes: arr });
+    } else {
+      const subCount = Math.ceil(arr.length / maxCrossPerSlice);
+      const chunkSize = Math.ceil(arr.length / subCount);
+      for (let start = 0; start < arr.length; start += chunkSize) {
+        slices.push({ layer: li, nodes: arr.slice(start, start + chunkSize) });
+      }
+    }
+  }
+
+  const setCoord = (id, primaryVal, crossVal, layer) => {
+    const xPct = Math.max(8, Math.min(92, Math.round((isTB ? crossVal : primaryVal) * 100) / 100));
+    const yPct = Math.max(14, Math.min(84, Math.round((isTB ? primaryVal : crossVal) * 100) / 100));
+    posMap.set(id, { xPct, yPct, layer });
+  };
+
+  const primarySlotsFn = (count) =>
+    isTB ? distributeSlotAxis(count, AUTO_Y_SLOTS, 14, 84) : distributeSlotAxis(count, AUTO_X_SLOTS, 8, 92);
+  const crossSlotsFn = (count) =>
+    isTB ? distributeSlotAxis(count, AUTO_X_SLOTS, 8, 92) : distributeSlotAxis(count, AUTO_Y_SLOTS, 14, 84);
+
+  if (slices.length <= maxPrimarySlices) {
+    const pCoords = primarySlotsFn(slices.length);
+    for (let si = 0; si < slices.length; si++) {
+      const sl = slices[si];
+      const cCoords = crossSlotsFn(sl.nodes.length);
+      for (let j = 0; j < sl.nodes.length; j++) {
+        setCoord(sl.nodes[j], pCoords[si], cCoords[j], sl.layer);
+      }
+    }
+
+    // Gentle alignment for single-node slices toward adjacent connected neighbors
+    if (slices.length > 1) {
+      const crossMin = isTB ? 8 : 14;
+      const crossMax = isTB ? 92 : 84;
+      const sliceOfNode = new Map();
+      for (let si = 0; si < slices.length; si++) {
+        for (const id of slices[si].nodes) sliceOfNode.set(id, si);
+      }
+      for (let si = 0; si < slices.length; si++) {
+        if (slices[si].nodes.length !== 1) continue;
+        const id = slices[si].nodes[0];
+        const adjNbrs = (allNeighbors.get(id) || []).filter(
+          (v) => Math.abs((sliceOfNode.get(v) ?? -99) - si) === 1
+        );
+        if (adjNbrs.length === 0) continue;
+        let sum = 0;
+        for (const v of adjNbrs) {
+          const vp = posMap.get(v);
+          sum += isTB ? vp.xPct : vp.yPct;
+        }
+        const aligned = Math.max(crossMin, Math.min(crossMax, Math.round((sum / adjNbrs.length) * 100) / 100));
+        setCoord(id, pCoords[si], aligned, slices[si].layer);
+      }
+    }
+  } else {
+    // Fold long pipelines into serpentine bands while preserving >=18% H & >=22% V separation
+    const bands = [];
+    for (let start = 0; start < slices.length; start += maxPrimarySlices) {
+      const bandSlices = slices.slice(start, start + maxPrimarySlices);
+      const maxDepth = bandSlices.reduce((m, s) => Math.max(m, s.nodes.length), 1);
+      bands.push({ slices: bandSlices, depth: maxDepth });
+    }
+    const totalCrossNeeded = bands.reduce((s, b) => s + b.depth, 0);
+
+    if (totalCrossNeeded <= maxCrossPerSlice && bands.length <= maxCrossBands) {
+      const allCross = crossSlotsFn(totalCrossNeeded);
+      let cursor = 0;
+      for (let bi = 0; bi < bands.length; bi++) {
+        const band = bands[bi];
+        const bandCross = allCross.slice(cursor, cursor + band.depth);
+        cursor += band.depth;
+
+        const orderedSlices = bi % 2 === 1 ? band.slices.slice().reverse() : band.slices;
+        const pCoords = primarySlotsFn(orderedSlices.length);
+        for (let si = 0; si < orderedSlices.length; si++) {
+          const sl = orderedSlices[si];
+          const offset = Math.floor((band.depth - sl.nodes.length) * 0.5);
+          for (let j = 0; j < sl.nodes.length; j++) {
+            setCoord(sl.nodes[j], pCoords[si], bandCross[offset + j], sl.layer);
+          }
+        }
+      }
+    } else {
+      // Extreme-density fallback (>20 nodes or deep+wide): uniform grid in [8..92] x [14..84]
+      const orderedIds = slices.flatMap((s) => s.nodes);
+      const nCount = orderedIds.length;
+      const cols = Math.min(5, Math.max(1, Math.ceil(Math.sqrt(nCount * 1.25))));
+      const rows = Math.ceil(nCount / cols);
+      const xs = distributeSlotAxis(cols, AUTO_X_SLOTS, 8, 92);
+      const ys = distributeSlotAxis(rows, AUTO_Y_SLOTS, 14, 84);
+      for (let idx = 0; idx < nCount; idx++) {
+        const id = orderedIds[idx];
+        const r = Math.floor(idx / cols);
+        const c = r % 2 === 1 ? cols - 1 - (idx % cols) : idx % cols;
+        const xVal = xs[Math.min(c, xs.length - 1)];
+        const yVal = ys[Math.min(r, ys.length - 1)];
+        posMap.set(id, {
+          xPct: xVal,
+          yPct: yVal,
+          layer: layerOf.get(id) ?? 0,
+        });
+      }
+    }
+  }
+
+  return posMap;
+}
+
 /**
  * Compute shared architecture diagram layout (zones, node rects, clean ports,
  * orthogonal/straight/curved edges, and anti-overlap labels) in any canvas space.
@@ -1186,13 +1766,22 @@ export function computeArchitectureLayout(visualData = {}, canvasW = 1000, canva
   const rawEdges = Array.isArray(visualData?.edges) ? visualData.edges : [];
   const rawZones = Array.isArray(visualData?.zones) ? visualData.zones : [];
 
+  const validRawNodes = rawNodes.filter((n) => n && n.id);
+  const isAutoLayout =
+    visualData?.layout_mode === "auto" ||
+    validRawNodes.some((n) => !hasFiniteCoord(n.x) || !hasFiniteCoord(n.y));
+  const autoPositions = isAutoLayout
+    ? computeAutoNodePositions(rawNodes, rawEdges, rawZones, visualData)
+    : null;
+
   // 1. Node Rectangles
   const nodes = [];
   const nodeMap = new Map();
   for (const n of rawNodes) {
     if (!n || !n.id) continue;
-    const xPct = Number(n.x);
-    const yPct = Number(n.y);
+    const autoPos = autoPositions ? autoPositions.get(n.id) : null;
+    const xPct = autoPos ? autoPos.xPct : Number(n.x);
+    const yPct = autoPos ? autoPos.yPct : Number(n.y);
     const cx = (Number.isFinite(xPct) ? xPct / 100 : 0.5) * W;
     const cy = (Number.isFinite(yPct) ? yPct / 100 : 0.5) * H;
     const rect = {
@@ -1207,6 +1796,7 @@ export function computeArchitectureLayout(visualData = {}, canvasW = 1000, canva
       bottom: cy + cardH / 2,
       xPct,
       yPct,
+      layer: autoPos ? autoPos.layer : null,
       raw: n,
     };
     nodes.push(rect);
@@ -1449,6 +2039,35 @@ export function computeArchitectureLayout(visualData = {}, canvasW = 1000, canva
           }
         }
       }
+    } else if (!isBidirectional && (alignedH || alignedV) && edge.routing !== "curved" && edge.routing !== "straight") {
+      // If straight/opposite orthogonal hits an intermediate obstacle node (skip-layer edge), evaluate C-detour sides
+      const oppSp = getPortPoint(src, oppSrc, 0, portOutset);
+      const oppDp = getPortPoint(dst, oppDst, 0, portOutset);
+      const oppCands = buildOrthogonalCandidates(oppSp.x, oppSp.y, oppSrc, oppDp.x, oppDp.y, oppDst, obstacles, W, H, scale);
+      let bestOpp = { score: -Infinity, nodeHits: 1 };
+      for (const pts of oppCands) {
+        const ev = scorePolyline(pts, obstacles, [], W, H, scale);
+        if (ev.score > bestOpp.score) bestOpp = ev;
+      }
+      if (bestOpp.nodeHits > 0) {
+        const cSides = alignedV
+          ? [["right", "right"], ["left", "left"]]
+          : [["top", "top"], ["bottom", "bottom"]];
+        let bestPairScore = bestOpp.score;
+        for (const [sSide, dSide] of cSides) {
+          const sp = getPortPoint(src, sSide, 0, portOutset);
+          const dp = getPortPoint(dst, dSide, 0, portOutset);
+          const cands = buildOrthogonalCandidates(sp.x, sp.y, sSide, dp.x, dp.y, dSide, obstacles, W, H, scale);
+          for (const pts of cands) {
+            const ev = scorePolyline(pts, obstacles, [], W, H, scale);
+            if (ev.score - 18 > bestPairScore) {
+              bestPairScore = ev.score - 18;
+              chosenSrcSide = sSide;
+              chosenDstSide = dSide;
+            }
+          }
+        }
+      }
     }
 
     return {
@@ -1620,7 +2239,8 @@ export function computeArchitectureLayout(visualData = {}, canvasW = 1000, canva
       curveOffsetUsed = res.offset;
     } else if (reqRouting === "auto" && isBidirectional) {
       routing = "curved";
-      const res = buildGentleCurve([restrainedMag]);
+      const bidirMag = Math.min(40 * scale, Math.max(22 * scale, dist * 0.13));
+      const res = buildGentleCurve([bidirMag]);
       model = res.model;
       curveOffsetUsed = res.offset;
     } else if (reqRouting === "auto" && straightAligned && !straightHitsNode) {
@@ -1726,72 +2346,79 @@ export function computeArchitectureLayout(visualData = {}, canvasW = 1000, canva
     let bestCand = null;
     let bestScore = -Infinity;
 
-    for (let ti = 0; ti < tSamples.length; ti++) {
-      const tVal = tSamples[ti];
-      const pt = ce.pointAt(tVal);
-      const tan = ce.tangentAt(tVal);
-      // Perpendicular normal
-      let nx = -tan.ny;
-      let ny = tan.nx;
-      // For non-bidirectional horizontal-ish lines, make negative offset point upward cleanly
-      if (!ce.isBidirectional && ny < 0) {
-        nx = -nx;
-        ny = -ny;
-      }
-
-      for (let oi = 0; oi < sideOffsets.length; oi++) {
-        const off = sideOffsets[oi];
-        const rawX = pt.x + nx * off;
-        const rawY = pt.y + ny * off;
-        const lx = Math.max(labelW * 0.5 + 8 * scaleX, Math.min(W - labelW * 0.5 - 8 * scaleX, rawX));
-        const ly = Math.max(labelH * 0.5 + 8 * scaleY, Math.min(H - labelH * 0.5 - 8 * scaleY, rawY));
-
-        const candRect = {
-          x: lx - labelW * 0.5,
-          y: ly - labelH * 0.5,
-          right: lx + labelW * 0.5,
-          bottom: ly + labelH * 0.5,
-        };
-
-        let penalty = 0;
-
-        // Node card overlap (hard penalty)
-        for (const nr of nodes) {
-          const ov = rectOverlapArea(candRect, nr, 5 * scale);
-          if (ov > 0) penalty += 4500 + ov * 10;
+    const evalLabelCandidates = (tList, offList) => {
+      for (let ti = 0; ti < tList.length; ti++) {
+        const tVal = tList[ti];
+        const pt = ce.pointAt(tVal);
+        const tan = ce.tangentAt(tVal);
+        // Perpendicular normal
+        let nx = -tan.ny;
+        let ny = tan.nx;
+        // For non-bidirectional horizontal-ish lines, make negative offset point upward cleanly
+        if (!ce.isBidirectional && ny < 0) {
+          nx = -nx;
+          ny = -ny;
         }
 
-        // Placed label overlap (hard penalty)
-        for (const pl of placedLabels) {
-          const ov = rectOverlapArea(candRect, pl, 5 * scale);
-          if (ov > 0) penalty += 5500 + ov * 15;
-        }
+        for (let oi = 0; oi < offList.length; oi++) {
+          const off = offList[oi];
+          const rawX = pt.x + nx * off;
+          const rawY = pt.y + ny * off;
+          const lx = Math.max(labelW * 0.5 + 8 * scaleX, Math.min(W - labelW * 0.5 - 8 * scaleX, rawX));
+          const ly = Math.max(labelH * 0.5 + 8 * scaleY, Math.min(H - labelH * 0.5 - 8 * scaleY, rawY));
 
-        // Top callout bar overlap
-        const calloutOv = rectOverlapArea(candRect, topCalloutRect, 2 * scale);
-        if (calloutOv > 0) penalty += 2200 + calloutOv * 6;
+          const candRect = {
+            x: lx - labelW * 0.5,
+            y: ly - labelH * 0.5,
+            right: lx + labelW * 0.5,
+            bottom: ly + labelH * 0.5,
+          };
 
-        // Other edges' path overlap
-        for (const other of computedEdges) {
-          if (other.id === ce.id) continue;
-          for (let s = 0; s < other.samplePts.length - 1; s++) {
-            if (segmentIntersectsRect(other.samplePts[s], other.samplePts[s + 1], candRect, 5 * scale)) {
-              penalty += 950;
-              break;
+          let penalty = 0;
+
+          // Node card overlap (hard penalty)
+          for (const nr of nodes) {
+            const ov = rectOverlapArea(candRect, nr, 5 * scale);
+            if (ov > 0) penalty += 4500 + ov * 10;
+          }
+
+          // Placed label overlap (hard penalty)
+          for (const pl of placedLabels) {
+            const ov = rectOverlapArea(candRect, pl, 5 * scale);
+            if (ov > 0) penalty += 5500 + ov * 15;
+          }
+
+          // Top callout bar overlap
+          const calloutOv = rectOverlapArea(candRect, topCalloutRect, 2 * scale);
+          if (calloutOv > 0) penalty += 2200 + calloutOv * 6;
+
+          // Other edges' path overlap
+          for (const other of computedEdges) {
+            if (other.id === ce.id) continue;
+            for (let s = 0; s < other.samplePts.length - 1; s++) {
+              if (segmentIntersectsRect(other.samplePts[s], other.samplePts[s + 1], candRect, 5 * scale)) {
+                penalty += 950;
+                break;
+              }
             }
           }
-        }
 
-        // Slight preference for t=0.5 and smaller perpendicular offset (18px over 30px)
-        const centerBonus = tVal === 0.5 ? 24 : 0;
-        const distPenalty = Math.abs(off) * 0.8 + Math.hypot(lx - rawX, ly - rawY) * 2;
-        const score = centerBonus - penalty - distPenalty;
+          // Slight preference for t=0.5 and smaller perpendicular offset (18px over 30px)
+          const centerBonus = tVal === 0.5 ? 24 : 0;
+          const distPenalty = Math.abs(off) * 0.8 + Math.hypot(lx - rawX, ly - rawY) * 2;
+          const score = centerBonus - penalty - distPenalty;
 
-        if (score > bestScore) {
-          bestScore = score;
-          bestCand = { lx, ly, rect: candRect };
+          if (score > bestScore) {
+            bestScore = score;
+            bestCand = { lx, ly, rect: candRect };
+          }
         }
       }
+    };
+
+    evalLabelCandidates(tSamples, sideOffsets);
+    if (ce.isBidirectional && bestScore < -500) {
+      evalLabelCandidates([0.5, 0.34, 0.66], [44 * scale, 58 * scale, -44 * scale]);
     }
 
     ce.labelX = bestCand.lx;
@@ -1935,6 +2562,7 @@ export function computeArchitectureLayout(visualData = {}, canvasW = 1000, canva
     scale,
     cardW,
     cardH,
+    layoutMode: isAutoLayout ? "auto" : "manual",
     zones,
     nodes,
     edges: computedEdges,

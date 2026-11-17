@@ -1,0 +1,2 @@
+/* esm.sh - framer-motion@14.14.0/dist/es/value/use-combine-values */
+"use client";import{cancelFrame as a,frame as c}from"../../../../../../motion-dom@14.14.0/es2022/motion-dom.mjs";import{useIsomorphicLayoutEffect as i}from"../utils/use-isomorphic-effect.mjs";import{useMotionValue as m}from"./use-motion-value.mjs";function d(n,t){let r=m(t()),e=()=>r.set(t());return e(),i(()=>{let s=()=>c.preRender(e,!1,!0),u=n.map(o=>o.on("change",s));return e(),()=>{u.forEach(o=>o()),a(e)}}),r}export{d as useCombineMotionValues};

@@ -1,0 +1,2 @@
+/* esm.sh - framer-motion@14.14.0/dist/es/components/Reorder/utils/detect-axis */
+var i=(e,n)=>e.max<=n.min||n.max<=e.min;function f(e){let n=!1,r=!1;for(let t=0;t<e.length;t++)for(let x=t+1;x<e.length;x++)if(n||(n=i(e[t].x,e[x].x)),r||(r=i(e[t].y,e[x].y)),n&&r)return"xy";return n?"x":"y"}export{f as detectAxis};

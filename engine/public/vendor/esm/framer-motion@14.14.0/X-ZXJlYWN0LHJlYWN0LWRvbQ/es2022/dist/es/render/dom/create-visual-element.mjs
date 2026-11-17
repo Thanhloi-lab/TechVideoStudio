@@ -1,0 +1,2 @@
+/* esm.sh - framer-motion@14.14.0/dist/es/render/dom/create-visual-element */
+import{SVGVisualElement as m,HTMLVisualElement as t}from"../../../../../../../motion-dom@14.14.0/es2022/motion-dom.mjs";import{Fragment as i}from"react";import{isSVGComponent as o}from"./utils/is-svg-component.mjs";var a=(r,e)=>e.isSVG??o(r)?new m(e):new t(e,{allowProjection:r!==i});export{a as createDomVisualElement};

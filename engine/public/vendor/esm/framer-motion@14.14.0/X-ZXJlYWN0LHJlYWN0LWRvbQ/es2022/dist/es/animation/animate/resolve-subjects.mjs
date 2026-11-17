@@ -1,0 +1,2 @@
+/* esm.sh - framer-motion@14.14.0/dist/es/animation/animate/resolve-subjects */
+import{resolveElements as o}from"../../../../../../../motion-dom@14.14.0/es2022/motion-dom.mjs";import{isDOMKeyframes as l}from"../utils/is-dom-keyframes.mjs";function s(r,e,i,n){return r==null?[]:typeof r=="string"&&l(e)?o(r,i,n):r instanceof NodeList?Array.from(r):Array.isArray(r)?r.filter(f=>f!=null):[r]}export{s as resolveSubjects};

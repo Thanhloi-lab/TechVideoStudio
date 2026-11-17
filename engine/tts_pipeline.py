@@ -21,6 +21,7 @@ import json
 import math
 import os
 import re
+import secrets
 import shutil
 import socket
 import ssl
@@ -33,12 +34,14 @@ import urllib.parse
 import urllib.request
 import uuid
 import wave
+from email.utils import parsedate_to_datetime
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
 TRUSTED_CLIENT_TOKEN = "6A5AA1D4EAFF4E9FB37E23D68491D6F4"
-CHROMIUM_FULL_VERSION = "130.0.2849.68"
-SEC_MS_GEC_VERSION = f"1-{CHROMIUM_FULL_VERSION}"
+CHROMIUM_FULL_VERSION = "143.0.3650.75"
+SEC_MS_GEC_VERSION = f"2-{CHROMIUM_FULL_VERSION}"
 
 DEFAULT_VOICES_PATH = Path(__file__).resolve().parent / "voices.json"
 
@@ -72,6 +75,8 @@ _SAMPLERATES = {
 }
 
 _EDGE_BLOCKED = False
+_EDGE_FAILURE_REASON: str | None = None
+_EDGE_CLOCK_SKEW_SEC: float = 0.0
 
 
 def load_voices_config(voices_path: Path | None = None) -> dict[str, Any]:
@@ -491,10 +496,212 @@ def split_text_for_tts(text: str, max_chars: int = 165) -> list[str]:
 # Edge ReadAloud WebSocket client (pure stdlib)
 # ---------------------------------------------------------------------------
 
-def _compute_sec_ms_gec() -> str:
-    ticks = int((time.time() + 11644473600) * 10000000)
-    ticks -= ticks % 3000000000
-    return hashlib.sha256(f"{ticks}{TRUSTED_CLIENT_TOKEN}".encode("ascii")).hexdigest().upper()
+_WIN_EPOCH = 11644473600
+_U32_MASK = 0xFFFFFFFF
+
+_EDGE_SHA256_INITIAL = (
+    0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A,
+    0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19,
+)
+_EDGE_SHA256_STATE = (
+    0xFD9FBEA2, 0x91243CE7, 0xBE499094, 0xCD2E1E0A,
+    0x6C006F49, 0x04BD35AB, 0xFEB0A7E4, 0x03EFFBD2,
+)
+_EDGE_SHA256_SCHEDULE = (
+    0xEB24BF9E, 0x1558691F, 0xA0C09EE2, 0x0CFA32BA, 0xA622EE8C, 0xD1DD9491, 0xC0DD25A0,
+    0xF9E70AB6, 0xF0C31573, 0x7058CE4E, 0x7188E606, 0x00E5AB33, 0xD258B060, 0x72766564,
+)
+_EDGE_SHA256_ROUND_CONSTANTS = (
+    0x428A2F98, 0x71374491, 0xB5C0FBCF, 0xE9B5DBA5, 0x3956C25B, 0x59F111F1, 0x923F82A4, 0xAB1C5ED5,
+    0xD807AA98, 0x12835B01, 0x243185BE, 0x550C7DC3, 0x72BE5D74, 0x80DEB1FE, 0x9BDC06A7, 0xC19BF174,
+    0xE49B69C1, 0xEFBE4786, 0x0FC19DC6, 0x240CA1CC, 0x2DE92C6F, 0x4A7484AA, 0x5CB0A9DC, 0x76F988DA,
+    0x983E5152, 0xA831C66D, 0xB00327C8, 0xBF597FC7, 0xC6E00BF3, 0xD5A79147, 0x06CA6351, 0x14292967,
+    0x27B70A85, 0x2E1B2138, 0x4D2C6DFC, 0x53380D13, 0x650A7354, 0x766A0ABB, 0x81C2C92E, 0x92722C85,
+    0xA2BFE8A1, 0xA81A664B, 0xC24B8B70, 0xC76C51A3, 0xD192E819, 0xD6990624, 0xF40E3585, 0x106AA070,
+    0x19A4C116, 0x1E376C08, 0x2748774C, 0x34B0BCB5, 0x391C0CB3, 0x4ED8AA4A, 0x5B9CCA4F, 0x682E6FF3,
+    0x748F82EE, 0x78A5636F, 0x84C87814, 0x8CC70208, 0x90BEFFFA, 0xA4506CEB, 0xBEF9A3F7, 0xC67178F2,
+)
+_EDGE_SHA256_ADJUSTMENT = 0xC9DC06A7
+_EDGE_SHA256_BLOCK_CONSTANTS = (
+    _EDGE_SHA256_ROUND_CONSTANTS[:14] + (_EDGE_SHA256_ADJUSTMENT,) + _EDGE_SHA256_ROUND_CONSTANTS[15:]
+)
+_EDGE_SHA256_SIGMA0_ADJ = 0x059C0B80
+_EDGE_SHA256_SIGMA1_ADJ = 0x000B92C0
+_EDGE_CS64_COEFFICIENTS = (
+    (0xE82E91B1, 0xB32700D0), (0x44DE24C6, 0x88DFF51D), (0x3BEB65BC, 0x29514038),
+    (0xC89C5933, 0xB328CBDF), (0x8D1EC211, 0xD405B4D5), (0x314EF5D5, 0x26E55F3C),
+    (0xE92491B1, 0x607801C6), (0xF0A5B9D5, 0x82B2C1FB), (0x06064CF3, 0xFA51A3DA),
+    (0xDA79FA60, 0x207CC464), (0xBED20560, 0x3C3C74F3), (0x89F9C9F8, 0xD2D14B61),
+    (0x35FA38C6, 0xBB04A2C1), (0xCB49E3C6, 0xC5626167),
+)
+_EDGE_CS64_FACTOR = 0x82893933
+_EDGE_CS64_ADJ0 = 0xF2F90B1A
+_EDGE_CS64_ADJ1 = 0x0B1A0000
+
+
+def _rol16(value: int) -> int:
+    value &= _U32_MASK
+    return ((value << 16) | (value >> 16)) & _U32_MASK
+
+
+def _sigma0(value: int) -> int:
+    return ((value >> 7) ^ (value << 25) ^ (value >> 18) ^ (value << 14) ^ (value >> 3)) & _U32_MASK
+
+
+def _sigma1(value: int) -> int:
+    return ((value >> 17) ^ (value << 15) ^ (value >> 19) ^ (value << 13) ^ (value >> 10)) & _U32_MASK
+
+
+def _rotr32(value: int, bits: int) -> int:
+    return ((value >> bits) | (value << (32 - bits))) & _U32_MASK
+
+
+def _edge_sha256_rounds(state: tuple[int, ...], words: list[int], first_round: int = 0) -> tuple[int, ...]:
+    a, b, c, d, e, f, g, h = state
+    mask = _U32_MASK
+    constants = _EDGE_SHA256_BLOCK_CONSTANTS if first_round == 14 else _EDGE_SHA256_ROUND_CONSTANTS
+    for idx in range(first_round, 64):
+        s1 = _rotr32(e, 6) ^ _rotr32(e, 11) ^ _rotr32(e, 25)
+        ch = (e & f) ^ ((~e) & g)
+        t1 = (h + s1 + ch + constants[idx] + words[idx]) & mask
+        s0 = _rotr32(a, 2) ^ _rotr32(a, 13) ^ _rotr32(a, 22)
+        maj = (a & b) ^ (a & c) ^ (b & c)
+        t2 = (s0 + maj) & mask
+        a, b, c, d, e, f, g, h = (t1 + t2) & mask, a, b, c, (d + t1) & mask, e, f, g
+    return a, b, c, d, e, f, g, h
+
+
+def _expand_edge_sha256_schedule(words: list[int], first_word: int = 16) -> None:
+    mask = _U32_MASK
+    for idx in range(first_word, 64):
+        words.append((_sigma1(words[idx - 2]) + words[idx - 7] + _sigma0(words[idx - 15]) + words[idx - 16]) & mask)
+
+
+@lru_cache(maxsize=1)
+def _edge_sha256_init(prefix: bytes) -> tuple[int, ...]:
+    mask = _U32_MASK
+    words = [0] * 14 + [int.from_bytes(prefix[:3], "big"), int.from_bytes(prefix[3:7], "big")]
+    for idx in range(16, 30):
+        val = _EDGE_SHA256_SCHEDULE[idx - 16]
+        if idx - 2 >= 14:
+            val += (_sigma1(words[idx - 2]) ^ _EDGE_SHA256_SIGMA1_ADJ) if idx == 16 else _sigma1(words[idx - 2])
+        if idx - 7 >= 14:
+            val += words[idx - 7]
+        if idx - 15 >= 14:
+            val += (_sigma0(words[idx - 15]) ^ _EDGE_SHA256_SIGMA0_ADJ) if idx == 29 else _sigma0(words[idx - 15])
+        words.append(val & mask)
+    words.append((
+        _sigma1(words[28]) + words[23] + _sigma0(words[15]) + words[14]
+        + _EDGE_SHA256_ADJUSTMENT - _EDGE_SHA256_ROUND_CONSTANTS[14]
+    ) & mask)
+    _expand_edge_sha256_schedule(words, 31)
+    working = _edge_sha256_rounds(_EDGE_SHA256_STATE, words, 14)
+    return tuple((x + y) & mask for x, y in zip(_EDGE_SHA256_INITIAL, working))
+
+
+def _edge_sha256_digest(data: bytes) -> bytes:
+    if len(data) < 7:
+        raise ValueError("Token salt must contain at least 7 bytes")
+    mask = _U32_MASK
+    length = 57 + len(data)
+    padded = data[7:] + b"\x80" + b"\x00" * ((55 - length) % 64) + struct.pack(">Q", length * 8)
+    state = _edge_sha256_init(data[:7])
+    for offset in range(0, len(padded), 64):
+        words = list(struct.unpack(">16I", padded[offset:offset + 64]))
+        _expand_edge_sha256_schedule(words)
+        working = _edge_sha256_rounds(state, words)
+        state = tuple((x + y) & mask for x, y in zip(state, working))
+    return struct.pack(">8I", *state)
+
+
+def _edge_cs64_digest(data: bytes, digest: bytes) -> tuple[int, int]:
+    mask = _U32_MASK
+    key_a, key_b = struct.unpack_from("<II", digest)
+    key_a |= 1
+    key_b |= 1
+    factors = ((key_a * _EDGE_CS64_FACTOR) & mask, (key_b * _EDGE_CS64_FACTOR) & mask)
+    terms = [(coeff * factors[idx % 2]) & mask for idx, (coeff, _) in enumerate(_EDGE_CS64_COEFFICIENTS)]
+    offsets = [offset for _, offset in _EDGE_CS64_COEFFICIENTS]
+    raw_bytes = b"\x00" + data
+    padded = raw_bytes + b"\x00" * ((-len(raw_bytes)) % 4)
+    words = list(struct.unpack(f"<{len(padded) // 4}I", padded)) if padded else []
+    if len(words) % 2:
+        words.append(0)
+    for idx, word in enumerate(words):
+        term = word * (key_a if idx % 2 == 0 else key_b)
+        offset = _rol16(word) * (0xEF0569FB if idx % 2 == 0 else 0xC31713DB)
+        if idx == 0:
+            term += _EDGE_CS64_ADJ0 * factors[0]
+            offset += _EDGE_CS64_ADJ1
+        terms.append(term & mask)
+        offsets.append(offset & mask)
+    swap_acc = swap_last = state = acc = 0
+    for idx in range(0, len(terms), 2):
+        x, y = terms[idx], terms[idx + 1]
+        q = (_rol16((offsets[idx] + x) & mask) * 0x76F50F34) & mask
+        swap_acc += (_rol16(q) * 0xC3EFEA97 + q) & mask
+        q = (_rol16((offsets[idx + 1] + y) & mask) * 0x1881CE3C) & mask
+        swap_last = (_rol16(q) * 0x35BD1EC9 + q) & mask
+        swap_acc = (swap_acc + swap_last) & mask
+
+        state = (state * key_a + x) & mask
+        for mult in (0xCF98B111, 0x87085B9F, 0x12CEB96D, 0x257E1D83):
+            state = (_rol16(state) * mult) & mask
+        acc += state
+        t = (state * key_b + y) & mask
+        for mult in (0xA27416F5, 0xD38396FF, 0x7C932B89):
+            t = (_rol16(t) * mult) & mask
+        state = (_rol16(t) * 0xBFA49F69) & mask
+        acc = (acc + state) & mask
+    return swap_last ^ state, swap_acc ^ acc
+
+
+@lru_cache(maxsize=4)
+def _edge_token_hash(data: bytes) -> tuple[str, str]:
+    digest = _edge_sha256_digest(data)
+    cs64 = struct.pack("<II", *_edge_cs64_digest(data, digest)).hex().upper()
+    return cs64, digest.hex().upper()
+
+
+def _resolve_edge_chromium_version() -> tuple[str, str, str]:
+    """Return (full_version, major_version, sec_ms_gec_version) honoring EDGE_TTS_CHROMIUM_VERSION."""
+    full_ver = os.environ.get("EDGE_TTS_CHROMIUM_VERSION", "").strip() or CHROMIUM_FULL_VERSION
+    major_ver = full_ver.split(".", 1)[0].strip() or "143"
+    return full_ver, major_ver, f"2-{full_ver}"
+
+
+def _adjust_edge_clock_skew_from_headers(headers_bytes: bytes) -> bool:
+    """Adjust _EDGE_CLOCK_SKEW_SEC from HTTP Date header when handshake fails due to clock drift."""
+    global _EDGE_CLOCK_SKEW_SEC
+    try:
+        header_text = headers_bytes.decode("latin1", errors="ignore")
+        for line in header_text.split("\r\n"):
+            if line.lower().startswith("date:"):
+                date_str = line.split(":", 1)[1].strip()
+                parsed = parsedate_to_datetime(date_str)
+                if parsed is None:
+                    return False
+                server_ts = parsed.timestamp()
+                current_ts = time.time() + _EDGE_CLOCK_SKEW_SEC
+                delta = server_ts - current_ts
+                if abs(delta) >= 1.0:
+                    _EDGE_CLOCK_SKEW_SEC += delta
+                    return True
+                return False
+    except Exception:
+        return False
+    return False
+
+
+def _compute_sec_ms_gec(unix_timestamp: float | None = None) -> str:
+    """Compute Edge ReadAloud v2 Sec-MS-GEC token ('<16 hex>-<64 hex>') with clock-skew support."""
+    ts_val = float(unix_timestamp) if unix_timestamp is not None else (time.time() + _EDGE_CLOCK_SKEW_SEC)
+    ticks = ts_val + _WIN_EPOCH
+    ticks -= ticks % 300
+    ticks *= 10_000_000
+    token_input = f"{ticks:.0f}{TRUSTED_CLIENT_TOKEN}".encode("ascii")
+    cs64_hex, sha256_hex = _edge_token_hash(token_input)
+    return f"{cs64_hex}-{sha256_hex}"
 
 
 def _ws_send_text(sock: ssl.SSLSocket, payload: str) -> None:
@@ -562,16 +769,18 @@ def synthesize_edge(
     edge_rate = _normalize_edge_rate(rate)
     edge_pitch = _normalize_edge_pitch(pitch)
     xml_lang = _normalize_xml_lang(lang)
+    _, edge_major_ver, sec_ms_gec_version = _resolve_edge_chromium_version()
 
     host = "speech.platform.bing.com"
     conn_id = uuid.uuid4().hex
     gec = _compute_sec_ms_gec()
+    muid = secrets.token_hex(16).upper()
     path = (
         f"/consumer/speech/synthesize/readaloud/edge/v1"
         f"?TrustedClientToken={TRUSTED_CLIENT_TOKEN}"
         f"&ConnectionId={conn_id}"
         f"&Sec-MS-GEC={gec}"
-        f"&Sec-MS-GEC-Version={SEC_MS_GEC_VERSION}"
+        f"&Sec-MS-GEC-Version={sec_ms_gec_version}"
     )
 
     ws_key = base64.b64encode(os.urandom(16)).decode("ascii")
@@ -588,9 +797,13 @@ def synthesize_edge(
             f"Connection: Upgrade\r\n"
             f"Sec-WebSocket-Key: {ws_key}\r\n"
             f"Sec-WebSocket-Version: 13\r\n"
+            f"Pragma: no-cache\r\n"
+            f"Cache-Control: no-cache\r\n"
             f"Origin: chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold\r\n"
+            f"Cookie: muid={muid};\r\n"
+            f"Accept-Language: en-US,en;q=0.9\r\n"
             f"User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            f"(KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0\r\n\r\n"
+            f"(KHTML, like Gecko) Chrome/{edge_major_ver}.0.0.0 Safari/537.36 Edg/{edge_major_ver}.0.0.0\r\n\r\n"
         )
         sock.sendall(handshake.encode("ascii"))
 
@@ -600,9 +813,15 @@ def synthesize_edge(
             if not chunk:
                 raise ConnectionError("Empty WebSocket handshake response")
             resp_buf += chunk
-        status_line = resp_buf.split(b"\r\n", 1)[0].decode("latin1")
+        header_bytes, _, body_bytes = resp_buf.partition(b"\r\n\r\n")
+        status_line = header_bytes.split(b"\r\n", 1)[0].decode("latin1").strip()
         if "101" not in status_line:
-            raise ConnectionError(f"Edge WS handshake failed: {status_line}")
+            _adjust_edge_clock_skew_from_headers(header_bytes)
+            body_text = re.sub(r"\s+", " ", body_bytes.decode("utf-8", errors="ignore")).strip()
+            if len(body_text) > 100:
+                body_text = body_text[:100] + "..."
+            detail = f"{status_line} ({body_text})" if body_text else status_line
+            raise ConnectionError(f"Edge WS handshake failed: {detail}")
 
         ts = time.strftime("%a %b %d %Y %H:%M:%S GMT+0000 (Coordinated Universal Time)", time.gmtime())
         config_msg = (
@@ -646,7 +865,7 @@ def synthesize_edge(
             opcode, payload = _ws_recv_frame(sock)
             if opcode == 8:
                 break
-            if opcode == 9:
+            if opcode in (9, 10):
                 continue
             if opcode == 1:
                 header_text = payload.decode("utf-8", errors="ignore")
@@ -927,13 +1146,43 @@ def synthesize_custom_http(text: str, profile: dict[str, Any]) -> bytes:
     return data
 
 
-def synthesize_chunk(text: str, config: dict[str, Any]) -> tuple[bytes, str]:
+def _format_tts_failure_reason(exc: BaseException) -> str:
+    """Summarize a TTS exception into a concise, single-line diagnostic reason."""
+    msg = re.sub(r"\s+", " ", str(exc or "")).strip()
+    if isinstance(exc, urllib.error.HTTPError):
+        reason = f"HTTP {exc.code} {exc.reason}".strip()
+        if msg and str(exc.code) not in msg:
+            reason = f"{reason}: {msg}"
+    elif "Edge WS handshake failed:" in msg:
+        reason = msg.replace("Edge WS handshake failed:", "WS handshake").strip()
+    elif "WebSocket handshake" in msg:
+        reason = f"WS handshake error: {msg}"
+    elif isinstance(exc, (TimeoutError, socket.timeout)) or "timed out" in msg.lower():
+        reason = f"timeout ({msg or type(exc).__name__})"
+    elif isinstance(exc, ssl.SSLError):
+        reason = f"SSL error ({msg or type(exc).__name__})"
+    elif isinstance(exc, urllib.error.URLError):
+        reason = f"network error ({exc.reason})"
+    elif "zero audio bytes" in msg.lower() or "empty audio" in msg.lower():
+        reason = f"empty audio ({msg})"
+    elif isinstance(exc, (ConnectionError, EOFError, OSError)):
+        reason = f"network/WS error ({msg or type(exc).__name__})"
+    else:
+        reason = f"{type(exc).__name__}: {msg}" if msg else type(exc).__name__
+    return reason[:180] + ("..." if len(reason) > 180 else "")
+
+
+def synthesize_chunk(
+    text: str,
+    config: dict[str, Any],
+    diagnostics: dict[str, Any] | None = None,
+) -> tuple[bytes, str]:
     """Synthesize a single text chunk using resolved config.
 
     Returns (raw_audio_bytes, actual_provider_used).
     NEVER silently falls back to Google unless config['allow_auto_fallback'] is True.
     """
-    global _EDGE_BLOCKED
+    global _EDGE_BLOCKED, _EDGE_FAILURE_REASON
     provider = config.get("provider", "edge")
     voice_id = config.get("voice_id") or "vi-VN-HoaiMyNeural"
     rate = config.get("rate") or "+6%"
@@ -959,12 +1208,31 @@ def synthesize_chunk(text: str, config: dict[str, Any]) -> tuple[bytes, str]:
 
     # Auto mode ONLY: try primary (skipping Edge if already known blocked in this run), else Google
     if provider == "edge" and _EDGE_BLOCKED:
+        if diagnostics is not None:
+            diagnostics["fallback_reason"] = _EDGE_FAILURE_REASON or "Edge TTS blocked earlier in this run"
         return synthesize_google(text, lang), "google"
+
     try:
         return _run_primary()
-    except Exception:
+    except Exception as exc:
         if provider == "edge":
-            _EDGE_BLOCKED = True
+            first_reason = _format_tts_failure_reason(exc)
+            # 1 fast retry with refreshed handshake (new socket, ConnectionId, muid, Sec-MS-GEC)
+            time.sleep(0.15)
+            try:
+                return _run_primary()
+            except Exception as retry_exc:
+                reason = _format_tts_failure_reason(retry_exc) or first_reason
+                _EDGE_BLOCKED = True
+                _EDGE_FAILURE_REASON = reason
+                print(f"[tts] Edge TTS failed ({reason}), falling back to Google TTS", file=sys.stderr)
+                if diagnostics is not None:
+                    diagnostics["fallback_reason"] = reason
+                return synthesize_google(text, lang), "google"
+        reason = _format_tts_failure_reason(exc)
+        print(f"[tts] {provider} TTS failed ({reason}), falling back to Google TTS", file=sys.stderr)
+        if diagnostics is not None:
+            diagnostics["fallback_reason"] = reason
         return synthesize_google(text, lang), "google"
 
 
@@ -1049,7 +1317,11 @@ def format_srt_time(seconds: float) -> str:
     return f"{hrs:02d}:{mins:02d}:{secs:02d},{ms:03d}"
 
 
-def synthesize_text_to_audio(text: str, config: dict[str, Any]) -> tuple[bytes, str, float, list[str]]:
+def synthesize_text_to_audio(
+    text: str,
+    config: dict[str, Any],
+    diagnostics: dict[str, Any] | None = None,
+) -> tuple[bytes, str, float, list[str]]:
     """Synthesize arbitrary-length text (splitting if needed) and return (final_bytes, ext, duration_sec, providers)."""
     max_chars = 165 if config.get("provider") == "google" or config.get("allow_auto_fallback") else 220
     chunks = split_text_for_tts(text, max_chars=max_chars)
@@ -1058,6 +1330,8 @@ def synthesize_text_to_audio(text: str, config: dict[str, Any]) -> tuple[bytes, 
 
     hint = config.get("response_format") or "mp3"
     providers_used: set[str] = set()
+    fallback_reasons: list[str] = []
+    fallback_chunks = 0
     mp3_buf = bytearray()
     wav_pcm_buf = bytearray()
     wav_params: tuple[int, int, int] | None = None
@@ -1065,8 +1339,13 @@ def synthesize_text_to_audio(text: str, config: dict[str, Any]) -> tuple[bytes, 
     detected_ext: str | None = None
 
     for chunk in chunks:
-        raw, used = synthesize_chunk(chunk, config)
+        chunk_diag: dict[str, Any] = {}
+        raw, used = synthesize_chunk(chunk, config, diagnostics=chunk_diag)
         providers_used.add(used)
+        if chunk_diag.get("fallback_reason"):
+            fallback_chunks += 1
+            if chunk_diag["fallback_reason"] not in fallback_reasons:
+                fallback_reasons.append(chunk_diag["fallback_reason"])
         ext, payload, params, dur = measure_audio_chunk(raw, hint=hint)
         if detected_ext is None:
             detected_ext = ext
@@ -1077,6 +1356,11 @@ def synthesize_text_to_audio(text: str, config: dict[str, Any]) -> tuple[bytes, 
         else:
             mp3_buf.extend(payload)
         total_dur += dur
+
+    if diagnostics is not None:
+        diagnostics["fallback_reason"] = "; ".join(fallback_reasons) if fallback_reasons else None
+        diagnostics["fallback_chunks"] = fallback_chunks
+        diagnostics["total_chunks"] = len(chunks)
 
     if detected_ext == "wav" and wav_params is not None:
         final_bytes = build_wav_bytes(wav_params, bytes(wav_pcm_buf))
@@ -1108,7 +1392,8 @@ def process_preview(
     sample = (text or "").strip() or config.get("sample_text") or (
         "Xin chào, đây là giọng đọc thử nghiệm từ Tech Video Studio."
     )
-    audio_bytes, ext, dur_sec, providers_used = synthesize_text_to_audio(sample, config)
+    diag: dict[str, Any] = {}
+    audio_bytes, ext, dur_sec, providers_used = synthesize_text_to_audio(sample, config, diagnostics=diag)
 
     target = out_path if out_path.suffix.lower() in (".mp3", ".wav") else out_path.with_suffix(f".{ext}")
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -1120,6 +1405,7 @@ def process_preview(
         "ext": ext,
         "duration_sec": dur_sec,
         "provider_used": providers_used[0] if len(providers_used) == 1 else providers_used,
+        "tts_fallback_reason": diag.get("fallback_reason"),
         "voice_id": config.get("voice_id"),
         "profile_id": config.get("resolved_profile_id"),
     }
@@ -2031,6 +2317,9 @@ def process_episode(
     episode_cursor = 0.0
     total_duration = 0.0
     providers_used: set[str] = set()
+    fallback_reasons: list[str] = []
+    fallback_chunk_count = 0
+    total_chunk_count = 0
     track_scene_data: dict[str, Any] = {}
 
     for scene in script.get("scenes", []):
@@ -2047,8 +2336,14 @@ def process_episode(
         scene_cursor = 0.0
 
         for chunk in chunks:
-            raw_audio, used = synthesize_chunk(chunk, config)
+            chunk_diag: dict[str, Any] = {}
+            raw_audio, used = synthesize_chunk(chunk, config, diagnostics=chunk_diag)
             providers_used.add(used)
+            total_chunk_count += 1
+            if chunk_diag.get("fallback_reason"):
+                fallback_chunk_count += 1
+                if chunk_diag["fallback_reason"] not in fallback_reasons:
+                    fallback_reasons.append(chunk_diag["fallback_reason"])
             ext, payload, params, chunk_dur = measure_audio_chunk(raw_audio, hint=hint_fmt)
 
             if ext == "wav":
@@ -2123,8 +2418,9 @@ def process_episode(
     effective_profile = config.get("resolved_profile_id") or safe_profile_id
     used_list = sorted(providers_used)
     provider_label = used_list[0] if len(used_list) == 1 else (config.get("provider") or "edge")
+    fallback_reason_str: str | None = "; ".join(fallback_reasons) if fallback_reasons else None
 
-    script["voice_tracks"][safe_profile_id] = {
+    track_entry: dict[str, Any] = {
         "tts_profile": effective_profile,
         "tts_provider": provider_label,
         "tts_voice": config.get("voice_id"),
@@ -2135,6 +2431,9 @@ def process_episode(
         "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "scene_data": track_scene_data,
     }
+    if fallback_reason_str:
+        track_entry["tts_fallback_reason"] = fallback_reason_str
+    script["voice_tracks"][safe_profile_id] = track_entry
     script["active_voice_track"] = safe_profile_id
 
     script["tts_profile"] = effective_profile
@@ -2142,9 +2441,21 @@ def process_episode(
     if config.get("rate"):
         script["tts_rate"] = config["rate"]
     script["tts_provider_used"] = used_list
+    if fallback_reason_str:
+        script["tts_fallback_reason"] = fallback_reason_str
+    else:
+        script.pop("tts_fallback_reason", None)
     script["total_duration_sec"] = round(total_duration, 3)
 
     _write_json_atomic(script_path, script)
+
+    if fallback_reason_str:
+        ep_label = script.get("episode_id") or ep_dir.name
+        print(
+            f"[WARN] TTS fallback summary ({ep_label}): {fallback_chunk_count}/{total_chunk_count} chunk(s) "
+            f"fell back to Google TTS ({fallback_reason_str})",
+            file=sys.stderr,
+        )
 
     if not quiet:
         print(f"\nEpisode total duration: {total_duration:.2f}s | Track: {safe_profile_id} | SRT: {root_srt_path}")
@@ -2157,6 +2468,7 @@ def process_episode(
         "tts_profile": script.get("tts_profile"),
         "tts_voice": script.get("tts_voice"),
         "tts_provider_used": script.get("tts_provider_used"),
+        "tts_fallback_reason": fallback_reason_str,
         "total_duration_sec": script["total_duration_sec"],
         "scenes_count": len(script.get("scenes", [])),
         "srt_path": str(root_srt_path),

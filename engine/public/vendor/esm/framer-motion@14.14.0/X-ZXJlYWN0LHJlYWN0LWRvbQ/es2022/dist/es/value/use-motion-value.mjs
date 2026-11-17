@@ -1,0 +1,2 @@
+/* esm.sh - framer-motion@14.14.0/dist/es/value/use-motion-value */
+"use client";import{motionValue as s}from"../../../../../../motion-dom@14.14.0/es2022/motion-dom.mjs";import{useContext as r,useState as u,useEffect as i}from"react";import{MotionConfigContext as f}from"../context/MotionConfigContext.mjs";import{useConstant as m}from"../utils/use-constant.mjs";function l(t){let o=m(()=>s(t)),{isStatic:e}=r(f);if(e){let[,n]=u(t);i(()=>o.on("change",n),[])}return o}export{l as useMotionValue};

@@ -1,0 +1,2 @@
+/* esm.sh - framer-motion@14.14.0/dist/es/motion/features/layout */
+import{HTMLProjectionNode as o}from"../../../../../../../motion-dom@14.14.0/es2022/motion-dom.mjs";import{MeasureLayout as t}from"./layout/MeasureLayout.mjs";var a={layout:{ProjectionNode:o,MeasureLayout:t}};export{a as layout};

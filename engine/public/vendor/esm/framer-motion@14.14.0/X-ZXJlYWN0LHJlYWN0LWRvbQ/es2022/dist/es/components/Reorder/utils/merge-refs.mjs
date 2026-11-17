@@ -1,0 +1,2 @@
+/* esm.sh - framer-motion@14.14.0/dist/es/components/Reorder/utils/merge-refs */
+var r=(t,n)=>c=>{t.current=c;let o=typeof n=="function"?n(c):n&&(n.current=c);if(typeof o=="function")return()=>{t.current=null,o()}};export{r as mergeRefs};

@@ -1,0 +1,2 @@
+/* esm.sh - shiki@4.6.0/wasm */
+import{default as e}from"../../@shikijs/engine-oniguruma@4.6.0/es2022/wasm-inlined.mjs";export*from"../../@shikijs/engine-oniguruma@4.6.0/es2022/wasm-inlined.mjs";export{e as default};

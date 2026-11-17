@@ -8,6 +8,7 @@ import { validateScriptDiagrams } from "./src/diagram_validator.mjs";
 import { SUPPORTED_VISUAL_TYPES } from "./src/motion/kernel.mjs";
 import { createAiBroker } from "./ai/queue_broker.mjs";
 import { createMcpHandler, createStudioHttpRequester, SERVER_INFO as MCP_SERVER_INFO } from "./mcp/rpc.mjs";
+import { createMediaHandlers } from "./routes/media.mjs";
 import {
   addRevisionTicket,
   appendEvent,
@@ -40,22 +41,6 @@ const VOICE_PREVIEW_CACHE_DIR = path.join(ENGINE_DIR, ".voice_preview_cache");
 const TTS_SCRIPT_PATH = path.join(ENGINE_DIR, "tts_pipeline.py");
 const RENDER_SCRIPT_PATH = path.join(ENGINE_DIR, "render_video.mjs");
 const PYTHON_BIN = process.env.PYTHON_BIN || "python";
-
-const MIME_TYPES = {
-  ".html": "text/html; charset=utf-8",
-  ".mjs": "application/javascript; charset=utf-8",
-  ".js": "application/javascript; charset=utf-8",
-  ".css": "text/css; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
-  ".md": "text/markdown; charset=utf-8",
-  ".svg": "image/svg+xml",
-  ".png": "image/png",
-  ".mp3": "audio/mpeg",
-  ".wav": "audio/wav",
-  ".srt": "text/plain; charset=utf-8",
-  ".webm": "video/webm",
-  ".mp4": "video/mp4",
-};
 
 function sendJson(res, status, data) {
   const body = JSON.stringify(data, null, 2);
@@ -98,47 +83,6 @@ function readJsonBody(req, maxBytes = 1024 * 1024) {
     });
     req.on("error", reject);
   });
-}
-
-function serveFileWithRange(req, res, filePath) {
-  if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
-    res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });
-    res.end("Not Found");
-    return;
-  }
-
-  const stat = fs.statSync(filePath);
-  const ext = path.extname(filePath).toLowerCase();
-  const contentType = MIME_TYPES[ext] || "application/octet-stream";
-  const total = stat.size;
-  const range = req.headers.range;
-
-  if (range && total > 0) {
-    const match = /bytes=(\d*)-(\d*)/.exec(range);
-    if (match) {
-      const start = match[1] ? Number(match[1]) : 0;
-      const end = match[2] ? Math.min(Number(match[2]), total - 1) : total - 1;
-      if (start <= end && start < total) {
-        res.writeHead(206, {
-          "Content-Range": `bytes ${start}-${end}/${total}`,
-          "Accept-Ranges": "bytes",
-          "Content-Length": end - start + 1,
-          "Content-Type": contentType,
-          "Cache-Control": "no-store",
-        });
-        fs.createReadStream(filePath, { start, end }).pipe(res);
-        return;
-      }
-    }
-  }
-
-  res.writeHead(200, {
-    "Content-Length": total,
-    "Accept-Ranges": "bytes",
-    "Content-Type": contentType,
-    "Cache-Control": "no-store",
-  });
-  fs.createReadStream(filePath).pipe(res);
 }
 
 function runChildProcess(
@@ -370,6 +314,11 @@ function buildEpisodePayload(courseName, courseDir, stateDir, epMeta, courseMeta
     state.voice_override?.tts_provider ||
     courseMeta?.tts_provider ||
     null;
+  const ttsFallbackReason =
+    script?.tts_fallback_reason || activeTrack?.tts_fallback_reason || null;
+  if (ttsFallbackReason && !artifacts.tts_fallback_reason) {
+    artifacts.tts_fallback_reason = ttsFallbackReason;
+  }
 
   return {
     id: epId,
@@ -384,6 +333,7 @@ function buildEpisodePayload(courseName, courseDir, stateDir, epMeta, courseMeta
     tts_voice: effectiveVoice,
     tts_rate: effectiveRate,
     tts_provider_used: providerUsed,
+    tts_fallback_reason: ttsFallbackReason,
     has_script: Boolean(script),
     has_audio: audioCount > 0,
     has_video: Boolean(videoFile),
@@ -1449,6 +1399,7 @@ function summarizeVoiceTracks(script) {
     profile_id: id,
     tts_profile: t?.tts_profile || id,
     tts_provider: t?.tts_provider || null,
+    tts_fallback_reason: t?.tts_fallback_reason || null,
     tts_voice: t?.tts_voice || null,
     tts_rate: t?.tts_rate || null,
     subtitles_srt: t?.subtitles_srt || null,
@@ -3247,225 +3198,26 @@ async function handlePostState(req, res) {
   return sendJson(res, 200, { ok: true, state });
 }
 
-function resolveVideoFormatFromRequest(req, parsedUrl) {
-  const queryFmt =
-    parsedUrl.searchParams.get("format") || parsedUrl.searchParams.get("ext") || "";
-  if (queryFmt) return queryFmt.trim().toLowerCase();
-
-  const headerFmt = req.headers["x-video-format"];
-  if (typeof headerFmt === "string" && headerFmt.trim()) {
-    return headerFmt.trim().toLowerCase();
-  }
-
-  const contentType = String(req.headers["content-type"] || "").toLowerCase();
-  if (contentType.includes("video/mp4")) return "mp4";
-  if (contentType.includes("video/webm")) return "webm";
-
-  return "webm";
-}
-
-function handleSaveVideo(req, res, parsedUrl) {
-  const course = parsedUrl.searchParams.get("course") || "";
-  const episode = parsedUrl.searchParams.get("episode") || "";
-  const ext = resolveVideoFormatFromRequest(req, parsedUrl);
-
-  if (!/^[A-Za-z0-9_-]+$/.test(course) || !/^[A-Za-z0-9_-]+$/.test(episode)) {
-    return sendJson(res, 400, { ok: false, error: "Invalid course or episode identifier" });
-  }
-  if (ext !== "webm" && ext !== "mp4") {
-    return sendJson(res, 400, { ok: false, error: "Only webm or mp4 formats are supported" });
-  }
-
-  const rawRequestedName =
-    parsedUrl.searchParams.get("filename") ||
-    parsedUrl.searchParams.get("output_filename") ||
-    (typeof req.headers["x-video-filename"] === "string" ? req.headers["x-video-filename"] : "") ||
-    "";
-  const stemRes = sanitizeVideoOutputStem(rawRequestedName, episode);
-  if (!stemRes.ok) {
-    return sendJson(res, 400, { ok: false, error: stemRes.error });
-  }
-
-  const epDir = safeResolve(WORKSPACE_ROOT, [course, "episodes", episode]);
-  if (!epDir || !fs.existsSync(epDir)) {
-    return sendJson(res, 404, { ok: false, error: "Episode directory not found" });
-  }
-
-  const filename = `${stemRes.stem}.${ext}`;
-  const outPath = safeResolve(epDir, [filename]);
-  if (!outPath) {
-    return sendJson(res, 403, { ok: false, error: "Forbidden" });
-  }
-
-  const chunks = [];
-  req.on("data", (chunk) => chunks.push(chunk));
-  req.on("end", () => {
-    const buf = Buffer.concat(chunks);
-    fs.writeFileSync(outPath, buf);
-
-    const courseDir = path.join(WORKSPACE_ROOT, course);
-    const artifacts = inspectEpisodeArtifacts(courseDir, episode);
-    if (!artifacts.video_file) {
-      artifacts.video_file = filename;
-    }
-
-    // Auto-update state/<episode>.json if it exists
-    const stateDir = path.join(courseDir, "state");
-    const statePath = path.join(stateDir, `${episode}.json`);
-    if (fs.existsSync(statePath)) {
-      const state = readEpisodeState(stateDir, episode);
-      if (state) {
-        const now = new Date().toISOString();
-        state.artifacts = artifacts;
-        state.production = state.production || {};
-        state.production.video_done = true;
-        state.updated_at = now;
-        recomputeState(state);
-        writeJsonAtomic(statePath, state);
-        appendEvent(stateDir, {
-          type: "video_saved",
-          course,
-          episode_id: episode,
-          video_file: filename,
-          format: ext,
-          bytes: buf.length,
-          overall_status: state.overall_status,
-        });
-        scheduleStateBroadcast(course, `${episode}.json`);
-      }
-    }
-
-    const videoFiles = mapEpisodeVideoFiles(course, episode, artifacts);
-    broadcastSse("courses_updated", {
-      course,
-      episode_id: episode,
-      video_file: artifacts.video_file || filename,
-      ts: new Date().toISOString(),
-    });
-
-    const videoUrl = `/courses/${encodeURIComponent(course)}/episodes/${encodeURIComponent(episode)}/${encodeURIComponent(filename)}`;
-    sendJson(res, 200, {
-      ok: true,
-      file: filename,
-      filename,
-      format: ext,
-      path: outPath,
-      bytes: buf.length,
-      video_url: videoUrl,
-      video_file: artifacts.video_file || filename,
-      video_files: videoFiles,
-    });
-  });
-  req.on("error", (err) => {
-    sendJson(res, 500, { ok: false, error: err.message });
-  });
-}
-
-async function handleDeleteEpisodeVideo(req, res) {
-  let body;
-  try {
-    body = await readJsonBody(req);
-  } catch (err) {
-    return sendJson(res, 400, { ok: false, error: err.message });
-  }
-
-  const course = String(body.course || "").trim();
-  const episode = String(body.episode || "").trim();
-  const filename = String(body.filename || "").trim();
-
-  if (!/^[A-Za-z0-9_-]+$/.test(course) || !/^[A-Za-z0-9_-]+$/.test(episode)) {
-    return sendJson(res, 400, { ok: false, error: "Invalid course or episode identifier" });
-  }
-  if (
-    !filename ||
-    filename.includes("/") ||
-    filename.includes("\\") ||
-    filename.includes("..") ||
-    !/^[A-Za-z0-9_.-]+\.(mp4|webm)$/i.test(filename)
-  ) {
-    return sendJson(res, 400, { ok: false, error: "Invalid video filename" });
-  }
-
-  const jobKey = `${course}:${episode}`;
-  if (activeJobByEp.has(jobKey)) {
-    const existingJob = jobs.get(activeJobByEp.get(jobKey));
-    if (existingJob && (existingJob.status === "queued" || existingJob.status === "running")) {
-      return sendJson(res, 409, {
-        ok: false,
-        error: `Tập ${episode} đang có tác vụ TTS/Render đang chạy hoặc chờ xử lý. Vui lòng đợi hoàn tất trước khi xóa video.`,
-      });
-    }
-  }
-
-  const courseDir = safeResolve(WORKSPACE_ROOT, [course]);
-  const epDir = safeResolve(WORKSPACE_ROOT, [course, "episodes", episode]);
-  if (!courseDir || !epDir || !fs.existsSync(epDir)) {
-    return sendJson(res, 404, { ok: false, error: "Episode directory not found" });
-  }
-
-  const targetPath = safeResolve(epDir, [filename]);
-  if (!targetPath || targetPath === path.resolve(epDir)) {
-    return sendJson(res, 403, { ok: false, error: "Forbidden" });
-  }
-  if (fs.existsSync(targetPath)) {
-    if (fs.statSync(targetPath).isDirectory()) {
-      return sendJson(res, 400, { ok: false, error: "Target is a directory" });
-    }
-    fs.unlinkSync(targetPath);
-  }
-
-  const artifacts = inspectEpisodeArtifacts(courseDir, episode);
-  const remainingVideos = Array.isArray(artifacts.video_files) ? artifacts.video_files.length : 0;
-  const videoFiles = mapEpisodeVideoFiles(course, episode, artifacts);
-
-  const stateDir = path.join(courseDir, "state");
-  const statePath = path.join(stateDir, `${episode}.json`);
-  if (fs.existsSync(stateDir) || fs.existsSync(statePath)) {
-    mutateEpisodeStateForJob(
-      course,
-      episode,
-      (state, freshArtifacts) => {
-        const count = Array.isArray(freshArtifacts.video_files)
-          ? freshArtifacts.video_files.length
-          : 0;
-        if (count === 0) {
-          state.production = state.production || {};
-          state.production.video_done = false;
-          state.production.verified = false;
-          state.production.stale = false;
-          state.production.stale_reason = null;
-          if (state.production.status === "completed") {
-            state.production.status = "pending";
-            state.production.completed_at = null;
-          }
-        }
-      },
-      {
-        type: "video_file_deleted",
-        filename,
-        remaining_count: remainingVideos,
-        video_file: artifacts.video_file || null,
-        message: `Deleted rendered video ${filename}`,
-      }
-    );
-  }
-
-  broadcastSse("courses_updated", {
-    course,
-    episode_id: episode,
-    deleted: filename,
-    video_file: artifacts.video_file || null,
-    video_files: videoFiles,
-    ts: new Date().toISOString(),
-  });
-
-  return sendJson(res, 200, {
-    ok: true,
-    deleted: filename,
-    video_file: artifacts.video_file || null,
-    video_files: videoFiles,
-  });
-}
+const mediaHandlers = createMediaHandlers({
+  ENGINE_DIR,
+  WORKSPACE_ROOT,
+  VOICE_PREVIEW_CACHE_DIR,
+  safeResolve,
+  sendJson,
+  readJsonBody,
+  sanitizeVideoOutputStem,
+  inspectEpisodeArtifacts,
+  readEpisodeState,
+  recomputeState,
+  writeJsonAtomic,
+  appendEvent,
+  scheduleStateBroadcast,
+  mapEpisodeVideoFiles,
+  broadcastSse,
+  activeJobByEp,
+  jobs,
+  mutateEpisodeStateForJob,
+});
 
 const server = http.createServer((req, res) => {
   const parsedUrl = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
@@ -3511,22 +3263,6 @@ const server = http.createServer((req, res) => {
     return void handleSceneTimings(req, res);
   }
 
-  if (req.method === "POST" && pathname === "/api/episodes/video/delete") {
-    return void handleDeleteEpisodeVideo(req, res);
-  }
-
-  if (req.method === "GET" && pathname.startsWith("/api/voices/preview-file/")) {
-    const filename = pathname.slice("/api/voices/preview-file/".length);
-    if (!filename || filename.includes("/") || filename.includes("\\") || filename.includes("..")) {
-      return sendJson(res, 400, { ok: false, error: "Invalid preview filename" });
-    }
-    const target = safeResolve(VOICE_PREVIEW_CACHE_DIR, [filename]);
-    if (!target) {
-      return sendJson(res, 403, { ok: false, error: "Forbidden" });
-    }
-    return serveFileWithRange(req, res, target);
-  }
-
   if (req.method === "GET" && pathname === "/api/jobs") {
     return handleGetJobs(res, parsedUrl);
   }
@@ -3555,39 +3291,8 @@ const server = http.createServer((req, res) => {
     return handleSseStream(req, res);
   }
 
-  if (req.method === "POST" && pathname === "/api/save-video") {
-    return handleSaveVideo(req, res, parsedUrl);
-  }
-
-  if (req.method === "GET" && pathname.startsWith("/courses/")) {
-    const rel = pathname.slice("/courses/".length).split("/").filter(Boolean);
-    if (rel.length === 0 || rel[0] === "engine") {
-      res.writeHead(404);
-      res.end("Not Found");
-      return;
-    }
-    const target = safeResolve(WORKSPACE_ROOT, rel);
-    if (!target) {
-      res.writeHead(403);
-      res.end("Forbidden");
-      return;
-    }
-    return serveFileWithRange(req, res, target);
-  }
-
-  if (req.method === "GET" && pathname.startsWith("/src/")) {
-    const rel = pathname.slice("/src/".length).split("/").filter(Boolean);
-    const target = safeResolve(path.join(ENGINE_DIR, "src"), rel);
-    if (!target) {
-      res.writeHead(403);
-      res.end("Forbidden");
-      return;
-    }
-    return serveFileWithRange(req, res, target);
-  }
-
-  if (req.method === "GET" && (pathname === "/" || pathname === "/index.html")) {
-    return serveFileWithRange(req, res, path.join(ENGINE_DIR, "public", "index.html"));
+  if (mediaHandlers.handleMediaRoutes(req, res, pathname, parsedUrl)) {
+    return;
   }
 
   res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" });

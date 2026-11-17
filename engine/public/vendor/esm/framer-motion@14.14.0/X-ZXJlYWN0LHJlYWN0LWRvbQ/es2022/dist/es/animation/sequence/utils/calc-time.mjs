@@ -1,0 +1,2 @@
+/* esm.sh - framer-motion@14.14.0/dist/es/animation/sequence/utils/calc-time */
+function s(a,t){if(t.has(a))return t.get(a);let[,e,r]=a.match(/^(.+?)([+-][\d.]+)$/)||[];return t.has(e)?Math.max(0,t.get(e)+parseFloat(r)):void 0}function f(a,t,e,r){return typeof t=="number"?t:t.startsWith("-")||t.startsWith("+")?Math.max(0,a+parseFloat(t)):t==="<"?e:t.startsWith("<")?Math.max(0,e+parseFloat(t.slice(1))):s(t,r)??a}export{s as calcLabelTime,f as calcNextTime};

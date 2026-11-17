@@ -1,0 +1,157 @@
+{
+  "version": 1,
+  "generatedAt": "2026-11-16T14:36:47.393Z",
+  "totalFiles": 209,
+  "totalBytes": 2703381,
+  "shikiThemes": [
+    "tokyo-night",
+    "github-dark",
+    "dracula"
+  ],
+  "shikiLangs": [
+    "json",
+    "python",
+    "bash",
+    "shellscript",
+    "yaml",
+    "javascript",
+    "typescript",
+    "dockerfile",
+    "docker",
+    "hcl",
+    "terraform",
+    "sql",
+    "go",
+    "html",
+    "css",
+    "markdown",
+    "toml",
+    "ini",
+    "powershell",
+    "xml",
+    "java",
+    "rust",
+    "jsx",
+    "tsx",
+    "nginx",
+    "makefile",
+    "diff",
+    "http"
+  ],
+  "importMap": {
+    "react": "/vendor/esm/react@18.3.1/index.mjs",
+    "react/jsx-runtime": "/vendor/esm/react@18.3.1/jsx-runtime/index.mjs",
+    "react-dom": "/vendor/esm/react-dom@18.3.1/index.mjs",
+    "react-dom/client": "/vendor/esm/react-dom@18.3.1/client/index.mjs",
+    "gsap": "/vendor/esm/gsap@3.15.1/index.mjs",
+    "animejs": "/vendor/esm/animejs@4.5.0/index.mjs",
+    "motion": "/vendor/esm/motion@14.14.0/index.mjs",
+    "motion/react": "/vendor/esm/motion@14.14.0/react--q_6c9f181f/index.mjs",
+    "rough-notation": "/vendor/esm/rough-notation@0.5.1/index.mjs",
+    "shiki": "/vendor/esm/shiki@4.6.0/index.mjs",
+    "@shikijs/magic-move/core": "/vendor/esm/@shikijs/magic-move@4.6.0/core/index.mjs",
+    "@shikijs/magic-move/renderer": "/vendor/esm/@shikijs/magic-move@4.6.0/renderer/index.mjs",
+    "webm-muxer": "/vendor/esm/webm-muxer@5.1.4/index.mjs",
+    "mp4-muxer": "/vendor/esm/mp4-muxer@5.1.4/index.mjs"
+  },
+  "modules": {
+    "react": {
+      "path": "/vendor/esm/react@18.3.1/index.mjs",
+      "file": "esm/react@18.3.1/index.mjs",
+      "sha256": "f2e18227d12804a972721e15fc79c86beb27df54d07ce43ff7110b539999b9a1",
+      "bytes": 110,
+      "sourceUrl": "https://esm.sh/react@18.3.1"
+    },
+    "react/jsx-runtime": {
+      "path": "/vendor/esm/react@18.3.1/jsx-runtime/index.mjs",
+      "file": "esm/react@18.3.1/jsx-runtime/index.mjs",
+      "sha256": "4ce432012267b40c42fbd413e4bad6dbc8a041688972276cc3b6c63ab101e1ce",
+      "bytes": 166,
+      "sourceUrl": "https://esm.sh/react@18.3.1/jsx-runtime"
+    },
+    "react-dom": {
+      "path": "/vendor/esm/react-dom@18.3.1/index.mjs",
+      "file": "esm/react-dom@18.3.1/index.mjs",
+      "sha256": "1a83d872c3ff161234e96b67b89667f9a4a4fa22c390aea1528bcb169589a19b",
+      "bytes": 218,
+      "sourceUrl": "https://esm.sh/react-dom@18.3.1"
+    },
+    "react-dom/client": {
+      "path": "/vendor/esm/react-dom@18.3.1/client/index.mjs",
+      "file": "esm/react-dom@18.3.1/client/index.mjs",
+      "sha256": "de5794c85c4c7dad38ae8d29bd5bcc6a3169b15be65d011f386052ce7a152640",
+      "bytes": 159,
+      "sourceUrl": "https://esm.sh/react-dom@18.3.1/client"
+    },
+    "gsap": {
+      "path": "/vendor/esm/gsap@3.15.1/index.mjs",
+      "file": "esm/gsap@3.15.1/index.mjs",
+      "sha256": "951730a9333372cfc56018833bfafd32f8b1c82a1831ecf60d6c16c3c655f4ba",
+      "bytes": 107,
+      "sourceUrl": "https://esm.sh/gsap@3.15.1"
+    },
+    "animejs": {
+      "path": "/vendor/esm/animejs@4.5.0/index.mjs",
+      "file": "esm/animejs@4.5.0/index.mjs",
+      "sha256": "8f5941ccc1ea0f472ed229574e645ec455175e2ea6f3bb3bf5ab4e470d99a522",
+      "bytes": 380,
+      "sourceUrl": "https://esm.sh/animejs@4.5.0"
+    },
+    "motion": {
+      "path": "/vendor/esm/motion@14.14.0/index.mjs",
+      "file": "esm/motion@14.14.0/index.mjs",
+      "sha256": "8fef142ccf1c8c5e135f29f8feb4720d641470881e927a8212bdbcd4d514c7b5",
+      "bytes": 117,
+      "sourceUrl": "https://esm.sh/motion@14.14.0"
+    },
+    "motion/react": {
+      "path": "/vendor/esm/motion@14.14.0/react--q_6c9f181f/index.mjs",
+      "file": "esm/motion@14.14.0/react--q_6c9f181f/index.mjs",
+      "sha256": "aa96632595905a0eb0fbb2ae87366ceed743641ba17e5719b23bcd2ef60050dd",
+      "bytes": 186,
+      "sourceUrl": "https://esm.sh/motion@14.14.0/react?external=react,react-dom"
+    },
+    "rough-notation": {
+      "path": "/vendor/esm/rough-notation@0.5.1/index.mjs",
+      "file": "esm/rough-notation@0.5.1/index.mjs",
+      "sha256": "ec2a4b685ab28b5581c8600587b5c7a5416aa87bf744c4a348730894a6b13347",
+      "bytes": 81,
+      "sourceUrl": "https://esm.sh/rough-notation@0.5.1"
+    },
+    "shiki": {
+      "path": "/vendor/esm/shiki@4.6.0/index.mjs",
+      "file": "esm/shiki@4.6.0/index.mjs",
+      "sha256": "3d4d22a4b33a86ff6602f098559502abaf7394edae0b7befa5b1f189f47eae56",
+      "bytes": 380,
+      "sourceUrl": "https://esm.sh/shiki@4.6.0"
+    },
+    "@shikijs/magic-move/core": {
+      "path": "/vendor/esm/@shikijs/magic-move@4.6.0/core/index.mjs",
+      "file": "esm/@shikijs/magic-move@4.6.0/core/index.mjs",
+      "sha256": "e51cda508f5016a1718316461a0569e5f088a9454ced694898987d064a176485",
+      "bytes": 205,
+      "sourceUrl": "https://esm.sh/@shikijs/magic-move@4.6.0/core"
+    },
+    "@shikijs/magic-move/renderer": {
+      "path": "/vendor/esm/@shikijs/magic-move@4.6.0/renderer/index.mjs",
+      "file": "esm/@shikijs/magic-move@4.6.0/renderer/index.mjs",
+      "sha256": "c3e4137e3c5b9433a0a2b1233fec28b211ce48688a9c5f509d20b29e90bac843",
+      "bytes": 90,
+      "sourceUrl": "https://esm.sh/@shikijs/magic-move@4.6.0/renderer"
+    },
+    "webm-muxer": {
+      "path": "/vendor/esm/webm-muxer@5.1.4/index.mjs",
+      "file": "esm/webm-muxer@5.1.4/index.mjs",
+      "sha256": "4c335ea59fff0c14961cd87b9cb3842c45905afaee4475f17d2f60f2bcc7359c",
+      "bytes": 73,
+      "sourceUrl": "https://esm.sh/webm-muxer@5.1.4"
+    },
+    "mp4-muxer": {
+      "path": "/vendor/esm/mp4-muxer@5.1.4/index.mjs",
+      "file": "esm/mp4-muxer@5.1.4/index.mjs",
+      "sha256": "5f605573fcc3b8c74445e45ecfc03d75c56761190e27c06c8da1a2ed294d78eb",
+      "bytes": 71,
+      "sourceUrl": "https://esm.sh/mp4-muxer@5.1.4"
+    }
+  }
+}

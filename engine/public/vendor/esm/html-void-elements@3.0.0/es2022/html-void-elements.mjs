@@ -1,0 +1,2 @@
+/* esm.sh - html-void-elements@3.0.0 */
+var e=["area","base","basefont","bgsound","br","col","command","embed","frame","hr","image","img","input","keygen","link","meta","param","source","track","wbr"];export{e as htmlVoidElements};

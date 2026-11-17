@@ -1,0 +1,17 @@
+/* esm.sh - regex@6.1.0/internals */
+var G=String.raw`\(\?(?:[:=!>A-Za-z\-]|<[=!]|\(DEFINE\))`;function N(e,n){for(let t=0;t<e.length;t++)e[t]>=n&&e[t]++}function S(e,n,t,a){return e.slice(0,n)+a+e.slice(n+t.length)}import{Context as b,replaceUnescaped as q}from"../../regex-utilities@_2.3.0--q_43c89ee4/index.mjs";var v=new RegExp(String.raw`(?<noncapturingStart>${G})|(?<capturingStart>\((?:\?<[^>]+>)?)|\\?.`,"gsu");function z(e,n){let t=n?.hiddenCaptures??[],a=n?.captureTransfers??new Map;if(!/\(\?>/.test(e))return{pattern:e,captureTransfers:a,hiddenCaptures:t};let r="(?>",i="(?:(?=(",d=[0],s=[],l=0,u=0,p=NaN,h;do{h=!1;let f=0,c=0,o=!1,g;for(v.lastIndex=Number.isNaN(p)?0:p+i.length;g=v.exec(e);){let{0:w,index:$,groups:{capturingStart:D,noncapturingStart:T}}=g;if(w==="[")f++;else if(f)w==="]"&&f--;else if(w===r&&!o)p=$,o=!0;else if(o&&T)c++;else if(D)o?c++:(l++,d.push(l+u));else if(w===")"&&o){if(!c){u++;let m=l+u;if(e=`${e.slice(0,p)}${i}${e.slice(p+r.length,$)}))<$$${m}>)${e.slice($+1)}`,h=!0,s.push(m),N(t,m),a.size){let E=new Map;a.forEach((_,C)=>{E.set(C>=m?C+1:C,_.map(I=>I>=m?I+1:I))}),a=E}break}c--}}}while(h);return t.push(...s),e=q(e,String.raw`\\(?<backrefNum>[1-9]\d*)|<\$\$(?<wrappedBackrefNum>\d+)>`,({0:f,groups:{backrefNum:c,wrappedBackrefNum:o}})=>{if(c){let g=+c;if(g>d.length-1)throw new Error(`Backref "${f}" greater than number of captures`);return`\\${d[g]}`}return`\\${o}`},b.DEFAULT),{pattern:e,captureTransfers:a,hiddenCaptures:t}}var k=String.raw`(?:[?*+]|\{\d+(?:,\d*)?\})`,M=new RegExp(String.raw`
+\\(?: \d+
+  | c[A-Za-z]
+  | [gk]<[^>]+>
+  | [pPu]\{[^\}]+\}
+  | u[A-Fa-f\d]{4}
+  | x[A-Fa-f\d]{2}
+  )
+| \((?: \? (?: [:=!>]
+  | <(?:[=!]|[^>]+>)
+  | [A-Za-z\-]+:
+  | \(DEFINE\)
+  ))?
+| (?<qBase>${k})(?<qMod>[?+]?)(?<invalidQ>[?*+\{]?)
+| \\?.
+`.replace(/\s+/g,""),"gsu");function B(e){if(!new RegExp(`${k}\\+`).test(e))return{pattern:e};let n=[],t=null,a=null,r="",i=0,d;for(M.lastIndex=0;d=M.exec(e);){let{0:s,index:l,groups:{qBase:u,qMod:p,invalidQ:h}}=d;if(s==="[")i||(a=l),i++;else if(s==="]")i?i--:a=null;else if(!i)if(p==="+"&&r&&!r.startsWith("(")){if(h)throw new Error(`Invalid quantifier "${s}"`);let f=-1;if(/^\{\d+\}$/.test(u))e=S(e,l+u.length,p,"");else{if(r===")"||r==="]"){let c=r===")"?t:a;if(c===null)throw new Error(`Invalid unmatched "${r}"`);e=`${e.slice(0,c)}(?>${e.slice(c,l)}${u})${e.slice(l+s.length)}`}else e=`${e.slice(0,l-r.length)}(?>${r}${u})${e.slice(l+s.length)}`;f+=4}M.lastIndex+=f}else s[0]==="("?n.push(l):s===")"&&(t=n.length?n.pop():null);r=s}return{pattern:e}}var A=class e extends RegExp{_captureMap;constructor(n,t,a){if(n instanceof RegExp){if(a)throw new Error("Cannot provide options when copying a regexp");super(n,t),n instanceof e?this._captureMap=n._captureMap:this._captureMap=new Map}else{super(n,t);let r=a?.hiddenCaptures??[];this._captureMap=F(r)}}exec(n){let t=super.exec(n);if(!t||!this._captureMap.size)return t;let a=[...t];t.length=1;let r;this.hasIndices&&(r=[...t.indices],t.indices.length=1);for(let i=1;i<a.length;i++)this._captureMap.get(i)?.hidden||(t.push(a[i]),this.hasIndices&&t.indices.push(r[i]));return t}};function F(e){let n=new Map;for(let t of e)n.set(t,{hidden:!0});return n}export{A as RegExpSubclass,z as atomic,B as possessive};

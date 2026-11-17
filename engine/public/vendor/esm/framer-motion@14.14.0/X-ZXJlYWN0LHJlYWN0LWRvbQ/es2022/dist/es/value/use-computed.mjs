@@ -1,0 +1,2 @@
+/* esm.sh - framer-motion@14.14.0/dist/es/value/use-computed */
+"use client";import{collectMotionValues as e}from"../../../../../../motion-dom@14.14.0/es2022/motion-dom.mjs";import{useCombineMotionValues as r}from"./use-combine-values.mjs";function i(n){e.current=[],n();let o=r(e.current,n);return e.current=void 0,o}export{i as useComputed};

@@ -1,0 +1,2 @@
+/* esm.sh - oniguruma-parser@0.12.2/dist/utils */
+function e(r){if([...r].length!==1)throw new Error(`Expected "${r}" to be a single code point`);return r.codePointAt(0)}function i(r,t,n){return r.has(t)||r.set(t,n),r.get(t)}var o=new Set(["alnum","alpha","ascii","blank","cntrl","digit","graph","lower","print","punct","space","upper","word","xdigit"]),s=String.raw;function a(r,t){if(r==null)throw new Error(t??"Value expected");return r}export{o as PosixClassNames,e as cpOf,i as getOrInsert,s as r,a as throwIfNullish};

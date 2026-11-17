@@ -1,0 +1,2 @@
+/* esm.sh - framer-motion@14.14.0/dist/es/render/components/create-proxy */
+import"../../../../../../../motion-utils@14.7.0/es2022/motion-utils.mjs";import{createMotionComponent as o}from"../../motion/index.mjs";function u(r,c){if(typeof Proxy>"u")return o;let e=new Map,i=(t,n)=>o(t,n,r,c),a=(t,n)=>i(t,n);return new Proxy(a,{get:(t,n)=>n==="create"?i:(e.has(n)||e.set(n,o(n,void 0,r,c)),e.get(n))})}export{u as createMotionProxy};
