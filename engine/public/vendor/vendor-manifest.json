@@ -153,5 +153,28 @@
       "bytes": 71,
       "sourceUrl": "https://esm.sh/mp4-muxer@5.1.4"
     }
+  },
+  "raw": {
+    "@hyperframes/core/runtime-iife": {
+      "path": "/vendor/raw/@hyperframes/core@0.9.59/hyperframe.runtime.iife.js",
+      "file": "raw/@hyperframes/core@0.9.59/hyperframe.runtime.iife.js",
+      "sha256": "73bf2dda8476c060c49e37754736b20068b99580b654d5fe44f5918fc63eeaa8",
+      "bytes": 686148,
+      "sourceUrl": "https://cdn.jsdelivr.net/npm/@hyperframes/core@0.9.59/dist/hyperframe.runtime.iife.js"
+    },
+    "@hyperframes/core/LICENSE": {
+      "path": "/vendor/raw/@hyperframes/core@0.9.59/LICENSE",
+      "file": "raw/@hyperframes/core@0.9.59/LICENSE",
+      "sha256": "4259155fb06f127687ee7b0a8a3682d45132db0f2da26cbc0b7a2d1e796436b8",
+      "bytes": 10763,
+      "sourceUrl": "https://cdn.jsdelivr.net/npm/@hyperframes/core@0.9.59/LICENSE"
+    },
+    "gsap/umd": {
+      "path": "/vendor/raw/gsap@3.15.1/gsap.min.js",
+      "file": "raw/gsap@3.15.1/gsap.min.js",
+      "sha256": "3d1bea374ab1b703cc5c4105358eec63c4465efdc573931dc116e34a0a190c1b",
+      "bytes": 73357,
+      "sourceUrl": "https://cdn.jsdelivr.net/npm/gsap@3.15.1/dist/gsap.min.js"
+    }
   }
 }

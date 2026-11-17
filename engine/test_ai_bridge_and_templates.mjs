@@ -1417,60 +1417,84 @@ async function runTests() {
     }
     console.log("PASS: Headless Chrome Online Roadmap Modal + all 3 React Preview templates rendered with 0 errors.");
 
-    console.log("=== 6. Headless Canvas 2D Video Export of All 3 New Templates ===");
-    const renderCode = await new Promise((resolve, reject) => {
-      const proc = spawn(
-        process.execPath,
-        [
-          path.join(ENGINE_DIR, "render_video.mjs"),
-          "--course",
-          "TESTCOURSE",
-          "--episode",
-          "ep01-test",
-          "--port",
-          String(testPort),
-          "--format",
-          "webm",
-          "--codec",
-          "vp9",
-          "--hardware",
-          "cpu",
-          "--resolution",
-          "720p",
-          "--fps",
-          "24",
-        ],
-        {
-          cwd: ENGINE_DIR,
-          env: {
-            ...process.env,
-            VIDEO_MAKER_WORKSPACE_ROOT: tmpWorkspace,
-          },
-          stdio: ["ignore", "pipe", "pipe"],
-        }
-      );
-      let out = "";
-      let err = "";
-      proc.stdout.on("data", (d) => {
-        out += d.toString("utf-8");
+    console.log("=== 6. Headless Video Export of All 3 New Templates (HyperFrames default + legacy Canvas 2D) ===");
+    const runRenderVideo = (extraArgs) =>
+      new Promise((resolve, reject) => {
+        const proc = spawn(
+          process.execPath,
+          [
+            path.join(ENGINE_DIR, "render_video.mjs"),
+            "--course",
+            "TESTCOURSE",
+            "--episode",
+            "ep01-test",
+            "--port",
+            String(testPort),
+            "--format",
+            "webm",
+            "--codec",
+            "vp9",
+            "--hardware",
+            "cpu",
+            "--resolution",
+            "720p",
+            "--fps",
+            "24",
+            ...extraArgs,
+          ],
+          {
+            cwd: ENGINE_DIR,
+            env: {
+              ...process.env,
+              VIDEO_MAKER_WORKSPACE_ROOT: tmpWorkspace,
+            },
+            stdio: ["ignore", "pipe", "pipe"],
+          }
+        );
+        let out = "";
+        let err = "";
+        proc.stdout.on("data", (d) => {
+          out += d.toString("utf-8");
+        });
+        proc.stderr.on("data", (d) => {
+          err += d.toString("utf-8");
+        });
+        proc.on("exit", (code) => {
+          if (code !== 0) {
+            reject(new Error(`render_video ${extraArgs.join(" ")} exited ${code}:
+OUT:
+${out}
+ERR:
+${err}`));
+          } else {
+            resolve({ code, out });
+          }
+        });
       });
-      proc.stderr.on("data", (d) => {
-        err += d.toString("utf-8");
-      });
-      proc.on("exit", (code) => {
-        if (code !== 0) {
-          reject(new Error(`render_video exited ${code}:\nOUT:\n${out}\nERR:\n${err}`));
-        } else {
-          resolve(code);
-        }
-      });
-    });
-    assert.equal(renderCode, 0);
+
+    // 6a. Default engine = HyperFrames composition (engine/hyperframes/) + WebCodecs
+    const hfRender = await runRenderVideo([]);
+    assert.equal(hfRender.code, 0);
+    assert.ok(hfRender.out.includes("engine=hyperframes"), "default render must use the HyperFrames engine");
     const outWebmPath = path.join(ep1Dir, "ep01-test.webm");
     assert.ok(fs.existsSync(outWebmPath), "Rendered .webm must exist");
     const webmSize = fs.statSync(outWebmPath).size;
     assert.ok(webmSize > 10_000, `Rendered .webm looks too small (${webmSize} bytes)`);
-    console.log(`PASS: Headless Canvas 2D WebM export succeeded (${webmSize} bytes) covering comparison_matrix, timeline_flow, kpi_metrics.`);
+    const hfIndex = path.join(ep1Dir, "hyperframes", "index.html");
+    assert.ok(fs.existsSync(hfIndex), "HyperFrames project index.html must be generated");
+    const hfHtml = fs.readFileSync(hfIndex, "utf-8");
+    assert.ok(hfHtml.includes('data-composition-id="main"'), "composition root must declare data-composition-id");
+    assert.ok(hfHtml.includes("hyperframe.runtime.iife.js"), "composition must load the HyperFrames runtime");
+    console.log(`PASS: HyperFrames WebM export succeeded (${webmSize} bytes) covering comparison_matrix, timeline_flow, kpi_metrics.`);
+
+    // 6b. Legacy Canvas 2D engine stays available as a fallback
+    const legacyRender = await runRenderVideo(["--engine", "legacy", "--output", "ep01-test-legacy"]);
+    assert.equal(legacyRender.code, 0);
+    const legacyPath = path.join(ep1Dir, "ep01-test-legacy.webm");
+    assert.ok(fs.existsSync(legacyPath), "Legacy rendered .webm must exist");
+    const legacySize = fs.statSync(legacyPath).size;
+    assert.ok(legacySize > 10_000, `Legacy rendered .webm looks too small (${legacySize} bytes)`);
+    console.log(`PASS: Legacy Canvas 2D WebM export (--engine legacy) succeeded (${legacySize} bytes).`);
 
     console.log("=== 7. Auto-Produce Handoff & Heartbeat Expiry Offline Flip ===");
     const autoRes = await httpRequestJson(testPort, "POST", "/api/ai/jobs", {

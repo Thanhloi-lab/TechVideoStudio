@@ -33,6 +33,12 @@ const REQUIRED_ENGINE_FILES = [
   "worker_wait.mjs",
   "voices.json",
   "public/index.html",
+  "public/hf-encoder.html",
+  "hyperframes/compiler.mjs",
+  "hyperframes/render.mjs",
+  "hyperframes/runtime/tvs-hf-main.mjs",
+  "public/vendor/raw/@hyperframes/core@0.9.59/hyperframe.runtime.iife.js",
+  "public/vendor/raw/gsap@3.15.1/gsap.min.js",
 ];
 
 function printUsage() {

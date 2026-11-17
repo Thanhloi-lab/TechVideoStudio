@@ -20,6 +20,10 @@ const VALID_HARDWARE = new Set(["auto", "gpu", "cpu"]);
 const VALID_RESOLUTIONS = new Set(["720p", "1080p", "1440p", "2160p"]);
 const VALID_FPS = new Set([24, 30, 60]);
 const VALID_SPEEDS = new Set([1, 1.25, 1.5, 2]);
+// "hyperframes" (default): HyperFrames composition + zero-dep CDP capture + WebCodecs (engine/hyperframes/).
+// "legacy": previous Canvas 2D exporter (window.__STUDIO_RENDER_OFFLINE__ in engine/src/exporter.mjs).
+const VALID_ENGINES = new Set(["hyperframes", "legacy"]);
+const VALID_CAPTURE_FORMATS = new Set(["jpeg", "png"]);
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -27,7 +31,9 @@ function sleep(ms) {
 
 function printUsage() {
   console.log(
-    `Usage: node render_video.mjs --course <COURSE> --episode <EP_ID> [--port 3030] [--format mp4|webm] [--codec h264|hevc|vp9] [--hardware auto|gpu|cpu] [--resolution 720p|1080p|1440p|2160p] [--fps 24|30|60] [--speed 1|1.25|1.5|2] [--output <filename>] [--timeout-ms 900000]`
+    `Usage: node render_video.mjs --course <COURSE> --episode <EP_ID> [--engine hyperframes|legacy] [--port 3030] [--format mp4|webm] [--codec h264|hevc|vp9] [--hardware auto|gpu|cpu] [--resolution 720p|1080p|1440p|2160p] [--fps 24|30|60] [--speed 1|1.25|1.5|2] [--output <filename>] [--timeout-ms 900000]\n` +
+      `       HyperFrames-only: [--workers 1..8] [--capture-format jpeg|png] [--jpeg-quality 50..100] [--compile-only]\n` +
+      `       Default engine: hyperframes (or env TVS_RENDER_ENGINE). See engine/HYPERFRAMES_ENGINE.md.`
   );
 }
 
@@ -59,7 +65,8 @@ function defaultTimeoutForOptions(opts) {
   if (opts.fps === 60 && opts.resolution !== "720p") {
     base = Math.max(base, 900_000);
   }
-  return base;
+  // HyperFrames captures every frame through the DOM: allow a 4x larger safety margin.
+  return opts.engine === "legacy" ? base : base * 4;
 }
 
 function parseArgs(argv) {
@@ -76,12 +83,27 @@ function parseArgs(argv) {
     output: "",
     timeoutMs: null,
     help: false,
+    engine: String(process.env.TVS_RENDER_ENGINE || "hyperframes").toLowerCase(),
+    workers: 0,
+    captureFormat: "jpeg",
+    jpegQuality: 92,
+    compileOnly: false,
   };
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === "--help" || arg === "-h") {
       opts.help = true;
+    } else if (arg === "--engine") {
+      opts.engine = String(argv[++i] || "hyperframes").toLowerCase();
+    } else if (arg === "--workers") {
+      opts.workers = Number(argv[++i] || 0);
+    } else if (arg === "--capture-format") {
+      opts.captureFormat = String(argv[++i] || "jpeg").toLowerCase();
+    } else if (arg === "--jpeg-quality") {
+      opts.jpegQuality = Number(argv[++i] || 92);
+    } else if (arg === "--compile-only") {
+      opts.compileOnly = true;
     } else if (arg === "--course") {
       opts.course = argv[++i] || "";
     } else if (arg === "--episode" || arg === "--ep") {
@@ -388,6 +410,124 @@ async function waitForOfflineRenderer(cdp, timeoutMs = 25_000) {
   throw new Error("Timed out waiting for window.__STUDIO_RENDER_OFFLINE__ to become ready");
 }
 
+/**
+ * Default engine: compile the episode to a HyperFrames project and render it with the zero-dep
+ * CDP capture + WebCodecs pipeline (engine/hyperframes/render.mjs). Same CLI contract, progress
+ * lines ("[render] NN% ...") and output location as the legacy engine.
+ */
+async function runHyperframesRender(opts, epDir) {
+  const { renderEpisodeHyperframes } = await import("./hyperframes/render.mjs");
+  const startMs = Date.now();
+  let cancelled = false;
+  let chrome = null;
+
+  const requestCancel = (reason) => {
+    if (cancelled) return;
+    cancelled = true;
+    console.warn(`[render_video] Cancellation requested (${reason}); closing browser...`);
+    if (chrome) chrome.close().catch(() => {});
+  };
+  const onSigInt = () => requestCancel("SIGINT");
+  const onSigTerm = () => requestCancel("SIGTERM");
+  process.once("SIGINT", onSigInt);
+  process.once("SIGTERM", onSigTerm);
+  const onStdinData = (chunk) => {
+    if (String(chunk || "").toUpperCase().includes("CANCEL")) requestCancel("stdin CANCEL");
+  };
+  if (process.stdin && !process.stdin.isTTY) {
+    try {
+      process.stdin.setEncoding("utf-8");
+      process.stdin.on("data", onStdinData);
+      process.stdin.resume();
+      process.stdin.unref();
+    } catch {
+      // Ignore stdin pipe errors
+    }
+  }
+
+  try {
+    console.log(
+      `[render] 0% Starting HyperFrames render pipeline (${opts.resolution} @ ${opts.fps}fps, ${opts.speed}x, ${opts.format}/${opts.codec}, hw=${opts.hardware})...`
+    );
+
+    if (opts.compileOnly) {
+      const { compileEpisodeProject } = await import("./hyperframes/compiler.mjs");
+      const { ensureStudioServer, fetchEpisodePayload, projectUrl } = await import("./hyperframes/studio_server.mjs");
+      const server = await ensureStudioServer(opts.port, { workspaceRoot: WORKSPACE_ROOT });
+      try {
+        const episode = await fetchEpisodePayload(opts.port, opts.course, opts.episode);
+        const { projectDir, manifest } = await compileEpisodeProject({
+          workspaceRoot: WORKSPACE_ROOT,
+          courseId: opts.course,
+          episode,
+          speed: opts.speed,
+        });
+        console.log(`[render] 100% Compiled HyperFrames project (${manifest.total_duration}s, ${manifest.scenes.length} scenes)`);
+        console.log(`[render_video] PROJECT: ${projectDir}`);
+        console.log(`[render_video] PREVIEW: ${projectUrl(opts.port, opts.course, opts.episode)} (while server.mjs runs)`);
+      } finally {
+        await server.stop();
+      }
+      return;
+    }
+
+    const timer = setTimeout(() => requestCancel(`timeout ${opts.timeoutMs}ms`), opts.timeoutMs);
+    timer.unref?.();
+    let result;
+    try {
+      result = await renderEpisodeHyperframes(
+        {
+          workspaceRoot: WORKSPACE_ROOT,
+          course: opts.course,
+          episode: opts.episode,
+          port: opts.port,
+          format: opts.format,
+          codec: opts.codec,
+          hardware: opts.hardware,
+          resolution: opts.resolution,
+          fps: opts.fps,
+          speed: opts.speed,
+          output: opts.output,
+          workers: opts.workers,
+          captureFormat: opts.captureFormat,
+          jpegQuality: opts.jpegQuality,
+        },
+        {
+          log: (line) => console.log(line),
+          isCancelled: () => cancelled,
+          onChrome: (c) => {
+            chrome = c;
+          },
+        }
+      );
+    } finally {
+      clearTimeout(timer);
+    }
+    if (cancelled) throw new Error("Render cancelled");
+    if (result.browserErrors?.length) {
+      throw new Error(`Browser reported ${result.browserErrors.length} error(s):\n${result.browserErrors.slice(0, 10).join("\n")}`);
+    }
+
+    const expectedFilename = resolveExpectedOutputFilename(result.savedFile || opts.output, opts.episode, result.ext || opts.format);
+    const outPath = path.join(epDir, expectedFilename);
+    if (!fs.existsSync(outPath)) throw new Error(`Expected output file missing on disk: ${outPath}`);
+    const stat = fs.statSync(outPath);
+    if (stat.size <= 0) throw new Error(`Output file is empty (0 bytes): ${outPath}`);
+
+    const elapsedSec = (Date.now() - startMs) / 1000;
+    const sizeMb = (stat.size / (1024 * 1024)).toFixed(2);
+    const speedup = result.durationSec > 0 ? (result.durationSec / elapsedSec).toFixed(2) : "N/A";
+    console.log(`[render] 100% Output saved: ${path.basename(outPath)} (${sizeMb} MB)`);
+    console.log(
+      `[render_video] SUCCESS: ${outPath} (${sizeMb} MB / ${stat.size} bytes, engine=hyperframes, format=${result.format}, codec=${opts.codec}, hw=${result.hardwareAcceleration}, res=${result.width}x${result.height}, fps=${result.fps}, speed=${opts.speed}x, frames=${result.frames}, workers=${result.workers}, duration=${result.durationSec}s, elapsed=${elapsedSec.toFixed(2)}s, speedup=${speedup}x)`
+    );
+  } finally {
+    process.off("SIGINT", onSigInt);
+    process.off("SIGTERM", onSigTerm);
+    if (process.stdin && !process.stdin.isTTY) process.stdin.off("data", onStdinData);
+  }
+}
+
 async function main() {
   const opts = parseArgs(process.argv.slice(2));
   if (opts.help) {
@@ -422,11 +562,25 @@ async function main() {
   if (!Number.isFinite(opts.timeoutMs) || opts.timeoutMs <= 0) {
     throw new Error(`Invalid --timeout-ms: ${opts.timeoutMs}`);
   }
+  if (!VALID_ENGINES.has(opts.engine)) {
+    throw new Error(`Invalid --engine: ${opts.engine}. Expected hyperframes or legacy.`);
+  }
+  if (!VALID_CAPTURE_FORMATS.has(opts.captureFormat)) {
+    throw new Error(`Invalid --capture-format: ${opts.captureFormat}. Expected jpeg or png.`);
+  }
+  if (opts.workers && (!Number.isInteger(opts.workers) || opts.workers < 1 || opts.workers > 8)) {
+    throw new Error(`Invalid --workers: ${opts.workers}. Expected 1..8.`);
+  }
 
   const epDir = path.join(WORKSPACE_ROOT, opts.course, "episodes", opts.episode);
   const scriptPath = path.join(epDir, "script.json");
   if (!fs.existsSync(scriptPath)) {
     throw new Error(`Episode script.json not found: ${scriptPath}`);
+  }
+
+  if (opts.engine === "hyperframes") {
+    await runHyperframesRender(opts, epDir);
+    return;
   }
 
   const chromePath = process.env.CHROME_PATH || DEFAULT_CHROME_PATH;

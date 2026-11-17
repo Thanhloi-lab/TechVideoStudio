@@ -1,0 +1,5 @@
+# Vendored third-party browser files are pinned by SHA-256 in
+# engine/public/vendor/vendor-manifest.json. Never rewrite their line endings
+# (core.autocrlf would turn LF into CRLF on Windows checkouts and break
+# `node engine/scripts/vendor_libs.mjs --verify-only`).
+engine/public/vendor/** -text

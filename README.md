@@ -77,8 +77,9 @@ Khởi chạy qua `engine/server.mjs` và đồng bộ real-time bằng Server-S
    - Khung **`📁 Video đã xuất (<N>)`** ngay dưới timeline trong Chi tiết bài học liệt kê toàn bộ file `.mp4`/`.webm` hiện có, hỗ trợ **`▶ Xem thử`** trực tiếp qua modal `<video>` trong app, **`✏️ Chọn tên`** (nạp lại tên file vào popover xuất), **`📋 Copy path`**, và **`🗑️ Xóa`** (`POST /api/episodes/video/delete`).
    - Tab **`🎬 Phân cảnh`** tích hợp hộp **`⏱️ Khớp nhịp Animation`** gắn với Playhead; tab **`🛠️ Sửa`** có form thêm nhanh yêu cầu sửa (tự bám theo cảnh đang xem, cho phép chọn đổi cảnh) và nút **`🔄 Gửi AI Sửa Kịch Bản`** để mở ngay `AiScriptModal`.
 
-### 1.6. Render Video Offline bằng Headless Chrome (`engine/render_video.mjs`)
-- Điều khiển Google Chrome qua Chrome DevTools Protocol (`WebSocket` native của Node.js) và `window.__STUDIO_RENDER_OFFLINE__` (WebCodecs VP9/H.264/HEVC với `MediaRecorder` fallback).
+### 1.6. Render Video bằng HyperFrames (`engine/render_video.mjs`)
+- **Engine mặc định: [HyperFrames](https://github.com/heygen-com/hyperframes)** — mỗi tập được biên dịch thành project HyperFrames chuẩn (`<COURSE>/episodes/<EP_ID>/hyperframes/index.html`, 7 template viết lại bằng DOM + GSAP, runtime chính thức `hyperframe.runtime.iife.js` vendor offline), sau đó Chrome headless seek từng frame theo giao thức HyperFrames và mã hoá bằng WebCodecs (H.264/HEVC/VP9 + AAC/Opus) — **không cần FFmpeg hay npm**. Chi tiết: [`engine/HYPERFRAMES_ENGINE.md`](engine/HYPERFRAMES_ENGINE.md).
+- Engine Canvas 2D cũ (`window.__STUDIO_RENDER_OFFLINE__`) vẫn dùng được qua `--engine legacy` hoặc lựa chọn **Engine render** trong popover **`🎬 Xuất Video ▾`**.
 - Tùy chọn độ phân giải (`720p`, `1080p`, `1440p`, `2160p`), tốc độ khung hình (`24`, `30`, `60` fps), định dạng (`mp4`, `webm`), tăng tốc (`1x`–`2x`), và chế độ tăng tốc phần cứng (`auto`, `gpu`, `cpu`).
 
 ### 1.7. Universal MCP Bridge (Stdio + Loopback HTTP `/mcp`)
@@ -189,10 +190,13 @@ python engine/tts_pipeline.py --list-profiles
 python engine/tts_pipeline.py --discover-voicestudio --json
 python engine/tts_pipeline.py --preview --profile edge-hoaimy --text "Xin chào" --out preview.mp3
 
-node engine/render_video.mjs --course <COURSE> --episode <EP_ID> --port 3030 --format mp4 --codec h264 --resolution 1080p --fps 60 --speed 1 --hardware auto [--output <TEN_FILE>]
+node engine/render_video.mjs --course <COURSE> --episode <EP_ID> --port 3030 --format mp4 --codec h264 --resolution 1080p --fps 60 --speed 1 --hardware auto [--output <TEN_FILE>] [--workers 1..8] [--engine hyperframes|legacy]
+node engine/render_video.mjs --course <COURSE> --episode <EP_ID> --compile-only   # chỉ sinh project HyperFrames
+node engine/hyperframes/snapshot.mjs --course <COURSE> --episode <EP_ID> --scene 0 --at 0.1,0.5,0.9 --check-determinism
 
-# Chạy bộ kiểm thử E2E + UI Headless Chrome (13 phần)
+# Chạy bộ kiểm thử E2E + UI Headless Chrome (13 phần) và bộ test engine HyperFrames
 node engine/test_ai_bridge_and_templates.mjs
+node engine/test_hyperframes.mjs
 ```
 
 ### 5.3. API AI & MCP Endpoints chính (`engine/server.mjs`)
@@ -251,8 +255,11 @@ TechVideoStudio/
 │   ├── worker_wait.mjs               # Long-poll chờ job 0-token cho studio-worker
 │   ├── state_cli.mjs                 # Quản lý state phân mảnh, revision queue & validate sơ đồ
 │   ├── tts_pipeline.py               # Tổng hợp giọng đọc đa track A/B, subtitles & khớp nhịp Lớp 1 (pure Python stdlib)
-│   ├── render_video.mjs              # Headless Chrome CDP video exporter
+│   ├── render_video.mjs              # CLI render video (mặc định HyperFrames, --engine legacy = Canvas 2D)
+│   ├── hyperframes/                  # Engine HyperFrames: compiler, 7 template DOM+GSAP, renderer CDP, snapshot
+│   ├── HYPERFRAMES_ENGINE.md         # Ghi chép thiết kế & vận hành engine HyperFrames
 │   ├── test_ai_bridge_and_templates.mjs  # Bộ kiểm thử E2E & Chrome UI 13 phần
+│   ├── test_hyperframes.mjs          # Bộ kiểm thử engine HyperFrames
 │   ├── voices.json                   # Danh mục profile giọng đọc
 │   ├── MOTION_SPEC.md                # Đặc tả motion engine V2
 │   ├── TTS_VOICE_SPEC.md             # Đặc tả tích hợp custom TTS provider

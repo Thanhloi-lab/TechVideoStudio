@@ -24,15 +24,20 @@ Ensure each target episode folder contains:
 
 ## Step 2: Automated Headless Batch Rendering (`render_video.mjs`)
 
-Use the pure-Node headless Chrome renderer (uses Chrome at `C:\Program Files\Google\Chrome\Application\chrome.exe` or `CHROME_PATH` env var + WebCodecs VP9/H.264 offline capture with `MediaRecorder` fallback; auto-starts `server.mjs` if port `3030` is not listening; never invokes unsigned `.exe` wrappers like `ffmpeg.exe`):
+Use the pure-Node headless Chrome renderer. The default engine is **HyperFrames** (see [`HYPERFRAMES_ENGINE.md`]({{WORKSPACE_ROOT_FILE_URI}}/engine/HYPERFRAMES_ENGINE.md)): the episode is compiled into a HyperFrames project (`<ep-slug>/hyperframes/index.html`, DOM + GSAP templates, official vendored `hyperframe.runtime.iife.js`), captured frame-by-frame through the HyperFrames seek protocol in headless Chrome (`C:\Program Files\Google\Chrome\Application\chrome.exe` or `CHROME_PATH`) and encoded with WebCodecs H.264/HEVC/VP9 + AAC/Opus. It auto-starts `server.mjs` if port `3030` is not listening and never invokes FFmpeg, npm or other unsigned `.exe` wrappers. `--engine legacy` keeps the previous Canvas 2D exporter:
 
 ```powershell
 node "{{WORKSPACE_ROOT}}/engine/state_cli.mjs" set --course <COURSE_CODE> --ep <ep-slug> --stage production --status rendering --owner "<agent>"
 node "{{WORKSPACE_ROOT}}/engine/render_video.mjs" --course <COURSE_CODE> --episode <ep-slug> --port 3030
 ```
-*(Optional: pass `--format mp4` or `--format webm`.)*
+*(Optional: `--format mp4|webm`, `--resolution 720p|1080p|1440p|2160p`, `--fps 24|30|60`, `--speed 1|1.25|1.5|2`, `--workers 1..8`, `--engine legacy`, `--compile-only`.)*
 
-`render_video.mjs` navigates headless Chrome to `http://localhost:3030/?course=<COURSE_CODE>&ep=<ep-slug>&view=player&headless=1`, runs `window.__STUDIO_RENDER_OFFLINE__`, uploads the video via `POST /api/save-video` into `{{WORKSPACE_ROOT}}/<COURSE_CODE>/episodes/<ep-slug>/<ep-slug>.webm` (or `.mp4`), verifies `size > 0`, and updates `state/<ep-slug>.json`.
+With the HyperFrames engine, `render_video.mjs` compiles `{{WORKSPACE_ROOT}}/<COURSE_CODE>/episodes/<ep-slug>/hyperframes/`, opens N isolated capture tabs + one WebCodecs encoder tab (`/public/hf-encoder.html`), uploads the video via `POST /api/save-video` into `{{WORKSPACE_ROOT}}/<COURSE_CODE>/episodes/<ep-slug>/<ep-slug>.mp4` (or `.webm`), verifies `size > 0` and zero console/page/build errors. Quick visual checks before a full render:
+
+```powershell
+node "{{WORKSPACE_ROOT}}/engine/hyperframes/snapshot.mjs" --course <COURSE_CODE> --episode <ep-slug> --scene <N> --at 0.1,0.5,0.9 --scale 0.5 --check-determinism
+node "{{WORKSPACE_ROOT}}/engine/hyperframes/verify_video.mjs" --course <COURSE_CODE> --episode <ep-slug> --file <ep-slug>.mp4 --frames 3,30
+```
 
 *(Alternative Web UI Flow: In Screen 3 Studio Player, users can click **`🎙️ Tạo Audio (TTS)`** or **`🎬 Tạo Audio & Render Video`** directly via `POST /api/jobs/run-production`, watching live SSE `job_update` progress without leaving the browser.)*
 

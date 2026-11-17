@@ -1,0 +1,202 @@
+/* Tech Video Studio × HyperFrames — shared composition styles (copied as lib/tvs-hf.css).
+   Frame: 1920x1080. Palette mirrors MOTION_TOKENS.paletteV2 (engine/src/motion/kernel.mjs). */
+
+:root {
+  --tvs-bg-top: #020a14;
+  --tvs-bg-mid: #060811;
+  --tvs-bg-bottom: #02060e;
+  --tvs-accent: #2a62ff;
+  --tvs-cyan: #10c0f0;
+  --tvs-glow: #90e0f0;
+  --tvs-gold: #f0c040;
+  --tvs-danger: #ef4444;
+  --tvs-danger-text: #f08070;
+  --tvs-warning: #f59e0b;
+  --tvs-success: #10b981;
+  --tvs-text: #f8fafc;
+  --tvs-text-2: #e2e8f0;
+  --tvs-muted: #94a3b8;
+  --tvs-panel: rgba(9, 17, 34, 0.85);
+  --tvs-panel-strong: rgba(15, 23, 42, 0.92);
+  --tvs-line: rgba(148, 163, 184, 0.24);
+  --tvs-font: "Be Vietnam Pro", Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
+  --tvs-mono: "JetBrains Mono", "Cascadia Code", "Cascadia Mono", Consolas, "Courier New", monospace;
+  --tvs-stage-left: 88px;
+  --tvs-stage-top: 128px;
+  --tvs-stage-width: 1744px;
+  --tvs-stage-height: 772px;
+}
+
+* { box-sizing: border-box; }
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 1920px;
+  height: 1080px;
+  overflow: hidden;
+  background: var(--tvs-bg-bottom);
+}
+
+#root {
+  position: relative;
+  width: 1920px;
+  height: 1080px;
+  overflow: hidden;
+  font-family: var(--tvs-font);
+  color: var(--tvs-text);
+  isolation: isolate;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: geometricPrecision;
+}
+
+/* ---------- Layer 0: ambient background ---------- */
+.tvs-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background:
+    radial-gradient(circle at 22% 18%, rgba(42, 98, 255, 0.11) 0, rgba(2, 10, 20, 0) 1056px),
+    radial-gradient(circle at 82% 80%, rgba(16, 192, 240, 0.08) 0, rgba(2, 6, 14, 0) 922px),
+    linear-gradient(118deg, var(--tvs-bg-top) 0%, var(--tvs-bg-mid) 55%, var(--tvs-bg-bottom) 100%);
+}
+.tvs-bg::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(148, 163, 184, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.045) 1px, transparent 1px);
+  background-size: 60px 60px;
+}
+#tvs-ambient { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+.tvs-bokeh { position: absolute; left: 0; top: 0; border-radius: 50%; }
+
+/* ---------- Layer 1: scenes ---------- */
+.tvs-scene { position: absolute; inset: 0; z-index: 10; }
+.tvs-scene-inner { position: absolute; inset: 0; transform-origin: 50% 50%; }
+.tvs-stage {
+  position: absolute;
+  left: var(--tvs-stage-left);
+  top: var(--tvs-stage-top);
+  width: var(--tvs-stage-width);
+  height: var(--tvs-stage-height);
+}
+.tvs-build-error {
+  position: absolute;
+  inset: 40% 10% auto;
+  padding: 24px 32px;
+  border: 2px dashed var(--tvs-danger);
+  border-radius: 16px;
+  color: #fecaca;
+  font: 600 26px/1.4 var(--tvs-font);
+  background: rgba(60, 10, 14, 0.7);
+}
+
+/* Top bar (y = 6..92) */
+.tvs-topbar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 6px;
+  height: 86px;
+  display: flex;
+  align-items: center;
+  gap: 26px;
+  padding: 0 48px;
+  background: rgba(2, 10, 20, 0.82);
+  border-bottom: 2px solid rgba(16, 192, 240, 0.2);
+}
+.tvs-topbar__pill {
+  flex: none;
+  height: 46px;
+  line-height: 42px;
+  padding: 0 22px;
+  border-radius: 23px;
+  border: 2px solid var(--tvs-cyan);
+  background: rgba(42, 98, 255, 0.2);
+  color: var(--tvs-glow);
+  font: 700 22px var(--tvs-font);
+  white-space: nowrap;
+}
+.tvs-topbar__title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: 800 30px var(--tvs-font);
+  color: #f8fafc;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tvs-topbar__badge { flex: none; font: 600 22px var(--tvs-font); color: var(--tvs-muted); white-space: nowrap; }
+
+/* ---------- Layer 2: sparkle FX ---------- */
+#tvs-fx { position: absolute; inset: 0; z-index: 40; pointer-events: none; }
+.tvs-sparkle { position: absolute; margin: -3px 0 0 -3px; border-radius: 1px; opacity: 0; visibility: hidden; }
+.tvs-sparkle--diamond { clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); }
+.tvs-sparkle-flash {
+  position: absolute;
+  width: 88px;
+  height: 88px;
+  margin: -44px 0 0 -44px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.85) 0, rgba(16, 192, 240, 0.55) 45%, rgba(16, 192, 240, 0) 70%);
+  opacity: 0;
+  visibility: hidden;
+}
+
+/* ---------- Layer 3: progress bar + subtitles ---------- */
+.tvs-progress { position: absolute; left: 0; top: 0; width: 1920px; height: 6px; z-index: 60; background: rgba(15, 23, 42, 0.55); }
+#tvs-progress-fill {
+  width: 100%;
+  height: 100%;
+  transform-origin: 0 50%;
+  transform: scaleX(0);
+  background: linear-gradient(90deg, var(--tvs-accent) 0%, var(--tvs-cyan) 70%, var(--tvs-glow) 100%);
+  box-shadow: 0 0 14px rgba(16, 192, 240, 0.75);
+}
+
+.tvs-subtitles { position: absolute; inset: 0; z-index: 50; pointer-events: none; }
+.tvs-subtitle {
+  position: absolute;
+  left: 130px;
+  right: 130px;
+  bottom: 57px; /* last 48px line centred at y≈999 (1080·(1−6%) − 16), like the legacy renderer */
+  display: flex;
+  justify-content: center;
+  text-align: center;
+}
+.tvs-subtitle__text {
+  display: inline-block;
+  max-width: 1660px;
+  font: 800 36px/48px var(--tvs-font);
+  color: #ffffff;
+  -webkit-text-stroke: 4px rgba(2, 6, 14, 0.78);
+  paint-order: stroke fill;
+  text-shadow: 0 3px 14px rgba(0, 0, 0, 0.96), 0 0 10px rgba(2, 6, 14, 0.9);
+}
+.tvs-accent { color: var(--tvs-cyan); text-shadow: 0 0 12px rgba(16, 192, 240, 0.45), 0 3px 14px rgba(0, 0, 0, 0.96); }
+
+/* ---------- Shared component primitives for scene builders ---------- */
+.tvs-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 38px;
+  padding: 0 18px;
+  border-radius: 19px;
+  border: 1.6px solid rgba(16, 192, 240, 0.55);
+  background: rgba(16, 192, 240, 0.14);
+  color: var(--tvs-glow);
+  font: 700 18px var(--tvs-font);
+  white-space: nowrap;
+}
+.tvs-card {
+  position: relative;
+  border-radius: 14px;
+  border: 1.5px solid var(--tvs-line);
+  background: var(--tvs-panel);
+}
+.tvs-mono { font-family: var(--tvs-mono); }
+.tvs-icon-glyph { display: inline-block; line-height: 1; }
+.tvs-hidden { opacity: 0; visibility: hidden; }

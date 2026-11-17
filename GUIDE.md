@@ -36,6 +36,8 @@ Khi người dùng yêu cầu làm theo `GUIDE.md`, Agent thực hiện tuần t
    node setup.mjs --check --json
    node engine/state_cli.mjs summary --course AWS
    node engine/test_ai_bridge_and_templates.mjs   # Chạy bộ test tự động 13 phần + Chrome UI
+   node engine/test_hyperframes.mjs               # Test engine render HyperFrames (compile, determinism 7 template, render MP4)
+   node engine/scripts/vendor_libs.mjs --verify-only   # Kiểm tra SHA-256 thư viện vendor (gồm runtime HyperFrames + GSAP)
    ```
    *(Nếu repo chưa có khóa học nào hoặc bạn tạo khóa mới, bỏ qua bước `state_cli.mjs`. Toàn bộ khóa học cục bộ `<COURSE>/`, `*.mp3`, `*.mp4`, adapter `.agents/`, `.claude/`, `.mcp.json` và file key/cache `engine/.ai_*.json`, `.env` đều đã được loại trừ trong `.gitignore`.)*
 
@@ -97,7 +99,7 @@ Mở terminal tại thư mục gốc của repo vừa clone và chạy:
 
 | Thành phần | Yêu cầu | Ghi chú |
 | :--- | :--- | :--- |
-| **Node.js** | `>= 22.0.0` | Không cần `npm install` (`engine/` dùng thuần built-in ESM; `render_video.mjs` cần `WebSocket` global từ Node 22+). |
+| **Node.js** | `>= 22.0.0` | Không cần `npm install` (`engine/` dùng thuần built-in ESM; `render_video.mjs` cần `WebSocket` global từ Node 22+). Engine render mặc định là HyperFrames (runtime JS vendor sẵn, không cần FFmpeg) — xem [`engine/HYPERFRAMES_ENGINE.md`](engine/HYPERFRAMES_ENGINE.md). |
 | **Python** | `>= 3.10` | Không cần `pip install` (`engine/tts_pipeline.py` dùng thuần standard library). Nếu máy dùng lệnh `python3`, đặt `PYTHON_BIN=python3` khi chạy `server.mjs`. |
 | **Google Chrome** | Có cài Chrome | Windows mặc định tìm `C:\Program Files\Google\Chrome\Application\chrome.exe`. Nếu cài chỗ khác hoặc trên macOS/Linux, đặt biến môi trường `CHROME_PATH`. |
 | **AI Provider (tùy chọn)** | 1 trong 9 kênh | Dùng **Antigravity Worker**, hoặc nhập API key trực tiếp trong Web Studio (`OpenAI`, `Anthropic`, `DeepSeek`, `Gemini`, `OpenRouter`), chạy local **Ollama / LM Studio**, hoặc dùng **Manual `$0` Web Prompt Pack** (không cần API key). |

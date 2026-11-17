@@ -8,8 +8,13 @@
  * strips remote sourceMappingURL hints, writes engine/public/vendor/vendor-manifest.json,
  * and verifies zero unresolved https://esm.sh URLs or missing static dependencies remain.
  *
+ * Also mirrors a small set of pinned, non-ESM "raw" browser scripts (HyperFrames runtime IIFE,
+ * GSAP UMD build) into engine/public/vendor/raw/... with SHA-256 pinning; these are copied into
+ * every generated HyperFrames composition (see engine/HYPERFRAMES_ENGINE.md).
+ *
  * Usage:
  *   node engine/scripts/vendor_libs.mjs
+ *   node engine/scripts/vendor_libs.mjs --raw-only
  *   node engine/scripts/vendor_libs.mjs --verify-only
  */
 
@@ -23,7 +28,33 @@ const __dirname = path.dirname(__filename);
 const ENGINE_DIR = path.resolve(__dirname, "..");
 const VENDOR_DIR = path.join(ENGINE_DIR, "public", "vendor");
 const ESM_ROOT_DIR = path.join(VENDOR_DIR, "esm");
+const RAW_ROOT_DIR = path.join(VENDOR_DIR, "raw");
 const MANIFEST_PATH = path.join(VENDOR_DIR, "vendor-manifest.json");
+
+/**
+ * Pinned raw (non-module) browser files. `sha256` pins the exact bytes: a mismatch on download
+ * aborts vendoring, so a tampered or silently re-published CDN file can never land on disk.
+ */
+export const RAW_SPECS = Object.freeze([
+  Object.freeze({
+    key: "@hyperframes/core/runtime-iife",
+    url: "https://cdn.jsdelivr.net/npm/@hyperframes/core@0.9.59/dist/hyperframe.runtime.iife.js",
+    file: "raw/@hyperframes/core@0.9.59/hyperframe.runtime.iife.js",
+    sha256: "73bf2dda8476c060c49e37754736b20068b99580b654d5fe44f5918fc63eeaa8",
+  }),
+  Object.freeze({
+    key: "@hyperframes/core/LICENSE",
+    url: "https://cdn.jsdelivr.net/npm/@hyperframes/core@0.9.59/LICENSE",
+    file: "raw/@hyperframes/core@0.9.59/LICENSE",
+    sha256: "4259155fb06f127687ee7b0a8a3682d45132db0f2da26cbc0b7a2d1e796436b8",
+  }),
+  Object.freeze({
+    key: "gsap/umd",
+    url: "https://cdn.jsdelivr.net/npm/gsap@3.15.1/dist/gsap.min.js",
+    file: "raw/gsap@3.15.1/gsap.min.js",
+    sha256: "3d1bea374ab1b703cc5c4105358eec63c4465efdc573931dc116e34a0a190c1b",
+  }),
+]);
 
 const CHROME_USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
@@ -475,6 +506,85 @@ function walkFiles(dir, out = []) {
   return out;
 }
 
+async function fetchBytesWithRetry(url, retries = 2) {
+  let lastErr = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await fetch(url, { headers: { "User-Agent": CHROME_USER_AGENT }, redirect: "follow" });
+      if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
+      return Buffer.from(await res.arrayBuffer());
+    } catch (err) {
+      lastErr = err;
+      if (attempt < retries) await new Promise((r) => setTimeout(r, 400 * (attempt + 1)));
+    }
+  }
+  throw new Error(`Failed to fetch ${url}: ${lastErr?.message || lastErr}`);
+}
+
+/**
+ * Download every RAW_SPECS entry into engine/public/vendor/raw/... and record them in the
+ * manifest's `raw` section. Pinned hashes are enforced; unpinned entries print their hash so it
+ * can be pinned in RAW_SPECS.
+ */
+export async function vendorRawFiles() {
+  const raw = {};
+  for (const spec of RAW_SPECS) {
+    const buf = await fetchBytesWithRetry(spec.url);
+    const hash = sha256Hex(buf);
+    if (spec.sha256 && spec.sha256 !== hash) {
+      throw new Error(`SHA-256 mismatch for raw "${spec.key}": expected ${spec.sha256}, got ${hash}`);
+    }
+    if (!spec.sha256) {
+      console.warn(`[vendor_libs] raw "${spec.key}" is not pinned yet; sha256=${hash}`);
+    }
+    const absOut = path.join(VENDOR_DIR, spec.file);
+    fs.mkdirSync(path.dirname(absOut), { recursive: true });
+    fs.writeFileSync(absOut, buf);
+    raw[spec.key] = {
+      path: `/vendor/${spec.file}`,
+      file: spec.file,
+      sha256: hash,
+      bytes: buf.length,
+      sourceUrl: spec.url,
+    };
+  }
+  const manifest = fs.existsSync(MANIFEST_PATH)
+    ? JSON.parse(fs.readFileSync(MANIFEST_PATH, "utf-8"))
+    : { version: 1, modules: {}, importMap: {} };
+  manifest.raw = raw;
+  fs.writeFileSync(MANIFEST_PATH, JSON.stringify(manifest, null, 2) + "\n", "utf-8");
+  return raw;
+}
+
+/** Resolve the absolute on-disk path of a vendored raw file by its RAW_SPECS key. */
+export function resolveRawVendorFile(key) {
+  const spec = RAW_SPECS.find((s) => s.key === key);
+  if (!spec) throw new Error(`Unknown raw vendor key: ${key}`);
+  return path.join(VENDOR_DIR, spec.file);
+}
+
+function verifyRawFiles(manifest) {
+  const errors = [];
+  for (const spec of RAW_SPECS) {
+    const info = manifest.raw?.[spec.key];
+    const absPath = path.join(VENDOR_DIR, spec.file);
+    if (!info) {
+      errors.push(`Raw "${spec.key}" missing from manifest (run --raw-only)`);
+      continue;
+    }
+    if (!fs.existsSync(absPath)) {
+      errors.push(`Missing raw file for "${spec.key}": ${spec.file}`);
+      continue;
+    }
+    const actual = sha256Hex(fs.readFileSync(absPath));
+    const expected = spec.sha256 || info.sha256;
+    if (actual !== expected) {
+      errors.push(`SHA-256 mismatch for raw "${spec.key}": expected ${expected}, got ${actual}`);
+    }
+  }
+  return errors;
+}
+
 export function verifyVendoredFiles() {
   if (!fs.existsSync(MANIFEST_PATH)) {
     throw new Error(`Missing manifest: ${MANIFEST_PATH}`);
@@ -542,12 +652,17 @@ export function verifyVendoredFiles() {
   if (manifestErrors.length > 0) {
     throw new Error(`Manifest integrity errors:\n${manifestErrors.join("\n")}`);
   }
+  const rawErrors = verifyRawFiles(manifest);
+  if (rawErrors.length > 0) {
+    throw new Error(`Raw vendor integrity errors:\n${rawErrors.join("\n")}`);
+  }
 
   const totalBytes = esmFiles.reduce((sum, f) => sum + fs.statSync(f).size, 0);
   return {
     fileCount: esmFiles.length,
     totalBytes,
     moduleCount: Object.keys(manifest.modules || {}).length,
+    rawCount: RAW_SPECS.length,
   };
 }
 
@@ -633,6 +748,7 @@ async function runVendorBuild() {
   };
 
   fs.writeFileSync(MANIFEST_PATH, JSON.stringify(manifest, null, 2) + "\n", "utf-8");
+  await vendorRawFiles();
 
   const verification = verifyVendoredFiles();
   const elapsedSec = ((Date.now() - startedAt) / 1000).toFixed(2);
@@ -648,11 +764,19 @@ async function runVendorBuild() {
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === path.resolve(__filename);
 if (isMain) {
   const verifyOnly = process.argv.includes("--verify-only");
+  const rawOnly = process.argv.includes("--raw-only");
   if (verifyOnly) {
     const res = verifyVendoredFiles();
     console.log(
-      `[vendor_libs] Verification PASSED: ${res.fileCount} files, ${(res.totalBytes / 1024 / 1024).toFixed(2)} MB, ${res.moduleCount} manifest modules.`
+      `[vendor_libs] Verification PASSED: ${res.fileCount} files, ${(res.totalBytes / 1024 / 1024).toFixed(2)} MB, ${res.moduleCount} manifest modules, ${res.rawCount} raw files.`
     );
+  } else if (rawOnly) {
+    const raw = await vendorRawFiles();
+    for (const [key, info] of Object.entries(raw)) {
+      console.log(`[vendor_libs] raw ${key} -> ${info.file} (${info.bytes} bytes, sha256=${info.sha256})`);
+    }
+    const res = verifyVendoredFiles();
+    console.log(`[vendor_libs] Verification PASSED (${res.rawCount} raw files).`);
   } else {
     await runVendorBuild();
   }

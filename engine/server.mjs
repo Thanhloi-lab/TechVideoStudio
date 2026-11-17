@@ -1916,6 +1916,11 @@ const VALID_VIDEO_FORMATS = new Set(["mp4", "webm"]);
 const VALID_VIDEO_CODECS = new Set(["h264", "hevc", "vp9"]);
 const VALID_HARDWARE_MODES = new Set(["auto", "gpu", "cpu"]);
 const VALID_RESOLUTIONS = new Set(["720p", "1080p", "1440p", "2160p"]);
+// Render engines (engine/render_video.mjs --engine): HyperFrames composition (default) or legacy Canvas 2D.
+const VALID_RENDER_ENGINES = new Set(["hyperframes", "legacy"]);
+const DEFAULT_RENDER_ENGINE = VALID_RENDER_ENGINES.has(String(process.env.TVS_RENDER_ENGINE || "").toLowerCase())
+  ? String(process.env.TVS_RENDER_ENGINE).toLowerCase()
+  : "hyperframes";
 const VALID_FPS = new Set([24, 30, 60]);
 const VALID_SPEEDS = new Set([1, 1.25, 1.5, 2]);
 
@@ -1953,6 +1958,7 @@ function sanitizeJobForApi(job) {
     resolution: job.resolution,
     fps: job.fps,
     speed: job.speed,
+    engine: job.engine || DEFAULT_RENDER_ENGINE,
     status: job.status,
     step: job.step,
     progress: job.progress,
@@ -2031,9 +2037,12 @@ function resolveEpisodeTitle(courseDir, epId, scriptJson = null) {
 }
 
 function renderTimeoutForJob(job) {
-  if (job.resolution === "2160p") return 1_800_000;
-  if (job.resolution === "1440p") return 1_200_000;
-  return 900_000;
+  // HyperFrames captures every frame through the DOM (seek → screenshot → WebCodecs), which is
+  // several times slower than the legacy Canvas 2D path, so it gets a 4x safety margin.
+  const factor = (job.engine || DEFAULT_RENDER_ENGINE) === "legacy" ? 1 : 4;
+  if (job.resolution === "2160p") return 1_800_000 * factor;
+  if (job.resolution === "1440p") return 1_200_000 * factor;
+  return 900_000 * factor;
 }
 
 function mutateEpisodeStateForJob(course, episode, mutator, eventPayload = null) {
@@ -2309,7 +2318,7 @@ async function executeProductionJob(job) {
     );
     emitJob(
       { status: "running", step: "rendering", progress: renderStartProgress },
-      `${job.mode === "render_only" ? "Starting" : "TTS complete. Starting"} offline video render (${job.resolution} @ ${job.fps}fps, ${job.speed}x, ${job.format}/${job.codec}, hw=${job.hardware})...`
+      `${job.mode === "render_only" ? "Starting" : "TTS complete. Starting"} offline video render [${job.engine || DEFAULT_RENDER_ENGINE}] (${job.resolution} @ ${job.fps}fps, ${job.speed}x, ${job.format}/${job.codec}, hw=${job.hardware})...`
     );
 
     const renderTimeoutMs = renderTimeoutForJob(job);
@@ -2317,6 +2326,8 @@ async function executeProductionJob(job) {
       job.output_filename || `${job.output_stem || job.episode}.${job.format}`;
     const renderArgs = [
       RENDER_SCRIPT_PATH,
+      "--engine",
+      job.engine || DEFAULT_RENDER_ENGINE,
       "--course",
       job.course,
       "--episode",
@@ -2526,6 +2537,7 @@ function validateRenderOptions(raw = {}, { requireScriptCheck = false } = {}) {
   const speed = raw.speed !== undefined && raw.speed !== null && raw.speed !== "" ? Number(raw.speed) : 1;
   const rawOutputName = raw.output_filename ?? raw.output_name ?? "";
   const episodeFallback = raw.episode ? String(raw.episode).trim() : "";
+  const engine = String(raw.engine || DEFAULT_RENDER_ENGINE).trim().toLowerCase();
 
   if (!VALID_JOB_MODES.has(mode)) {
     return { ok: false, status: 400, error: 'mode must be "tts_and_render", "tts_only", or "render_only"' };
@@ -2571,6 +2583,9 @@ function validateRenderOptions(raw = {}, { requireScriptCheck = false } = {}) {
   if (!VALID_SPEEDS.has(speed)) {
     return { ok: false, status: 400, error: "speed must be 1, 1.25, 1.5, or 2" };
   }
+  if (!VALID_RENDER_ENGINES.has(engine)) {
+    return { ok: false, status: 400, error: 'engine must be "hyperframes" or "legacy"' };
+  }
 
   let output_stem = null;
   let output_filename = null;
@@ -2605,6 +2620,7 @@ function validateRenderOptions(raw = {}, { requireScriptCheck = false } = {}) {
       resolution,
       fps,
       speed,
+      engine,
       output_stem,
       output_filename,
     },
@@ -2636,6 +2652,7 @@ function enqueueProductionJob(params = {}) {
     resolution,
     fps,
     speed,
+    engine,
     output_stem,
     output_filename,
   } = optsRes.options;
@@ -2710,6 +2727,7 @@ function enqueueProductionJob(params = {}) {
     resolution,
     fps,
     speed,
+    engine,
     output_stem: resolvedStem,
     output_filename: resolvedOutputFilename,
     status: "queued",

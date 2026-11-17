@@ -289,6 +289,9 @@ export const TEMPLATE_SPECS = Object.freeze({
         ],
         correct_key: "string (must match one of options[].key)",
         explanation: "string (optional)",
+        reveal_at_progress:
+          "number in [0..1] (optional; when the correct answer is revealed on video — HyperFrames engine default ≈ show_at_progress + 42% of the remaining time)",
+        tag: "string (optional quiz header tag; defaults to the exam code in `badge`)",
       },
     },
   }),

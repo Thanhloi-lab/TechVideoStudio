@@ -22,11 +22,18 @@ const h = React.createElement;
 const RENDER_PREFS_STORAGE_KEY = "videomaker.renderPrefs.v1";
 
 const DEFAULT_RENDER_PREFS = {
+  engine: "hyperframes",
   hardware: "auto",
   formatCodec: "mp4:h264",
   resolution: "1080p",
   fps: 60,
 };
+
+// Render engines (engine/render_video.mjs --engine). See engine/HYPERFRAMES_ENGINE.md.
+const ENGINE_OPTIONS = [
+  { id: "hyperframes", label: "HyperFrames (DOM + GSAP)", short: "HyperFrames" },
+  { id: "legacy", label: "Canvas 2D cũ (nhanh)", short: "Canvas" },
+];
 
 const HARDWARE_OPTIONS = [
   { id: "auto", label: "Auto (Ưu tiên GPU)", short: "Auto" },
@@ -62,6 +69,7 @@ function splitFormatCodec(formatCodec) {
 
 function applyRenderPrefsWithGuardrails(prev, patch) {
   const base = {
+    engine: ENGINE_OPTIONS.some((o) => o.id === prev?.engine) ? prev.engine : DEFAULT_RENDER_PREFS.engine,
     hardware: HARDWARE_OPTIONS.some((o) => o.id === prev?.hardware) ? prev.hardware : DEFAULT_RENDER_PREFS.hardware,
     formatCodec: FORMAT_CODEC_OPTIONS.some((o) => o.id === prev?.formatCodec)
       ? prev.formatCodec
@@ -72,6 +80,8 @@ function applyRenderPrefsWithGuardrails(prev, patch) {
     fps: FPS_OPTIONS.some((o) => o.id === Number(prev?.fps)) ? Number(prev.fps) : DEFAULT_RENDER_PREFS.fps,
   };
 
+  const engine =
+    patch.engine !== undefined && ENGINE_OPTIONS.some((o) => o.id === patch.engine) ? patch.engine : base.engine;
   let hardware = patch.hardware !== undefined ? patch.hardware : base.hardware;
   let formatCodec = patch.formatCodec !== undefined ? patch.formatCodec : base.formatCodec;
   const resolution =
@@ -113,7 +123,7 @@ function applyRenderPrefsWithGuardrails(prev, patch) {
   }
 
   return {
-    prefs: { hardware, formatCodec, resolution, fps },
+    prefs: { engine, hardware, formatCodec, resolution, fps },
     note,
   };
 }
@@ -133,7 +143,8 @@ function formatRenderPrefsPill(prefs, speed) {
   const resShort = RESOLUTION_OPTIONS.find((r) => r.id === prefs.resolution)?.short || prefs.resolution;
   const hwShort = HARDWARE_OPTIONS.find((w) => w.id === prefs.hardware)?.short || prefs.hardware;
   const fmtShort = splitFormatCodec(prefs.formatCodec).short;
-  return `${resShort} · ${prefs.fps}fps · ${speed}x · ${hwShort} · ${fmtShort}`;
+  const engineShort = ENGINE_OPTIONS.find((e) => e.id === prefs.engine)?.short || "HyperFrames";
+  return `${engineShort} · ${resShort} · ${prefs.fps}fps · ${speed}x · ${hwShort} · ${fmtShort}`;
 }
 
 function formatJobModeTitle(mode) {
@@ -1494,6 +1505,7 @@ function StudioApp() {
       resolution,
       fps,
       speed,
+      engine,
       output_filename,
     }) => {
       try {
@@ -1523,6 +1535,7 @@ function StudioApp() {
           body.resolution = resolvedResolution;
           body.fps = resolvedFps;
           body.speed = resolvedSpeed;
+          body.engine = engine || renderPrefs.engine || DEFAULT_RENDER_PREFS.engine;
           if (output_filename) {
             body.output_filename = output_filename;
           }
@@ -1581,6 +1594,7 @@ function StudioApp() {
         resolution: renderPrefs.resolution,
         fps: renderPrefs.fps,
         speed: playbackRate,
+        engine: renderPrefs.engine,
         output_filename: resolvedFilename,
       });
     } catch {
@@ -2323,6 +2337,32 @@ function StudioApp() {
                     "span",
                     null,
                     "🎙️ Tạo lại Audio (TTS) cho giọng hiện tại trước khi xuất"
+                  )
+                ),
+
+                h(
+                  "div",
+                  { className: "render-pop-group" },
+                  h("div", { className: "render-pop-label" }, "Engine render"),
+                  h(
+                    "div",
+                    { className: "render-pills-grid cols-2" },
+                    ...ENGINE_OPTIONS.map((opt) =>
+                      h(
+                        "button",
+                        {
+                          key: opt.id,
+                          type: "button",
+                          className: `render-opt-pill ${renderPrefs.engine === opt.id ? "is-selected" : ""}`,
+                          onClick: () => updateRenderPrefs({ engine: opt.id }),
+                          title:
+                            opt.id === "hyperframes"
+                              ? "Biên dịch tập thành composition HyperFrames (HTML + GSAP) rồi render deterministic qua Chrome + WebCodecs"
+                              : "Engine Canvas 2D cũ (window.__STUDIO_RENDER_OFFLINE__), giữ làm fallback",
+                        },
+                        opt.label
+                      )
+                    )
                   )
                 ),
 

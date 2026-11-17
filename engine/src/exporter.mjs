@@ -144,8 +144,8 @@ function drawSceneFrame(
 
 const LOGICAL_WIDTH = 1920;
 const LOGICAL_HEIGHT = 1080;
-const EXPORT_AUDIO_SAMPLE_RATE = 48_000;
-const EXPORT_AUDIO_CHANNELS = 2;
+export const EXPORT_AUDIO_SAMPLE_RATE = 48_000;
+export const EXPORT_AUDIO_CHANNELS = 2;
 const EXPORT_AUDIO_BITRATE = 128_000;
 
 export const RESOLUTION_PRESETS = Object.freeze({
@@ -510,7 +510,7 @@ function createInitialFxState(W, H) {
   };
 }
 
-async function loadMuxerModule(format) {
+export async function loadMuxerModule(format) {
   if (format === "mp4") {
     try {
       return await import("mp4-muxer");
@@ -801,7 +801,7 @@ export function resolveOutputFilename(rawName, episodeId, actualExt = "webm") {
   return `${stem}.${safeExt}`;
 }
 
-async function saveVideoToServer(courseId, episodeId, ext, blob, mimeType, rawFilename) {
+export async function saveVideoToServer(courseId, episodeId, ext, blob, mimeType, rawFilename) {
   const safeExt = ext === "mp4" ? "mp4" : "webm";
   const resolvedMime = mimeType || (safeExt === "mp4" ? "video/mp4" : "video/webm");
   const filename = resolveOutputFilename(rawFilename, episodeId, safeExt);

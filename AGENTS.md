@@ -87,9 +87,12 @@ Work is split into three focused conversation roles connected by `<COURSE>/state
    python "engine/tts_pipeline.py" --episode "<COURSE>/episodes/<EP_ID>/script.json" --course "<COURSE>/course.json"
    node "engine/state_cli.mjs" set --course <COURSE> --ep <EP_ID> --stage production --status rendering --tts-done true
    ```
-3. Render the 1920x1080 video offline via headless Chrome (`WebCodecs` + `MediaRecorder` fallback, modular Canvas 2D templates in `engine/src/canvas_templates/*.mjs` with `tokyo-night` syntax highlighting, and offline ESM vendoring in `engine/public/vendor/esm/` via `node "engine/scripts/vendor_libs.mjs"` + `engine/public/styles.css`):
+3. Render the video offline with the **HyperFrames engine** (default; full design in [`engine/HYPERFRAMES_ENGINE.md`](engine/HYPERFRAMES_ENGINE.md)): the episode is compiled into a standard [HyperFrames](https://github.com/heygen-com/hyperframes) project (`<COURSE>/episodes/<EP_ID>/hyperframes/index.html`, 7 DOM + GSAP templates in `engine/hyperframes/runtime/scenes/*.mjs`, official `hyperframe.runtime.iife.js` vendored in `engine/public/vendor/raw/`), then captured frame-by-frame in headless Chrome through the HyperFrames seek protocol and encoded with WebCodecs (no FFmpeg, no npm). The previous Canvas 2D exporter stays available via `--engine legacy`:
    ```powershell
-   node "engine/render_video.mjs" --course <COURSE> --episode <EP_ID> [--port 3030] [--format webm|mp4]
+   node "engine/render_video.mjs" --course <COURSE> --episode <EP_ID> [--port 3030] [--format webm|mp4] [--resolution 720p|1080p|1440p|2160p] [--fps 24|30|60] [--workers 1..8]
+   node "engine/render_video.mjs" --course <COURSE> --episode <EP_ID> --compile-only          # build the HyperFrames project only
+   node "engine/render_video.mjs" --course <COURSE> --episode <EP_ID> --engine legacy        # old Canvas 2D path
+   node "engine/hyperframes/snapshot.mjs" --course <COURSE> --episode <EP_ID> --scene <N> --at 0.1,0.5,0.9 --check-determinism
    ```
 4. Verify visually in headless Chrome on `http://localhost:3030/?course=<COURSE>&ep=<EP_ID>&view=player` (0 console/page errors, non-empty video file on disk), then finalize state (which clears `production.stale`):
    ```powershell
@@ -153,3 +156,4 @@ node "engine/server.mjs"
 - On Windows Application Control environments, unsigned `.exe` wrappers (`pip.exe`, `esbuild.exe`, `ffmpeg.exe`) are blocked.
 - **Allowed runtimes only:** `python` (pure Python standard library for `tts_pipeline.py`), `node` (pure Node.js ES modules for `server.mjs`, `state_cli.mjs`, `render_video.mjs`), and Google Chrome (`C:\Program Files\Google\Chrome\Application\chrome.exe` or `CHROME_PATH` env var).
 - Never install npm/pip dependencies or run `ffmpeg.exe` / unsigned `.exe` tools. For integrating custom TTS engines, follow [`engine/TTS_VOICE_SPEC.md`](engine/TTS_VOICE_SPEC.md).
+- HyperFrames is used **without** its npm CLI: only its browser runtime file (`@hyperframes/core` `hyperframe.runtime.iife.js`) and the GSAP UMD build are vendored as plain JS, SHA-256 pinned in `engine/scripts/vendor_libs.mjs` (`node "engine/scripts/vendor_libs.mjs" --raw-only` / `--verify-only`). Do not run `npx hyperframes render` here (it needs FFmpeg + `esbuild.exe`); see `engine/HYPERFRAMES_ENGINE.md` §10 for machines where that is allowed.
