@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <defs>
+    <linearGradient id="redisTop" x1="20" y1="16" x2="100" y2="58" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FF5A4E"/>
+      <stop offset="100%" stop-color="#DC382D"/>
+    </linearGradient>
+    <linearGradient id="redisMid" x1="16" y1="45" x2="104" y2="82" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#DC382D"/>
+      <stop offset="100%" stop-color="#A41E11"/>
+    </linearGradient>
+    <linearGradient id="redisBot" x1="16" y1="68" x2="104" y2="104" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#B91C1C"/>
+      <stop offset="100%" stop-color="#7F1D1D"/>
+    </linearGradient>
+    <filter id="redisGlow" x="-25%" y="-25%" width="150%" height="150%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <!-- Soft red aura -->
+  <ellipse cx="60" cy="68" rx="44" ry="30" fill="#EF4444" fill-opacity="0.18" filter="url(#redisGlow)"/>
+  <!-- Bottom layer -->
+  <path d="M16 74 L60 93 L104 74 L104 86 L60 105 L16 86 Z" fill="url(#redisBot)"/>
+  <path d="M16 74 L60 55 L104 74 L60 93 Z" fill="#C82319"/>
+  <!-- Middle layer -->
+  <path d="M16 56 L60 75 L104 56 L104 68 L60 87 L16 68 Z" fill="url(#redisMid)"/>
+  <path d="M16 56 L60 37 L104 56 L60 75 Z" fill="#D92D20"/>
+  <!-- Top layer -->
+  <path d="M16 37 L60 56 L104 37 L104 49 L60 68 L16 49 Z" fill="#B91C1C"/>
+  <path d="M16 37 L60 18 L104 37 L60 56 Z" fill="url(#redisTop)" stroke="#FCA5A5" stroke-opacity="0.45" stroke-width="1"/>
+  <!-- Official Redis shapes on top face -->
+  <!-- Circle (left) -->
+  <ellipse cx="38" cy="37" rx="7.5" ry="4.4" fill="#FFFFFF"/>
+  <!-- Star (top) -->
+  <polygon points="60,23 62.6,27.5 68,28.1 63.8,31.2 65.2,35.6 60,33.1 54.8,35.6 56.2,31.2 52,28.1 57.4,27.5" fill="#FFFFFF"/>
+  <!-- Square (right) -->
+  <polygon points="82,31 90,35.5 82,40 74,35.5" fill="#FFFFFF"/>
+  <!-- Triangle (bottom) -->
+  <polygon points="60,40 67.5,45.5 52.5,46" fill="#FFFFFF"/>
+</svg>

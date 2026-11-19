@@ -39,13 +39,15 @@ When no job is currently queued:
 ### Step C — Execute Claimed Scripting Job
 When awakened with a queued job (or `job_id`):
 1. **Claim:** Call `studio_claim_ai_job({ worker_id: "argon-worker-1", job_id, model: "Gemini 4 Argon" })`.
-2. **Fetch Context:** Call `studio_get_context({ course: job.course, episode_ids: job.episode_ids })` to read `course.json`, `curriculum.md`, `open_revisions`, existing scripts/notes, `job.rewrite_notes` / `job.rewrite_note`, and the `7` supported `visual_type` templates. If rewriting an existing script, preserve working structure/scenes unless the rewrite note or open revisions require changing them.
+2. **Fetch Context:** Call `studio_get_context({ course: job.course, episode_ids: job.episode_ids })` to read `course.json`, `curriculum.md`, `open_revisions`, `available_svgs` (rich SVG catalog in `engine/assets/svg/`), existing scripts/notes, `job.rewrite_notes` / `job.rewrite_note`, and the `7` supported `visual_type` templates. If rewriting an existing script, preserve working structure/scenes unless the rewrite note or open revisions require changing them.
 3. **For each `episode_id` in `job.episode_ids`:**
    - Report progress: `studio_report_ai_progress({ job_id, worker_id, episode_id, status: "in_progress", progress: ..., message: "..." })`.
+   - **SVG Asset Check:** Inspect `available_svgs` from context. If an `architecture` node needs a visual technology illustration that is not yet in `engine/assets/svg/catalog.json`, search/create a crisp dark-theme `<id>.svg` in `engine/assets/svg/` and register it in `catalog.json` before referencing `svg: "<id>"` in `script.json`.
    - Author the 4-part Vietnamese tutorial `script.json` (`problem`, `architecture`, `setup`, `exam_tips`) + structured `notes.md`:
      - Follow all rules in `episode-producer` skill and `AGENTS.md`.
+     - Write `narration` sentences in the exact chronological order of visual steps and set `cue_sentence` (1-based sentence index) + `cue_text` on every step/card/milestone/quiz so audio and components sync 1:1 automatically.
      - Choose the sharpest visual templates among all **7 supported types** (SSOT schema in `engine/src/template_schema.mjs` & `studio://templates/schema`):
-       - `architecture` (with `zones[]`, clean `routing: "auto"`, and `layout_mode: "auto"` to omit manual `x, y` via Zero-LLM Layered DAG Auto-Layout — or keep explicit `x, y`)
+       - `architecture` (with `zones[]`, `node.svg` rich illustrations + fallback `node.icon`, clean `routing: "auto"`, and `layout_mode: "auto"` to omit manual `x, y` via Zero-LLM Layered DAG Auto-Layout — or keep explicit `x, y`)
        - `console_setup`
        - `code_cli` (supports `layout: "split" | "code" | "code_only" | "terminal"`, `code_override` / `laser_scan`, and Canvas 2D `tokyo-night` syntax highlighting)
        - `exam_tips`
@@ -56,6 +58,7 @@ When awakened with a queued job (or `job_id`):
    - *(Built-in AI jobs in `engine/ai/runner.mjs` / `queue_broker.mjs` also support 2-Pass Storyboard->Compiler generation via `mode: "auto" | "two_pass" | "single_pass" | "storyboard_only"`, `compiler_provider_id`/`compiler_model`, deterministic `normalizeCompiledScript`, and scene-level self-repair `repairInvalidScenes`.)*
    - Submit atomically: `studio_submit_episode_script({ job_id, worker_id, course: job.course, episode_id, script_json, notes_md, summary_note })`. *(Note: If the episode previously had generated audio/video, `studio_submit_episode_script` automatically marks `production.stale = true` so the Video Factory knows to re-synthesize/re-render.)*
      *(For very large scripts, you may also write `<COURSE>/episodes/<ep-id>/script.json` and `notes.md` to disk with `write_file` and call `studio_submit_episode_script` omitting `script_json` so the server validates & promotes the disk files cleanly.)*
+   - **Auto-Synthesize TTS & Exact Cue Sync (if local TTS is reachable):** Probe `python "C:\PersonalProject\TechVideoStudio\engine\tts_pipeline.py" --discover-voicestudio --json`; if `reachable: true` (e.g. VieNeu-TTS running on `:8000`), automatically run `python "C:\PersonalProject\TechVideoStudio\engine\tts_pipeline.py" --episode "C:\PersonalProject\TechVideoStudio\<COURSE>\episodes\<ep-id>\script.json" --course "C:\PersonalProject\TechVideoStudio\<COURSE>\course.json" --json` and `node "C:\PersonalProject\TechVideoStudio\engine\state_cli.mjs" sync --course <COURSE>` so audio, exact sentence subtitles, and aligned animation timings are immediately ready for playback/export!
 4. **Complete:** Once every episode in `job.episode_ids` is submitted (`script_ready`), call `studio_complete_ai_job({ job_id, worker_id, summary })`. (`server.mjs` only enqueues TTS/Render if the user explicitly enabled `auto_produce` on the job.)
 5. If an unrecoverable error occurs, call `studio_fail_ai_job({ job_id, worker_id, error })`.
 6. **Return immediately to Step A** so the Worker seamlessly checks the next queued job or goes back to zero-token standby!

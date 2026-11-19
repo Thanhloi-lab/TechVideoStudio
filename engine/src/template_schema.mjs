@@ -10,6 +10,19 @@ export const VALID_SCENE_PARTS = Object.freeze([
   "exam_tips",
 ]);
 
+export const VALID_VISUAL_JOBS = Object.freeze([
+  "Proof",
+  "Mechanism",
+  "Consequence",
+  "Action",
+  "Transition",
+]);
+
+export const VALID_WORLD_THEMES = Object.freeze([
+  "dark",
+  "light",
+]);
+
 export const VALID_ZONE_ROLES = Object.freeze([
   "client",
   "network",
@@ -160,6 +173,7 @@ export const TEMPLATE_SPECS = Object.freeze({
           label: "string (required)",
           sublabel: "string (optional)",
           icon: VALID_ICONS.join(" | "),
+          svg: "string (optional rich SVG asset id from engine/assets/svg/catalog.json, e.g. 'redis-stack', 'server-rack', 'ram-stick', 'ssd-disk', 'postgres')",
           tone: VALID_TONES.join(" | "),
           x: "number 0..100 (optional when layout_mode='auto' or omitted for auto-layout)",
           y: "number 0..100 (optional when layout_mode='auto' or omitted for auto-layout)",
@@ -185,6 +199,8 @@ export const TEMPLATE_SPECS = Object.freeze({
           active_edges: "string[] (each must match existing edge.id)",
           badge_text: "string (optional step callout banner)",
           packet_label: "string (optional moving packet pill)",
+          cue_sentence: "number (optional 1-based sentence index in scene.narration for exact TTS sync)",
+          cue_text: "string (optional exact spoken phrase in scene.narration for TTS sync)",
           camera_focus: "{ x: 0..100, y: 0..100, zoom: 1.0..1.25 } (optional V2)",
         },
       ],
@@ -415,7 +431,17 @@ export function buildTemplatesSchemaDoc() {
     supported_visual_types: [...SUPPORTED_VISUAL_TYPES],
     scene_metadata: {
       required: ["id", "part", "title", "visual_type", "narration", "visual_data"],
-      optional: ["part_label", "key_points", "highlight_words"],
+      optional: [
+        "part_label",
+        "key_points",
+        "highlight_words",
+        "visual_job",
+        "world_theme",
+        "causal_mechanic",
+        "sfx_cues",
+        "tts_narration",
+        "tts_beats",
+      ],
       valid_parts: [...VALID_SCENE_PARTS],
     },
     v2_motion_fields: { ...V2_MOTION_FIELDS },

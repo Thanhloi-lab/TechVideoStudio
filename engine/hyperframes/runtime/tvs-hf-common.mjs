@@ -13,6 +13,15 @@ export { MOTION_TOKENS, clamp01, getTone, ICON_GLYPHS, TONE_STYLES };
 export const FRAME_W = 1920;
 export const FRAME_H = 1080;
 
+export const CAUSAL_MECHANICS = Object.freeze([
+  "blur-materialize",
+  "wire-draw",
+  "arc-emission",
+  "width-push",
+  "squash-drop",
+  "typographic-strike",
+]);
+
 /**
  * Content stage box (px, 1920x1080 frame): below the 92px top bar, above the subtitle band.
  * Matches the legacy Canvas 2D content area (x 88..1832, y 128..900).
@@ -169,20 +178,77 @@ export function formatNumber(value, decimals = 0) {
 }
 
 /**
- * Standard "blur-to-sharp" element reveal used across templates.
- * Adds a fromTo tween (opacity 0→1, y 18→0, blur 12px→0) at absolute time `t`.
+ * Render a split rectangular SharpTag (`border-radius: 3px`, `1.5px` border:
+ * accent-filled uppercase label cell + monospace value cell).
+ */
+export function sharpTag(label, value, { tone = "blue", className = "" } = {}) {
+  const t = getTone(tone);
+  const tag = el(`div.tvs-sharp-tag${className ? `.${className}` : ""}`, {
+    style: { borderColor: t.border || t.badge || "rgba(16, 192, 240, 0.6)" },
+  });
+  tag.appendChild(
+    el("span.tvs-sharp-tag__label", {
+      text: String(label ?? ""),
+      style: { background: t.badge || t.border || "#10C0F0", color: "#020A14" },
+    })
+  );
+  if (value !== undefined && value !== null && String(value) !== "") {
+    tag.appendChild(
+      el("span.tvs-sharp-tag__value", {
+        text: String(value),
+      })
+    );
+  }
+  return tag;
+}
+
+/**
+ * Standard "blur-to-sharp" or causal-mechanic element reveal used across templates.
+ * Always drops CSS `filter` and `clipPath` at completion for seek-order determinism.
  */
 export function reveal(tl, target, t, opts = {}) {
-  const { y = 18, x = 0, scale = 1, blur = 12, duration = DUR.reveal, ease = EASE.reveal, immediateRender = true } = opts;
+  const {
+    y = 18,
+    x = 0,
+    scale = 1,
+    blur = 12,
+    duration = DUR.reveal,
+    ease = EASE.reveal,
+    immediateRender = true,
+    mechanic = "blur-materialize",
+  } = opts;
+
+  let fromVars = { autoAlpha: 0, x, y, scale: scale === 1 ? 1 : scale, filter: `blur(${blur}px)` };
+  let toVars = { autoAlpha: 1, x: 0, y: 0, scale: 1, filter: "blur(0px)", duration, ease, immediateRender };
+
+  if (mechanic === "width-push" || mechanic === "wire-draw") {
+    fromVars = { autoAlpha: 0, x: x || -28, y: 0, scale: 1, clipPath: "inset(0 100% 0 0)" };
+    toVars = { autoAlpha: 1, x: 0, y: 0, scale: 1, clipPath: "inset(0 0% 0 0)", duration, ease, immediateRender };
+  } else if (mechanic === "arc-emission") {
+    fromVars = { autoAlpha: 0, x: -16, y: Math.max(22, Math.abs(y) || 22), scale: 0.94, filter: `blur(${Math.min(8, blur)}px)` };
+  } else if (mechanic === "squash-drop") {
+    fromVars = { autoAlpha: 0, x: 0, y: -Math.max(24, Math.abs(y) || 24), scaleX: 0.95, scaleY: 1.08 };
+    toVars = { autoAlpha: 1, x: 0, y: 0, scaleX: 1, scaleY: 1, duration, ease: EASE.spring, immediateRender };
+  } else if (mechanic === "typographic-strike") {
+    fromVars = { autoAlpha: 0, x: 0, y: 0, scale: 1.14, filter: `blur(${Math.min(6, blur)}px)` };
+  }
+
+  tl.fromTo(target, fromVars, toVars, t);
+  // Drop lingering filter / clipPath surfaces explicitly with fromTo so forward & reverse seeks render identical pixels.
   tl.fromTo(
     target,
-    { autoAlpha: 0, x, y, scale: scale === 1 ? 1 : scale, filter: `blur(${blur}px)` },
-    { autoAlpha: 1, x: 0, y: 0, scale: 1, filter: "blur(0px)", duration, ease, immediateRender },
-    t
+    {
+      filter: toVars.filter || "none",
+      clipPath: toVars.clipPath || "none",
+    },
+    {
+      filter: "none",
+      clipPath: "none",
+      duration: 0,
+      immediateRender: false,
+    },
+    t + duration
   );
-  // Drop the finished filter: a lingering `blur(0px)` keeps a filter surface whose re-raster
-  // depends on seek order (pixel noise in forward vs reverse captures).
-  tl.set(target, { filter: "none" }, t + duration);
 }
 
 /** Slam-in stamp (scale 1.45 → 1, spring-ish), used for alert stamps & badges. */

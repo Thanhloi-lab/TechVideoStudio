@@ -2,11 +2,18 @@
 // Uses canonical 1000x560 geometry and template tokens from motion/kernel.mjs and SSOT rules from template_schema.mjs.
 
 import { computeArchitectureLayout, SUPPORTED_VISUAL_TYPES } from "./motion/kernel.mjs";
-import { TEMPLATE_LAYOUT_BUDGETS, VALID_SCENE_PARTS } from "./template_schema.mjs";
+import {
+  TEMPLATE_LAYOUT_BUDGETS,
+  VALID_SCENE_PARTS,
+  VALID_VISUAL_JOBS,
+  VALID_WORLD_THEMES,
+} from "./template_schema.mjs";
 
 const CANONICAL_W = 1000;
 const CANONICAL_H = 560;
 const VALID_PART_SET = new Set(VALID_SCENE_PARTS);
+const VALID_VISUAL_JOB_SET = new Set(VALID_VISUAL_JOBS);
+const VALID_WORLD_THEME_SET = new Set(VALID_WORLD_THEMES);
 const SUPPORTED_VISUAL_SET = new Set(SUPPORTED_VISUAL_TYPES);
 
 function isMissingCoord(val) {
@@ -166,6 +173,16 @@ export function validateArchitectureData(visualData, sceneId = "scene") {
           code: "node-out-of-bounds",
           scene_id: sid,
           message: `Node "${n.id || n.label || "?"}" có tọa độ y ngoài phạm vi 0..100 (y=${n.y}).`,
+        });
+      }
+    }
+    if (n.svg !== undefined && n.svg !== null && n.svg !== "") {
+      const slug = String(n.svg).trim().replace(/\.svg$/i, "");
+      if (!/^[a-z0-9_-]+$/i.test(slug)) {
+        errors.push({
+          code: "invalid-svg-id",
+          scene_id: sid,
+          message: `Node "${n.id || "?"}" có svg="${n.svg}" không hợp lệ (chỉ dùng [a-z0-9_-]).`,
         });
       }
     }
@@ -879,6 +896,42 @@ export function validateSingleScene(scene, index = 0) {
   }
   if (typeof scene.narration !== "string" || !scene.narration.trim()) {
     errors.push(`[${tag}] Scene requires non-empty "narration".`);
+  }
+
+  // Optional editorial & motion metadata checks (warnings only for backward compatibility)
+  if (scene.visual_job !== undefined && scene.visual_job !== null && String(scene.visual_job).trim() !== "") {
+    if (!VALID_VISUAL_JOB_SET.has(String(scene.visual_job).trim())) {
+      warnings.push(
+        `[${tag}] Unknown visual_job ${JSON.stringify(scene.visual_job)} (expected ${VALID_VISUAL_JOBS.join(" | ")}).`
+      );
+    }
+  }
+  if (scene.world_theme !== undefined && scene.world_theme !== null && String(scene.world_theme).trim() !== "") {
+    if (!VALID_WORLD_THEME_SET.has(String(scene.world_theme).trim())) {
+      warnings.push(
+        `[${tag}] Unknown world_theme ${JSON.stringify(scene.world_theme)} (expected ${VALID_WORLD_THEMES.join(" | ")}).`
+      );
+    }
+  }
+
+  const narrationWords = typeof scene.narration === "string"
+    ? scene.narration.trim().split(/\s+/).filter(Boolean).length
+    : 0;
+  if (narrationWords > 28 && scene.visual_data && typeof scene.visual_data === "object") {
+    const vd = scene.visual_data;
+    const stepCount =
+      (Array.isArray(vd.flow_steps) ? vd.flow_steps.length : 0) +
+      (Array.isArray(vd.steps) ? vd.steps.length : 0) +
+      (Array.isArray(vd.highlight_phases) ? vd.highlight_phases.length : 0) +
+      (Array.isArray(vd.comparisons) ? vd.comparisons.length : 0) +
+      (Array.isArray(vd.rows) ? vd.rows.length : 0) +
+      (Array.isArray(vd.milestones) ? vd.milestones.length : 0) +
+      (Array.isArray(vd.cards) ? vd.cards.length : 0);
+    if (stepCount <= 1) {
+      warnings.push(
+        `[${tag}] Long narration (${narrationWords} words) with <= 1 animation step may cause >3.5s static hold; consider adding more sub-steps.`
+      );
+    }
   }
 
   return {

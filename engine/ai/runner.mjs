@@ -5,7 +5,16 @@ import { SUPPORTED_VISUAL_TYPES } from "../src/motion/kernel.mjs";
 
 const DEFAULT_LLM_TIMEOUT_MS = Math.max(10_000, Number(process.env.VIDEO_MAKER_AI_TIMEOUT_MS) || 120_000);
 const MAX_SELF_REPAIR_RETRIES = 2;
-const VALID_GENERATION_MODES = new Set(["auto", "two_pass", "single_pass", "storyboard_only"]);
+const VALID_GENERATION_MODES = new Set([
+  "auto",
+  "two_pass",
+  "single_pass",
+  "storyboard_only",
+  "three_stage",
+]);
+const VALID_PAUSE_AFTER = new Set(["none", "brief", "dialogue"]);
+const VALID_START_FROM = new Set(["brief", "dialogue", "visual"]);
+const VALID_PART_SET = new Set(["problem", "architecture", "setup", "exam_tips"]);
 
 function sanitizeErr(text) {
   return String(text || "")
@@ -436,6 +445,399 @@ export function buildStoryboardPrompt({
   };
 }
 
+function buildSharedTargetHeader({
+  courseJson = {},
+  curriculumMd = "",
+  episodeMeta = {},
+  customInstructions = "",
+}) {
+  const { courseId, epId, epNum, epTitle } = resolveEpisodeDefaults(courseJson, episodeMeta);
+  const parts = [
+    "# Target Episode",
+    `- Course: ${courseId} (${courseJson.title || courseId})`,
+    `- Episode ID: ${epId} (#${epNum})`,
+    `- Title: ${epTitle}`,
+    episodeMeta.duration_target ? `- Target Duration: ${episodeMeta.duration_target}` : "",
+    episodeMeta.stage_title ? `- Stage: ${episodeMeta.stage_title}` : "",
+  ].filter(Boolean);
+
+  const compactCurriculum = extractRelevantCurriculumContext(curriculumMd, episodeMeta);
+  if (compactCurriculum) {
+    parts.push("", "# Course Curriculum Context", compactCurriculum);
+  }
+  if (customInstructions) {
+    parts.push("", "# Additional User Instructions", customInstructions);
+  }
+  return parts;
+}
+
+/**
+ * Stage 1 (Content Brief & Narrative Arc): decides WHAT to teach, hook conflict, and factual proof anchors
+ * WITHOUT touching visual templates, layout, CSS, or GSAP.
+ */
+export function buildContentBriefPrompt({
+  courseJson = {},
+  curriculumMd = "",
+  episodeMeta = {},
+  existingBrief = null,
+  existingScript = null,
+  openRevisions = [],
+  customInstructions = "",
+  rewriteNote = "",
+}) {
+  const { courseId, epId, epNum, epTitle } = resolveEpisodeDefaults(courseJson, episodeMeta);
+  const systemPrompt = [
+    "You are the Lead Pedagogical Content Architect (Stage 1: Content Brief & Narrative Arc).",
+    "Your ONLY responsibility is deciding WHAT to explain, why it matters, the story order, and concrete technical facts.",
+    "STRICT PROHIBITION: Do NOT mention visual templates, visual_type, nodes, edges, zones, coordinates, CSS, or GSAP.",
+    "",
+    "### Content & Hook Rules:",
+    "1. Hook Angle: Start with a real developer conflict, cost/latency collision, production outage, or myth-bust (NEVER greetings or textbook definitions).",
+    "2. Narrative Arc (Setup -> Escalation -> Reversal): Sequence ideas so each beat causes the next across the 4 blueprint parts (`problem`, `architecture`, `setup`, `exam_tips`). It must fail the Shuffle Test if reordered arbitrarily.",
+    "3. Concrete Proof Anchors: Every teaching beat must cite a real command, config, benchmark/metric, or production/exam trap (no vague hand-waving).",
+    "",
+    "Return STRICT VALID JSON ONLY matching:",
+    JSON.stringify(
+      {
+        brief: {
+          course_id: courseId,
+          episode_id: epId,
+          episode_number: epNum,
+          title: epTitle,
+          subtitle: "Short episode subtitle",
+          hook_angle: {
+            family: "conflict | myth_bust | shock_stat | outage_story",
+            conflict_statement: "One crisp sentence capturing the tension",
+            stakes: "Why an engineer loses sleep or fails an exam if they miss this",
+          },
+          narrative_arc: {
+            setup: "Core premise / pain point",
+            escalation: "Mechanism & trade-off deeper dive",
+            reversal: "Key production insight / exam trap reversal",
+          },
+          teaching_beats: [
+            {
+              id: "beat_01",
+              part: "problem | architecture | setup | exam_tips",
+              goal: "What the learner must grasp here",
+              key_claim: "Core factual statement",
+              concrete_proof_anchor: "Specific CLI command, config key, number, or real scenario",
+            },
+          ],
+        },
+      },
+      null,
+      2
+    ),
+  ].join("\n");
+
+  const userParts = buildSharedTargetHeader({
+    courseJson,
+    curriculumMd,
+    episodeMeta,
+    customInstructions,
+  });
+
+  if (rewriteNote && rewriteNote.trim()) {
+    userParts.push("", "## Requested Changes (Rewrite Note)", rewriteNote.trim());
+  }
+  if (Array.isArray(openRevisions) && openRevisions.length > 0) {
+    userParts.push(
+      "",
+      "## Open Revision Tickets",
+      ...openRevisions.map(
+        (r) => `- [${r.id}] (${r.scope}${r.scene_id ? ` / ${r.scene_id}` : ""}): ${r.description}`
+      )
+    );
+  }
+  if (existingBrief) {
+    userParts.push("", "## Existing Content Brief (Revise/Preserve Where Good)", JSON.stringify(existingBrief, null, 2).slice(0, 8000));
+  } else if (existingScript) {
+    userParts.push("", "## Existing Script Context", JSON.stringify(existingScript, null, 2).slice(0, 6000));
+  }
+
+  userParts.push("", 'Respond ONLY with `{ "brief": { ... } }`.');
+  return { system_prompt: systemPrompt, user_prompt: userParts.join("\n") };
+}
+
+export function parseBriefPayload(rawText, { courseJson = {}, episodeMeta = {} } = {}) {
+  const parsed = parseJsonObjectLoose(rawText);
+  const brief = parsed.brief && typeof parsed.brief === "object" ? parsed.brief : parsed;
+  const beats = Array.isArray(brief?.teaching_beats) ? brief.teaching_beats : [];
+  if (!brief || typeof brief !== "object" || beats.length === 0) {
+    throw new Error('Stage 1 brief JSON must contain "brief.teaching_beats" as a non-empty array.');
+  }
+  const { courseId, epId, epNum, epTitle } = resolveEpisodeDefaults(courseJson, episodeMeta);
+  const normalizedBeats = beats.map((b, i) => {
+    const part = VALID_PART_SET.has(b?.part) ? b.part : "architecture";
+    const claim = String(b?.key_claim || b?.goal || "").trim();
+    if (!claim) {
+      throw new Error(`brief.teaching_beats[${i}] must have a non-empty key_claim or goal.`);
+    }
+    return {
+      id: String(b?.id || `beat_${String(i + 1).padStart(2, "0")}`).trim(),
+      part,
+      goal: String(b?.goal || claim).trim(),
+      key_claim: claim,
+      concrete_proof_anchor: String(b?.concrete_proof_anchor || "").trim(),
+    };
+  });
+
+  return {
+    course_id: String(brief.course_id || courseId || "").trim(),
+    episode_id: String(brief.episode_id || epId || "").trim(),
+    episode_number: Number.isFinite(Number(brief.episode_number)) ? Number(brief.episode_number) : epNum,
+    title: String(brief.title || epTitle || "").trim(),
+    subtitle: String(brief.subtitle || "").trim(),
+    hook_angle:
+      brief.hook_angle && typeof brief.hook_angle === "object"
+        ? brief.hook_angle
+        : { family: "conflict", conflict_statement: "", stakes: "" },
+    narrative_arc:
+      brief.narrative_arc && typeof brief.narrative_arc === "object"
+        ? brief.narrative_arc
+        : { setup: "", escalation: "", reversal: "" },
+    teaching_beats: normalizedBeats,
+  };
+}
+
+/**
+ * Stage 2 (Dialogue & Beat Script): writes natural spoken Vietnamese narration + Dual-Text TTS safety
+ * + What-vs-Why separation + study notes, WITHOUT choosing visual components or animations.
+ */
+export function buildDialoguePrompt({
+  briefJson,
+  courseJson = {},
+  episodeMeta = {},
+  existingDialogue = null,
+  existingNotes = "",
+  openRevisions = [],
+  customInstructions = "",
+  rewriteNote = "",
+}) {
+  const { courseId, epId, epNum, epTitle, ttsProfile, ttsVoice, ttsRate } = resolveEpisodeDefaults(
+    courseJson,
+    episodeMeta
+  );
+  const systemPrompt = [
+    "You are the Lead Spoken Scriptwriter (Stage 2: Dialogue & TTS Beats).",
+    "Turn the approved Content Brief into crisp spoken beats (1-2 sentences each, ~5-12 seconds per beat) + study notes.",
+    "STRICT PROHIBITION: Do NOT choose visual templates, visual_type, nodes, edges, coordinates, CSS, or GSAP.",
+    "",
+    "### Spoken & TTS Safety Rules:",
+    "1. Natural Vietnamese Narration: Conversational instructor tone, preserving authentic English technical terms.",
+    "2. What vs. Why Separation:",
+    "   - `on_screen_fact` (WHAT): concise metric, state, CLI command, or contrast for the screen.",
+    "   - `display_text` (WHY): spoken Vietnamese explaining the cause, trade-off, or consequence (NEVER repeat on_screen_fact verbatim).",
+    "3. Dual-Text TTS Safety:",
+    "   - `display_text`: exact technical spelling for subtitles & UI (e.g. `K8s`, `RDB`, `140ms`, `1,000,000 req/s`).",
+    "   - `tts_text`: Vietnamese TTS-safe phonetic version (e.g. `K-8-S`, `R-D-B`, `một trăm bốn mươi mili giây`, `một triệu request mỗi giây`). Avoid placing two similar-sounding numbers in the same sentence.",
+    "4. Rhythm & Grouping: Group consecutive beats belonging to the same conceptual scene using `scene_group` (slug like `scene_01_hook`) and `scene_title` across all 4 parts (`problem`, `architecture`, `setup`, `exam_tips`). Vary sentence openings (avoid repeating 'Và...', 'Tiếp theo...').",
+    "",
+    "Return STRICT VALID JSON ONLY matching:",
+    JSON.stringify(
+      {
+        dialogue: {
+          course_id: courseId,
+          episode_id: epId,
+          episode_number: epNum,
+          title: briefJson?.title || epTitle,
+          subtitle: briefJson?.subtitle || "",
+          tts_profile: ttsProfile,
+          tts_voice: ttsVoice,
+          tts_rate: ttsRate,
+          beats: [
+            {
+              beat_id: "beat_01",
+              part: "problem | architecture | setup | exam_tips",
+              scene_group: "scene_01_hook",
+              scene_title: "Crisp Vietnamese scene heading",
+              spoken_purpose: "Why this beat matters in the story",
+              on_screen_fact: "WHAT fact/command/number must appear on screen",
+              display_text: "Spoken sentence(s) with exact tech orthography for subtitles",
+              tts_text: "Phonetically normalized Vietnamese sentence(s) for TTS engine",
+              highlight_words: ["Redis", "Latency"],
+              cue_hint: "Brief note on what proof/change happens during this sentence",
+            },
+          ],
+        },
+        notes_md: "# One-Page Cheat Sheet, CLI/Config snippets & 3 exam MCQs...",
+      },
+      null,
+      2
+    ),
+  ].join("\n");
+
+  const userParts = [
+    "# Approved Content Brief (Stage 1)",
+    JSON.stringify(briefJson || {}, null, 2),
+  ];
+  if (customInstructions) {
+    userParts.push("", "# Additional User Instructions", customInstructions);
+  }
+  if (rewriteNote && rewriteNote.trim()) {
+    userParts.push("", "# Rewrite Note", rewriteNote.trim());
+  }
+  if (Array.isArray(openRevisions) && openRevisions.length > 0) {
+    userParts.push(
+      "",
+      "# Open Revision Tickets",
+      ...openRevisions.map(
+        (r) => `- [${r.id}] (${r.scope}${r.scene_id ? ` / ${r.scene_id}` : ""}): ${r.description}`
+      )
+    );
+  }
+  if (existingDialogue) {
+    userParts.push("", "# Existing Dialogue Reference", JSON.stringify(existingDialogue, null, 2).slice(0, 10000));
+  }
+  if (existingNotes) {
+    userParts.push("", "# Existing Notes Reference", String(existingNotes).slice(0, 3000));
+  }
+  userParts.push("", 'Respond ONLY with `{ "dialogue": { ... }, "notes_md": "..." }`.');
+  return { system_prompt: systemPrompt, user_prompt: userParts.join("\n") };
+}
+
+export function parseDialoguePayload(rawText, { briefJson = null, courseJson = {}, episodeMeta = {}, fallbackNotes = "" } = {}) {
+  const parsed = parseJsonObjectLoose(rawText);
+  const dialogue = parsed.dialogue && typeof parsed.dialogue === "object" ? parsed.dialogue : parsed;
+  const beats = Array.isArray(dialogue?.beats) ? dialogue.beats : [];
+  if (!dialogue || typeof dialogue !== "object" || beats.length === 0) {
+    throw new Error('Stage 2 dialogue JSON must contain "dialogue.beats" as a non-empty array.');
+  }
+  const { courseId, epId, epNum, epTitle, ttsProfile, ttsVoice, ttsRate } = resolveEpisodeDefaults(
+    courseJson,
+    episodeMeta
+  );
+  const normalizedBeats = beats.map((b, i) => {
+    const displayText = String(b?.display_text || b?.narration || b?.text || "").trim();
+    if (!displayText) {
+      throw new Error(`dialogue.beats[${i}] requires non-empty "display_text".`);
+    }
+    const ttsText = String(b?.tts_text || displayText).trim();
+    const part = VALID_PART_SET.has(b?.part) ? b.part : "architecture";
+    return {
+      beat_id: String(b?.beat_id || b?.id || `beat_${String(i + 1).padStart(2, "0")}`).trim(),
+      part,
+      scene_group: String(b?.scene_group || `scene_${part}`).trim(),
+      scene_title: String(b?.scene_title || briefJson?.title || epTitle).trim(),
+      spoken_purpose: String(b?.spoken_purpose || "").trim(),
+      on_screen_fact: String(b?.on_screen_fact || "").trim(),
+      display_text: displayText,
+      tts_text: ttsText,
+      highlight_words: Array.isArray(b?.highlight_words)
+        ? b.highlight_words.map((w) => String(w || "").trim()).filter(Boolean)
+        : [],
+      cue_hint: String(b?.cue_hint || "").trim(),
+    };
+  });
+
+  const notesMd = parsed.notes_md !== undefined && parsed.notes_md !== null
+    ? String(parsed.notes_md)
+    : String(fallbackNotes || "");
+
+  return {
+    dialogue: {
+      course_id: String(dialogue.course_id || briefJson?.course_id || courseId || "").trim(),
+      episode_id: String(dialogue.episode_id || briefJson?.episode_id || epId || "").trim(),
+      episode_number: Number.isFinite(Number(dialogue.episode_number))
+        ? Number(dialogue.episode_number)
+        : briefJson?.episode_number ?? epNum,
+      title: String(dialogue.title || briefJson?.title || epTitle || "").trim(),
+      subtitle: String(dialogue.subtitle || briefJson?.subtitle || "").trim(),
+      tts_profile: String(dialogue.tts_profile || ttsProfile),
+      tts_voice: String(dialogue.tts_voice || ttsVoice),
+      tts_rate: String(dialogue.tts_rate || ttsRate),
+      beats: normalizedBeats,
+    },
+    notes_md: notesMd,
+  };
+}
+
+/**
+ * Stage 3 (Visual Director & Motion Compiler): maps locked spoken beats (+ optional audio_spine)
+ * into validated 7-template runtime `script_json` without changing spoken wording.
+ */
+export function buildVisualDirectionPrompt({
+  dialogueJson,
+  audioSpine = null,
+  availableSvgs = [],
+  courseJson = {},
+  episodeMeta = {},
+  existingScript = null,
+  openRevisions = [],
+  customInstructions = "",
+  rewriteNote = "",
+}) {
+  const { courseId, epId, epNum, ttsProfile, ttsVoice, ttsRate } = resolveEpisodeDefaults(
+    courseJson,
+    episodeMeta
+  );
+  const svgListStr = Array.isArray(availableSvgs) && availableSvgs.length > 0
+    ? availableSvgs.map((s) => (typeof s === "string" ? s : s?.id)).filter(Boolean).join(", ")
+    : "server-rack, redis-stack, ram-stick, ssd-disk, postgres, database, docker, kubernetes, api-gateway, browser-client, cloud-infra, event-loop, kafka-queue, shield-lock, terminal-cli";
+
+  const systemPrompt = [
+    "You are the Visual Director & Motion Compiler (Stage 3) for Tech Video Studio.",
+    "Your job is to convert the LOCKED spoken beats in `dialogue.json` into `{ \"script_json\": { ... }, \"notes_md\": \"...\" }`.",
+    "",
+    "### Mandatory Visual Direction Rules:",
+    "1. PRESERVE SPOKEN WORDING: Group beats by `scene_group` into `scenes[]`. Do NOT rewrite the spoken text. Set `scene.narration` to the joined `display_text` of that scene's beats, and preserve `scene.tts_beats = [{ beat_id, display_text, tts_text }]` verbatim.",
+    "2. Visual Job Gate: Assign EVERY scene an explicit `visual_job` (`Proof` | `Mechanism` | `Consequence` | `Action` | `Transition`). Show WHAT (`on_screen_fact`), never repeat the spoken explanation as prose.",
+    "3. Choose the sharpest `visual_type` among the 7 templates below. Include `layout_mode: \"auto\"` on `architecture` scenes (node x/y optional).",
+    `4. Local SVG Assets ONLY: When using \`node.svg\` in \`architecture\`, pick strictly from: [${svgListStr}]. Always include fallback \`node.icon\`.`,
+    "5. Motion Variety & Anti-Static (>3.5s rule): Rotate `causal_mechanic` (`wire-draw`, `arc-emission`, `width-push`, `squash-drop`, `typographic-strike`, `blur-materialize`) so no two consecutive scenes share the same mechanic. Ensure multi-beat scenes have multiple sub-steps (`flow_steps`, `steps`, `highlight_phases`, `milestones`, `cards`, `comparisons`, `rows`) keyed by `cue_sentence` (1-based) and `cue_text`.",
+    "6. Optional Visual Fields: Set `world_theme` (`\"dark\"` or `\"light\"`), `sfx_cues` (`[{ progress, type: \"whoosh_short\"|\"pop\"|\"click\"|\"typing_fast\"|\"impact\"|\"chime\" }]`), `camera_focus`, `code_override`, and `laser_scan` where helpful.",
+    "",
+    getSchemaPromptSpec({ compact: false, pass: 2 }),
+    "",
+    `Top-level script_json metadata: { "course_id": "${courseId}", "episode_id": "${epId}", "episode_number": ${epNum}, "aspect_ratio": "16:9", "language": "vi", "tts_profile": "${ttsProfile}", "tts_voice": "${ttsVoice}", "tts_rate": "${ttsRate}", "scenes": [...] }`,
+  ].join("\n");
+
+  const userParts = [
+    "# Locked Dialogue & Beats (Stage 2)",
+    JSON.stringify(dialogueJson || {}, null, 2),
+  ];
+  if (audioSpine && Array.isArray(audioSpine.beats) && audioSpine.beats.length > 0) {
+    userParts.push(
+      "",
+      "# Locked Audio Spine Timings (Use exact proportions for progress_start / progress_end)",
+      JSON.stringify(
+        audioSpine.beats.map((b) => ({
+          beat_id: b.beat_id,
+          scene_group: b.scene_group,
+          duration_ms: b.duration_ms,
+          start_ms: b.start_ms,
+          end_ms: b.end_ms,
+          start_frame: b.start_frame,
+          end_frame: b.end_frame,
+        })),
+        null,
+        2
+      )
+    );
+  }
+  if (customInstructions) {
+    userParts.push("", "# Additional Instructions", customInstructions);
+  }
+  if (rewriteNote) {
+    userParts.push("", "# Rewrite Note", rewriteNote);
+  }
+  if (Array.isArray(openRevisions) && openRevisions.length > 0) {
+    userParts.push(
+      "",
+      "# Open Revision Tickets",
+      ...openRevisions.map(
+        (r) => `- [${r.id}] (${r.scope}${r.scene_id ? ` / ${r.scene_id}` : ""}): ${r.description}`
+      )
+    );
+  }
+  if (existingScript) {
+    userParts.push("", "# Reference Existing Script (Preserve working layouts if applicable)", JSON.stringify(existingScript, null, 2).slice(0, 7000));
+  }
+  userParts.push("", 'Return ONLY `{ "script_json": { ... }, "notes_md": "..." }`.');
+  return { system_prompt: systemPrompt, user_prompt: userParts.join("\n") };
+}
+
 function fillProportionalIntervals(items, startKey = "progress_start", endKey = "progress_end") {
   if (!Array.isArray(items) || items.length === 0) return;
   const n = items.length;
@@ -464,7 +866,10 @@ function fillProportionalIntervals(items, startKey = "progress_start", endKey = 
  * - Fill missing progress_start/progress_end in [0..1] proportionally
  * - Set layout_mode: "auto" on architecture scenes missing node x, y
  */
-export function normalizeCompiledScript(scriptJson, { courseJson = {}, episodeMeta = {} } = {}) {
+export function normalizeCompiledScript(
+  scriptJson,
+  { courseJson = {}, episodeMeta = {}, dialogueJson = null, audioSpine = null } = {}
+) {
   if (!scriptJson || typeof scriptJson !== "object") return scriptJson;
 
   const { courseId, epId, epNum, epTitle, ttsProfile, ttsVoice, ttsRate } = resolveEpisodeDefaults(
@@ -482,9 +887,51 @@ export function normalizeCompiledScript(scriptJson, { courseJson = {}, episodeMe
   if (!scriptJson.tts_voice) scriptJson.tts_voice = ttsVoice;
   if (!scriptJson.tts_rate) scriptJson.tts_rate = ttsRate;
 
+  const beatsByGroup = new Map();
+  if (Array.isArray(dialogueJson?.beats)) {
+    for (const beat of dialogueJson.beats) {
+      if (!beat || typeof beat !== "object") continue;
+      const grp = String(beat.scene_group || "").trim();
+      if (!grp) continue;
+      if (!beatsByGroup.has(grp)) beatsByGroup.set(grp, []);
+      beatsByGroup.get(grp).push(beat);
+    }
+  }
+  const spineByBeatId = new Map();
+  if (Array.isArray(audioSpine?.beats)) {
+    for (const sb of audioSpine.beats) {
+      if (sb && sb.beat_id) spineByBeatId.set(String(sb.beat_id), sb);
+    }
+  }
+
   const scenes = Array.isArray(scriptJson.scenes) ? scriptJson.scenes : [];
   for (const scene of scenes) {
     if (!scene || typeof scene !== "object") continue;
+
+    // Preserve Dual-Text tts_beats from Stage 2 dialogueJson when omitted by Stage 3 compiler
+    const matchedBeats = scene.id ? beatsByGroup.get(String(scene.id).trim()) : null;
+    if (matchedBeats && matchedBeats.length > 0) {
+      if (!Array.isArray(scene.tts_beats) || scene.tts_beats.length === 0) {
+        scene.tts_beats = matchedBeats.map((b) => ({
+          beat_id: b.beat_id,
+          display_text: b.display_text,
+          tts_text: b.tts_text || b.display_text,
+        }));
+      }
+      if (!scene.narration || !String(scene.narration).trim()) {
+        scene.narration = matchedBeats.map((b) => b.display_text).join(" ");
+      }
+      if (!scene.duration_sec && spineByBeatId.size > 0) {
+        const totalMs = matchedBeats.reduce(
+          (acc, b) => acc + (Number(spineByBeatId.get(b.beat_id)?.duration_ms) || 0),
+          0
+        );
+        if (totalMs > 0) {
+          scene.duration_sec = Number((totalMs / 1000).toFixed(3));
+        }
+      }
+    }
+
     const vtype = scene.visual_type || "architecture";
     const vd = scene.visual_data && typeof scene.visual_data === "object" ? scene.visual_data : null;
     if (!vd) continue;
@@ -877,11 +1324,18 @@ async function validateAndRepairScript({
   model,
   courseJson,
   episodeMeta,
+  dialogueJson = null,
+  audioSpine = null,
   validateScriptFn,
   onProgress,
   engineDir,
 }) {
-  let currentScript = normalizeCompiledScript(scriptJson, { courseJson, episodeMeta });
+  let currentScript = normalizeCompiledScript(scriptJson, {
+    courseJson,
+    episodeMeta,
+    dialogueJson,
+    audioSpine,
+  });
   let validation = validateScriptFn(currentScript);
   let extraCalls = 0;
 
@@ -902,7 +1356,12 @@ async function validateAndRepairScript({
         engineDir,
       });
       extraCalls += 1;
-      currentScript = repairRes.script_json;
+      currentScript = normalizeCompiledScript(repairRes.script_json, {
+        courseJson,
+        episodeMeta,
+        dialogueJson,
+        audioSpine,
+      });
       validation = repairRes.validation;
       if (repairRes.repaired) {
         break;
@@ -922,27 +1381,291 @@ async function validateAndRepairScript({
   return { script_json: currentScript, notes_md: notesMd, validation, extraCalls };
 }
 
+async function runJsonStageLoop({
+  provider_id,
+  model,
+  system_prompt,
+  user_prompt,
+  parseFn,
+  retryHint,
+  phase,
+  stageLabel,
+  onProgress,
+  engineDir,
+}) {
+  const messages = [
+    { role: "system", content: system_prompt },
+    { role: "user", content: user_prompt },
+  ];
+  let lastErr = null;
+  let calls = 0;
+  for (let attempt = 0; attempt <= MAX_SELF_REPAIR_RETRIES; attempt++) {
+    onProgress?.({
+      phase,
+      message: `${stageLabel} (${provider_id}${model ? `/${model}` : ""}, attempt ${attempt + 1})...`,
+    });
+    const rawReply = await callProviderChat({ provider_id, model, messages, engineDir });
+    calls += 1;
+    try {
+      const value = parseFn(rawReply);
+      return { value, calls };
+    } catch (err) {
+      if (err?.code === "QUOTA_EXHAUSTED" || err?.code === "AUTH_INVALID") {
+        throw err;
+      }
+      lastErr = err;
+      messages.push({ role: "assistant", content: rawReply });
+      messages.push({
+        role: "user",
+        content: `Your output was invalid (${err.message}).\n${retryHint}`,
+      });
+    }
+  }
+  const finalErr = new Error(lastErr?.message || `Failed during ${stageLabel}.`);
+  finalErr.code = "SCRIPT_VALIDATION_FAILED";
+  throw finalErr;
+}
+
 export async function generateEpisodeScript({
   provider_id,
   model,
   compiler_provider_id = null,
   compiler_model = null,
+  role_routing = null,
   mode = "auto",
+  pause_after = "none",
+  start_from = null,
   courseJson,
   curriculumMd,
   episodeMeta,
+  existingBrief = null,
+  existingDialogue = null,
+  audioSpine = null,
+  availableSvgs = [],
   existingScript = null,
   existingNotes = "",
   openRevisions = [],
   customInstructions = "",
   rewriteNote = "",
   validateScriptFn = validateScriptDiagrams,
+  onBeforeVisualStage = null,
   onProgress = null,
   engineDir,
 }) {
   const effectiveMode = VALID_GENERATION_MODES.has(mode) ? mode : "auto";
+  const effectivePauseAfter = VALID_PAUSE_AFTER.has(pause_after) ? pause_after : "none";
+  const effectiveStartFrom = VALID_START_FROM.has(start_from) ? start_from : null;
   const pass2Provider = compiler_provider_id || provider_id;
   const pass2Model = compiler_model || model;
+
+  if (effectiveMode === "three_stage") {
+    const briefProv = role_routing?.brief_scriptwriter?.provider_id || provider_id;
+    const briefMdl = role_routing?.brief_scriptwriter?.model || model;
+    const directorProv = role_routing?.visual_director?.provider_id || pass2Provider;
+    const directorMdl = role_routing?.visual_director?.model || pass2Model;
+    const repairProv = role_routing?.repair?.provider_id || directorProv;
+    const repairMdl = role_routing?.repair?.model || directorMdl;
+
+    let totalCalls = 0;
+    let briefJson = existingBrief && Array.isArray(existingBrief.teaching_beats) ? existingBrief : null;
+    let dialogueJson = existingDialogue && Array.isArray(existingDialogue.beats) ? existingDialogue : null;
+    let notesMd = String(existingNotes || "");
+
+    // Stage 1: Content Brief (unless resuming from dialogue/visual with existing artifact)
+    const skipStage1 =
+      (effectiveStartFrom === "dialogue" && Boolean(briefJson)) ||
+      (effectiveStartFrom === "visual" && Boolean(dialogueJson));
+
+    if (!skipStage1) {
+      const s1 = buildContentBriefPrompt({
+        courseJson,
+        curriculumMd,
+        episodeMeta,
+        existingBrief: briefJson,
+        existingScript,
+        openRevisions,
+        customInstructions,
+        rewriteNote,
+      });
+      const res1 = await runJsonStageLoop({
+        provider_id: briefProv,
+        model: briefMdl,
+        system_prompt: s1.system_prompt,
+        user_prompt: s1.user_prompt,
+        parseFn: (raw) => parseBriefPayload(raw, { courseJson, episodeMeta }),
+        retryHint: 'Return ONLY valid JSON: { "brief": { "teaching_beats": [...] } }.',
+        phase: "stage_1_brief",
+        stageLabel: "Stage 1 Content Brief",
+        onProgress,
+        engineDir,
+      });
+      briefJson = res1.value;
+      totalCalls += res1.calls;
+
+      if (effectivePauseAfter === "brief") {
+        return {
+          mode: "three_stage",
+          mode_used: "three_stage_brief",
+          paused_at: "brief",
+          brief_json: briefJson,
+          dialogue_json: null,
+          audio_spine: null,
+          notes_md: notesMd,
+          validation: { valid: true, errors: [], warnings: [], scene_count: 0 },
+          attempts: totalCalls,
+        };
+      }
+    }
+
+    // Stage 2: Spoken Dialogue & Beats (unless resuming directly at visual with existingDialogue)
+    const skipStage2 = effectiveStartFrom === "visual" && Boolean(dialogueJson);
+    if (!skipStage2) {
+      const s2 = buildDialoguePrompt({
+        briefJson,
+        courseJson,
+        episodeMeta,
+        existingDialogue: dialogueJson,
+        existingNotes: notesMd,
+        openRevisions,
+        customInstructions,
+        rewriteNote,
+      });
+      const res2 = await runJsonStageLoop({
+        provider_id: briefProv,
+        model: briefMdl,
+        system_prompt: s2.system_prompt,
+        user_prompt: s2.user_prompt,
+        parseFn: (raw) =>
+          parseDialoguePayload(raw, {
+            briefJson,
+            courseJson,
+            episodeMeta,
+            fallbackNotes: notesMd,
+          }),
+        retryHint: 'Return ONLY valid JSON: { "dialogue": { "beats": [...] }, "notes_md": "..." }.',
+        phase: "stage_2_dialogue",
+        stageLabel: "Stage 2 Dialogue & TTS Beats",
+        onProgress,
+        engineDir,
+      });
+      dialogueJson = res2.value.dialogue;
+      notesMd = res2.value.notes_md || notesMd;
+      totalCalls += res2.calls;
+
+      if (effectivePauseAfter === "dialogue") {
+        return {
+          mode: "three_stage",
+          mode_used: "three_stage_dialogue",
+          paused_at: "dialogue",
+          brief_json: briefJson,
+          dialogue_json: dialogueJson,
+          audio_spine: null,
+          notes_md: notesMd,
+          validation: { valid: true, errors: [], warnings: [], scene_count: 0 },
+          attempts: totalCalls,
+        };
+      }
+    }
+
+    // Optional Audio-Spine Hook right between Stage 2 (Dialogue) and Stage 3 (Visual Director)
+    let activeAudioSpine = audioSpine;
+    if (typeof onBeforeVisualStage === "function") {
+      onProgress?.({
+        phase: "audio_spine_lock",
+        message: "Locking Audio-Spine beat durations before Visual Director...",
+      });
+      const hookSpine = await onBeforeVisualStage({
+        brief_json: briefJson,
+        dialogue_json: dialogueJson,
+        notes_md: notesMd,
+      });
+      if (hookSpine && typeof hookSpine === "object") {
+        activeAudioSpine = hookSpine;
+      }
+    }
+
+    // Stage 3: Visual Director & Motion Compiler -> script.json + self-repair
+    const s3 = buildVisualDirectionPrompt({
+      dialogueJson,
+      audioSpine: activeAudioSpine,
+      availableSvgs,
+      courseJson,
+      episodeMeta,
+      existingScript,
+      openRevisions,
+      customInstructions,
+      rewriteNote,
+    });
+    const s3Messages = [
+      { role: "system", content: s3.system_prompt },
+      { role: "user", content: s3.user_prompt },
+    ];
+    let lastStage3Err = null;
+    for (let attempt = 0; attempt <= MAX_SELF_REPAIR_RETRIES; attempt++) {
+      onProgress?.({
+        phase: "stage_3_visual",
+        message: `Stage 3 Visual Director (${directorProv}${directorMdl ? `/${directorMdl}` : ""}, attempt ${attempt + 1})...`,
+      });
+      const rawReply = await callProviderChat({
+        provider_id: directorProv,
+        model: directorMdl,
+        messages: s3Messages,
+        engineDir,
+      });
+      totalCalls += 1;
+      try {
+        const parsed = parseAiScriptPayload(rawReply, notesMd);
+        const checked = await validateAndRepairScript({
+          scriptJson: parsed.script_json,
+          notesMd: parsed.notes_md || notesMd,
+          provider_id: repairProv,
+          model: repairMdl,
+          courseJson,
+          episodeMeta,
+          dialogueJson,
+          audioSpine: activeAudioSpine,
+          validateScriptFn,
+          onProgress,
+          engineDir,
+        });
+        totalCalls += checked.extraCalls;
+        if (checked.validation.valid) {
+          return {
+            mode: "three_stage",
+            mode_used: "three_stage",
+            paused_at: null,
+            brief_json: briefJson,
+            dialogue_json: dialogueJson,
+            audio_spine: activeAudioSpine || null,
+            script_json: checked.script_json,
+            notes_md: checked.notes_md,
+            validation: checked.validation,
+            attempts: totalCalls,
+          };
+        }
+        const errSummary = formatValidationErrorList(checked.validation.errors).join("\n- ");
+        lastStage3Err = new Error(`Diagram/Template validation failed:\n- ${errSummary}`);
+        s3Messages.push({ role: "assistant", content: rawReply });
+        s3Messages.push({
+          role: "user",
+          content: `Stage 3 Visual JSON failed validation:\n- ${errSummary}\n\nFix ONLY the invalid visual fields while preserving dialogue wording, and return { "script_json": ..., "notes_md": ... }.`,
+        });
+      } catch (err) {
+        if (err?.code === "QUOTA_EXHAUSTED" || err?.code === "AUTH_INVALID") {
+          throw err;
+        }
+        lastStage3Err = err;
+        s3Messages.push({ role: "assistant", content: rawReply });
+        s3Messages.push({
+          role: "user",
+          content: `Invalid Stage 3 script JSON: ${err.message}\nReturn ONLY valid { "script_json": { "scenes": [...] }, "notes_md": "..." }.`,
+        });
+      }
+    }
+    const finalErr = new Error(lastStage3Err?.message || "Failed in Stage 3 Visual Director.");
+    finalErr.code = "SCRIPT_VALIDATION_FAILED";
+    throw finalErr;
+  }
 
   if (effectiveMode === "storyboard_only") {
     const { system_prompt, user_prompt } = buildStoryboardPrompt({

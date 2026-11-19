@@ -86,7 +86,7 @@ export async function renderEpisodeHyperframes(opts, { log = console.log, isCanc
       if (await evaluate(cdp, enc.sessionId, "window.__TVS_HF_ENCODER_READY__ === true")) break;
       await sleep(100);
     }
-    const audio = manifest.audio.map((a) => ({
+    const audio = (manifest.audio || []).map((a) => ({
       url: projectUrl(port, course, episodeId, a.src),
       start: a.start,
       duration: a.duration,
@@ -94,6 +94,20 @@ export async function renderEpisodeHyperframes(opts, { log = console.log, isCanc
       volume: a.volume,
       playback_rate: a.playback_rate,
     }));
+    const sfx = (manifest.sfx || []).map((s) => ({
+      url: projectUrl(port, course, episodeId, s.src),
+      start: s.start,
+      volume: s.volume,
+      type: s.type,
+    }));
+    const bgm = manifest.bgm?.src
+      ? {
+          url: projectUrl(port, course, episodeId, manifest.bgm.src),
+          volume: manifest.bgm.volume,
+          carve_hz: manifest.bgm.carve_hz,
+          carve_db: manifest.bgm.carve_db,
+        }
+      : null;
     const encoderConfig = {
       courseId: course,
       episodeId,
@@ -106,14 +120,18 @@ export async function renderEpisodeHyperframes(opts, { log = console.log, isCanc
       totalFrames,
       totalDuration: totalFrames / fps,
       audio,
+      sfx,
+      bgm,
+      loudnessTargetLufs: -16,
       outputFilename: output || "",
     };
-    log(`[render] 3% Preparing WebCodecs encoder + mixing ${audio.length} narration clip(s)...`);
+    log(`[render] 3% Preparing WebCodecs encoder + mixing ${audio.length} narration clip(s) + ${sfx.length} SFX cue(s)...`);
     const profile = await evaluate(cdp, enc.sessionId, `window.__TVS_HF_ENCODER__.init(${JSON.stringify(encoderConfig)})`, {
       timeoutMs: 180_000,
     });
+    const lufsNote = profile.loudness ? ` [${profile.loudness.outputLufs} LUFS]` : "";
     log(
-      `[render] 4% Encoder: ${profile.format}/${profile.videoCodec} ${profile.width}x${profile.height}@${profile.fps} (${profile.hardwareAcceleration}), audio ${profile.audioCodec}`
+      `[render] 4% Encoder: ${profile.format}/${profile.videoCodec} ${profile.width}x${profile.height}@${profile.fps} (${profile.hardwareAcceleration}), audio ${profile.audioCodec}${lufsNote}`
     );
     const encObj = await cdp.send(
       "Runtime.evaluate",

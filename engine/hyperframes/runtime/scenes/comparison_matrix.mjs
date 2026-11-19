@@ -124,9 +124,10 @@ export default function buildComparisonMatrix(ctx) {
 
   // ---- Timeline -------------------------------------------------------------
   const t0 = at(0);
-  reveal(tl, head, t0 + 0.05, { y: -10 });
-  headerCells.forEach((cell, i) => reveal(tl, cell, t0 + 0.12 + i * DUR.stagger, { y: 14 }));
-  reveal(tl, table.firstChild, t0 + 0.08, { y: 14 });
+  const mech = ctx.mechanic || "blur-materialize";
+  reveal(tl, head, t0 + 0.05, { y: -10, mechanic: mech });
+  headerCells.forEach((cell, i) => reveal(tl, cell, t0 + 0.12 + i * DUR.stagger, { y: 14, mechanic: mech }));
+  reveal(tl, table.firstChild, t0 + 0.08, { y: 14, mechanic: mech });
 
   // Rows start dimmed (legacy: 0.14 alpha) and reveal at progress_start with Quart-Out over 11% of the scene
   const tableTop = 82 + 10; // header row height + row gap

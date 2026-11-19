@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <defs>
+    <linearGradient id="gwBox" x1="16" y1="30" x2="104" y2="90" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#4C1D95"/>
+      <stop offset="100%" stop-color="#1E1B4B"/>
+    </linearGradient>
+  </defs>
+  <!-- Network Switch / I/O Multiplexer Box -->
+  <rect x="14" y="34" width="92" height="52" rx="10" fill="url(#gwBox)" stroke="#A855F7" stroke-width="2"/>
+  <rect x="22" y="42" width="76" height="22" rx="5" fill="#0B1120" stroke="#7E22CE" stroke-width="1.2"/>
+  <!-- Multiplexer routing lines -->
+  <path d="M26 53 H44 L54 47 H74" stroke="#38BDF8" stroke-width="2.2" stroke-linecap="round"/>
+  <path d="M26 53 H44 L54 59 H74" stroke="#E879F9" stroke-width="2.2" stroke-linecap="round"/>
+  <circle cx="28" cy="53" r="3" fill="#38BDF8"/>
+  <circle cx="76" cy="47" r="3" fill="#38BDF8"/>
+  <circle cx="76" cy="59" r="3" fill="#E879F9"/>
+  <circle cx="89" cy="53" r="4" fill="#10B981"/>
+  <!-- Bottom Ethernet Ports -->
+  <g fill="#0F172A" stroke="#64748B" stroke-width="1.2">
+    <rect x="24" y="70" width="11" height="9" rx="1.5"/>
+    <rect x="40" y="70" width="11" height="9" rx="1.5"/>
+    <rect x="56" y="70" width="11" height="9" rx="1.5"/>
+    <rect x="72" y="70" width="11" height="9" rx="1.5"/>
+    <rect x="88" y="70" width="9" height="9" rx="1.5"/>
+  </g>
+</svg>

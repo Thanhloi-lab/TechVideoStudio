@@ -1,0 +1,111 @@
+{
+  "version": 1,
+  "description": "Catalog of rich multi-color SVG illustrations for TechVideoStudio architecture diagrams (Studio Player + HyperFrames).",
+  "svgs": [
+    {
+      "id": "server-rack",
+      "file": "server-rack.svg",
+      "label": "API / Application Server Rack",
+      "category": "compute",
+      "keywords": ["server", "api", "backend", "rack", "ec2", "node", "app"]
+    },
+    {
+      "id": "redis-stack",
+      "file": "redis-stack.svg",
+      "label": "Redis In-Memory Cache",
+      "category": "data",
+      "keywords": ["redis", "cache", "in-memory", "key-value", "memory", "nosql"]
+    },
+    {
+      "id": "ram-stick",
+      "file": "ram-stick.svg",
+      "label": "RAM Memory Module (DRAM)",
+      "category": "hardware",
+      "keywords": ["ram", "memory", "dram", "in-memory", "keyspace", "buffer"]
+    },
+    {
+      "id": "ssd-disk",
+      "file": "ssd-disk.svg",
+      "label": "SSD / NVMe Disk Storage",
+      "category": "storage",
+      "keywords": ["ssd", "disk", "nvme", "rdb", "aof", "persistence", "storage"]
+    },
+    {
+      "id": "postgres",
+      "file": "postgres.svg",
+      "label": "PostgreSQL Database",
+      "category": "data",
+      "keywords": ["postgres", "postgresql", "sql", "rdbms", "relational"]
+    },
+    {
+      "id": "database",
+      "file": "database.svg",
+      "label": "Database Cylinder",
+      "category": "data",
+      "keywords": ["database", "db", "sql", "storage", "table"]
+    },
+    {
+      "id": "api-gateway",
+      "file": "api-gateway.svg",
+      "label": "Network Switch / I/O Multiplexer",
+      "category": "network",
+      "keywords": ["gateway", "router", "switch", "epoll", "multiplexer", "proxy", "nginx", "load-balancer"]
+    },
+    {
+      "id": "event-loop",
+      "file": "event-loop.svg",
+      "label": "Event Loop / Execution Core",
+      "category": "compute",
+      "keywords": ["event-loop", "thread", "cpu", "worker", "engine", "runtime", "lambda"]
+    },
+    {
+      "id": "docker",
+      "file": "docker.svg",
+      "label": "Docker Container",
+      "category": "devops",
+      "keywords": ["docker", "container", "compose", "image"]
+    },
+    {
+      "id": "kubernetes",
+      "file": "kubernetes.svg",
+      "label": "Kubernetes Cluster / Pod",
+      "category": "devops",
+      "keywords": ["kubernetes", "k8s", "pod", "cluster", "orchestrator"]
+    },
+    {
+      "id": "kafka-queue",
+      "file": "kafka-queue.svg",
+      "label": "Message Queue / Stream",
+      "category": "messaging",
+      "keywords": ["queue", "kafka", "pubsub", "stream", "broker", "list", "rabbitmq"]
+    },
+    {
+      "id": "browser-client",
+      "file": "browser-client.svg",
+      "label": "Web / Mobile Client",
+      "category": "client",
+      "keywords": ["client", "browser", "user", "frontend", "web", "app"]
+    },
+    {
+      "id": "shield-lock",
+      "file": "shield-lock.svg",
+      "label": "Security / Auth / Lock",
+      "category": "security",
+      "keywords": ["security", "shield", "auth", "acl", "lock", "tls", "iam"]
+    },
+    {
+      "id": "cloud-infra",
+      "file": "cloud-infra.svg",
+      "label": "Cloud Infrastructure",
+      "category": "network",
+      "keywords": ["cloud", "aws", "vpc", "internet", "cdn"]
+    },
+    {
+      "id": "terminal-cli",
+      "file": "terminal-cli.svg",
+      "label": "Terminal / CLI Shell",
+      "category": "compute",
+      "keywords": ["cli", "terminal", "shell", "bash", "redis-cli", "command", "prompt"]
+    }
+  ]
+}

@@ -448,21 +448,18 @@ def measure_audio_chunk(raw_bytes: bytes, hint: str | None = None) -> tuple[str,
 # Text chunking
 # ---------------------------------------------------------------------------
 
-def split_text_for_tts(text: str, max_chars: int = 165) -> list[str]:
-    """Split Vietnamese + English narration into natural clauses under max_chars."""
+def split_text_for_tts_with_sentences(text: str, max_chars: int = 180) -> list[tuple[str, int]]:
+    """Split Vietnamese + English narration into natural clauses with 1-based sentence_idx."""
     text = re.sub(r"\s+", " ", text).strip()
     if not text:
         return []
 
-    raw_sentences = re.split(r"(?<=[.!?])\s+", text)
-    chunks: list[str] = []
+    raw_sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    chunks: list[tuple[str, int]] = []
 
-    for sent in raw_sentences:
-        sent = sent.strip()
-        if not sent:
-            continue
+    for sent_idx, sent in enumerate(raw_sentences, start=1):
         if len(sent) <= max_chars:
-            chunks.append(sent)
+            chunks.append((sent, sent_idx))
             continue
 
         sub_parts = re.split(r"(?<=[,;:–—])\s+", sent)
@@ -472,7 +469,7 @@ def split_text_for_tts(text: str, max_chars: int = 165) -> list[str]:
                 buf = f"{buf} {part}".strip()
             else:
                 if buf:
-                    chunks.append(buf)
+                    chunks.append((buf, sent_idx))
                 if len(part) <= max_chars:
                     buf = part
                 else:
@@ -483,13 +480,83 @@ def split_text_for_tts(text: str, max_chars: int = 165) -> list[str]:
                             wbuf = f"{wbuf} {w}".strip()
                         else:
                             if wbuf:
-                                chunks.append(wbuf)
+                                chunks.append((wbuf, sent_idx))
                             wbuf = w
                     buf = wbuf
         if buf:
-            chunks.append(buf)
+            chunks.append((buf, sent_idx))
 
     return chunks
+
+
+def split_text_for_tts(text: str, max_chars: int = 180) -> list[str]:
+    """Split Vietnamese + English narration into natural clauses under max_chars."""
+    return [chunk for chunk, _ in split_text_for_tts_with_sentences(text, max_chars=max_chars)]
+
+
+_TTS_ACRONYM_MAP: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"\bK8s\b", re.IGNORECASE), "K-8-S"),
+    (re.compile(r"\bRDB\b"), "R-D-B"),
+    (re.compile(r"\bAOF\b"), "A-O-F"),
+    (re.compile(r"\bTTL\b"), "T-T-L"),
+    (re.compile(r"\bIAM\b"), "I-A-M"),
+    (re.compile(r"\bSTS\b"), "S-T-S"),
+    (re.compile(r"\bVPC\b"), "V-P-C"),
+    (re.compile(r"\bDNS\b"), "D-N-S"),
+    (re.compile(r"\bTLS\b"), "T-L-S"),
+    (re.compile(r"\bAPI\b"), "A-P-I"),
+    (re.compile(r"\bCLI\b"), "C-L-I"),
+    (re.compile(r"\breq/s\b", re.IGNORECASE), "request mỗi giây"),
+    (re.compile(r"(\d+(?:[.,]\d+)?)\s*ms\b", re.IGNORECASE), r"\1 mili giây"),
+)
+
+
+def normalize_vietnamese_tts_text(text: str) -> str:
+    """Normalize common technical acronyms and units for safer Vietnamese TTS pronunciation."""
+    out = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not out:
+        return ""
+    for pattern, repl in _TTS_ACRONYM_MAP:
+        out = pattern.sub(repl, out)
+    return out
+
+
+def _build_scene_tts_units(scene: dict[str, Any]) -> list[tuple[list[str], str, int]]:
+    """Return list of (spoken_chunks, display_text, sentence_idx) for Dual-Text or legacy scenes."""
+    tts_beats = scene.get("tts_beats")
+    if isinstance(tts_beats, list) and len(tts_beats) > 0:
+        units: list[tuple[list[str], str, int]] = []
+        sent_idx = 0
+        for beat in tts_beats:
+            if not isinstance(beat, dict):
+                continue
+            disp = re.sub(r"\s+", " ", str(beat.get("display_text") or "")).strip()
+            raw_spoken = re.sub(r"\s+", " ", str(beat.get("tts_text") or "")).strip()
+            if not disp and not raw_spoken:
+                continue
+            sent_idx += 1
+            disp_final = disp or raw_spoken
+            spoken_final = raw_spoken or normalize_vietnamese_tts_text(disp_final)
+            sp_chunks = split_text_for_tts(spoken_final, max_chars=180) or [spoken_final]
+            units.append((sp_chunks, disp_final, sent_idx))
+        if units:
+            return units
+
+    narration = str(scene.get("narration") or "").strip()
+    tts_narration = str(scene.get("tts_narration") or "").strip()
+    if tts_narration and narration:
+        disp_sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", narration) if s.strip()]
+        tts_sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", tts_narration) if s.strip()]
+        if disp_sents and len(disp_sents) == len(tts_sents):
+            return [
+                (split_text_for_tts(tts_s, max_chars=180) or [tts_s], disp_s, idx)
+                for idx, (disp_s, tts_s) in enumerate(zip(disp_sents, tts_sents), start=1)
+            ]
+
+    return [
+        ([chunk], chunk, sent_idx)
+        for chunk, sent_idx in split_text_for_tts_with_sentences(narration, max_chars=180)
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -1273,7 +1340,7 @@ def discover_voicestudio(base_url: str, timeout: float = 1.5) -> dict[str, Any]:
     voices: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
 
-    for path in ("/v1/audio/voices", "/voices"):
+    for path in ("/v1/audio/voices", "/v1/voices", "/voices"):
         url = f"{clean_base}{path}"
         req = urllib.request.Request(url, headers={"Accept": "application/json"}, method="GET")
         try:
@@ -1730,6 +1797,7 @@ def _prepare_sub_entries(subtitles: list[dict[str, Any]], scene_duration: float)
         exact_toks, folded_toks = _tokenize_text(txt)
         entries.append({
             "index": idx,
+            "sentence_idx": sub.get("sentence_idx"),
             "text": txt,
             "norm_str": _normalize_for_substring(txt),
             "exact_set": set(exact_toks),
@@ -1777,6 +1845,16 @@ def _score_cues_against_sub(cues: list[tuple[str, float]], sub_entry: dict[str, 
                     best_char_pos = pos
                     best_char_weight = weight
 
+        # Exact phrase match boost for high-weight cue_text
+        if weight >= 2.5:
+            norm_q = _normalize_for_substring(cue_text)
+            if len(norm_q) >= 6 and norm_q in sub_str:
+                cue_hits += weight * 6.0
+                epos = sub_str.find(norm_q)
+                if epos >= 0:
+                    best_char_pos = epos
+                    best_char_weight = weight + 2.0
+
         # Bigram phrase bonus for multi-word cues
         if len(folded_q) >= 2:
             for k in range(len(folded_q) - 1):
@@ -1806,6 +1884,27 @@ def _score_cues_against_sub(cues: list[tuple[str, float]], sub_entry: dict[str, 
     return final_score, _clamp01(cue_pos)
 
 
+def _resolve_cue_sentence_progress(item: Any, sub_entries: list[dict[str, Any]]) -> float | None:
+    """Resolve explicit 1-based cue_sentence index to the exact spoken subtitle start_norm."""
+    if not isinstance(item, dict) or not sub_entries:
+        return None
+    raw_idx = item.get("cue_sentence")
+    if isinstance(raw_idx, list) and raw_idx:
+        raw_idx = raw_idx[0]
+    try:
+        s_idx = int(raw_idx) if raw_idx is not None and raw_idx is not False else 0
+    except (TypeError, ValueError):
+        return None
+    if s_idx <= 0:
+        return None
+    for sub in sub_entries:
+        if sub.get("sentence_idx") == s_idx:
+            return float(sub["start_norm"])
+    if s_idx <= len(sub_entries):
+        return float(sub_entries[s_idx - 1]["start_norm"])
+    return float(sub_entries[-1]["start_norm"])
+
+
 def _align_sequence_starts(
     items_cues: list[list[tuple[str, float]]],
     base_starts: list[float],
@@ -1813,6 +1912,7 @@ def _align_sequence_starts(
     pin_first_to_zero: bool,
     min_gap: float,
     max_end: float,
+    explicit_starts: list[float | None] | None = None,
 ) -> list[float]:
     """Monotonically align step start positions across subtitle entries with proportional fallback."""
     k_count = len(items_cues)
@@ -1870,10 +1970,17 @@ def _align_sequence_starts(
         has_match.append(best_s >= 0.35)
 
     # Identify items that can be anchored via cue match; if pin_first_to_zero, index 0 is anchored at 0.0
-    anchored_indices = [i for i in range(k_count) if has_match[i] and not (pin_first_to_zero and i == 0)]
+    explicit_list = explicit_starts or [None] * k_count
+    anchored_indices = [
+        i for i in range(k_count)
+        if has_match[i] and explicit_list[i] is None and not (pin_first_to_zero and i == 0)
+    ]
 
-    resolved: list[float | None] = [None] * k_count
-    if pin_first_to_zero:
+    resolved: list[float | None] = [
+        explicit_list[i] if explicit_list[i] is not None else None
+        for i in range(k_count)
+    ]
+    if pin_first_to_zero and resolved[0] is None:
         resolved[0] = 0.0
 
     if anchored_indices:
@@ -1996,6 +2103,7 @@ def align_scene_timings(
         # Pin milestones[0] to 0.0 only if _base_timings started at ~0.0
         effective_pin = pin_zero or (bool(base_starts) and base_starts[0] <= 0.015)
         cues = [_extract_item_cues(item if isinstance(item, dict) else {}, key) for item in arr]
+        explicit_starts = [_resolve_cue_sentence_progress(item, sub_entries) for item in arr]
         max_last_start = 0.88 if (key == "milestones" and isinstance(vdata.get("callout"), dict)) else 0.94
         starts = _align_sequence_starts(
             items_cues=cues,
@@ -2004,6 +2112,7 @@ def align_scene_timings(
             pin_first_to_zero=effective_pin,
             min_gap=0.06,
             max_end=max_last_start,
+            explicit_starts=explicit_starts,
         )
         t_list: list[dict[str, Any]] = []
         for idx in range(len(arr)):
@@ -2039,6 +2148,7 @@ def align_scene_timings(
             for idx in range(len(arr))
         ]
         cues = [_extract_item_cues(item if isinstance(item, dict) else {}, key) for item in arr]
+        explicit_starts = [_resolve_cue_sentence_progress(item, sub_entries) for item in arr]
         starts = _align_sequence_starts(
             items_cues=cues,
             base_starts=base_starts,
@@ -2046,6 +2156,7 @@ def align_scene_timings(
             pin_first_to_zero=False,
             min_gap=0.04,
             max_end=max_end,
+            explicit_starts=explicit_starts,
         )
         t_list = []
         for idx, p_start in enumerate(starts):
@@ -2081,6 +2192,11 @@ def align_scene_timings(
             val = obj.get(f)
             if isinstance(val, str) and val.strip():
                 cues.append((val.strip(), w))
+
+        explicit_single = _resolve_cue_sentence_progress(obj, sub_entries)
+        if explicit_single is not None:
+            new_timings[obj_key] = {"show_at_progress": _round_p(max(floor_t, min(0.94, explicit_single)))}
+            return
 
         best_sc = 0.0
         best_tm = max(floor_t, base_at)
@@ -2325,8 +2441,7 @@ def process_episode(
     for scene in script.get("scenes", []):
         scene_id = scene["id"]
         ensure_base_timings(scene)
-        narration = scene.get("narration", "").strip()
-        chunks = split_text_for_tts(narration, max_chars=165)
+        units = _build_scene_tts_units(scene)
 
         mp3_buf = bytearray()
         wav_pcm_buf = bytearray()
@@ -2335,29 +2450,44 @@ def process_episode(
         subtitles: list[dict[str, Any]] = []
         scene_cursor = 0.0
 
-        for chunk in chunks:
-            chunk_diag: dict[str, Any] = {}
-            raw_audio, used = synthesize_chunk(chunk, config, diagnostics=chunk_diag)
-            providers_used.add(used)
-            total_chunk_count += 1
-            if chunk_diag.get("fallback_reason"):
-                fallback_chunk_count += 1
-                if chunk_diag["fallback_reason"] not in fallback_reasons:
-                    fallback_reasons.append(chunk_diag["fallback_reason"])
-            ext, payload, params, chunk_dur = measure_audio_chunk(raw_audio, hint=hint_fmt)
+        for idx_u, (spoken_chunks, disp_text, sent_idx) in enumerate(units):
+            unit_start = round(scene_cursor, 3)
+            unit_dur = 0.0
+            for idx_c, chunk in enumerate(spoken_chunks):
+                chunk_diag: dict[str, Any] = {}
+                raw_audio, used = synthesize_chunk(chunk, config, diagnostics=chunk_diag)
+                providers_used.add(used)
+                total_chunk_count += 1
+                if chunk_diag.get("fallback_reason"):
+                    fallback_chunk_count += 1
+                    if chunk_diag["fallback_reason"] not in fallback_reasons:
+                        fallback_reasons.append(chunk_diag["fallback_reason"])
+                ext, payload, params, chunk_dur = measure_audio_chunk(raw_audio, hint=hint_fmt)
 
-            if ext == "wav":
-                scene_ext = "wav"
-                if wav_params is None:
-                    wav_params = params
-                wav_pcm_buf.extend(payload)
-            else:
-                mp3_buf.extend(payload)
+                if ext == "wav":
+                    scene_ext = "wav"
+                    if wav_params is None:
+                        wav_params = params
+                    wav_pcm_buf.extend(payload)
+                else:
+                    mp3_buf.extend(payload)
 
-            start_sec = round(scene_cursor, 3)
-            end_sec = round(scene_cursor + chunk_dur, 3)
+                unit_dur += chunk_dur
+                scene_cursor += chunk_dur
+                has_more = (idx_c + 1 < len(spoken_chunks)) or (idx_u + 1 < len(units))
+                if ext == "wav" and wav_params is not None and has_more:
+                    nch, sw, sr = wav_params
+                    gap_frames = int(round(sr * 0.08))
+                    gap_bytes = b"\x00" * (gap_frames * nch * sw)
+                    wav_pcm_buf.extend(gap_bytes)
+                    scene_cursor += gap_frames / float(max(1, sr))
+                time.sleep(0.05)
+
+            start_sec = unit_start
+            end_sec = round(unit_start + unit_dur, 3)
             subtitles.append({
-                "text": chunk,
+                "text": disp_text,
+                "sentence_idx": sent_idx,
                 "start_sec": start_sec,
                 "end_sec": end_sec,
             })
@@ -2366,11 +2496,9 @@ def process_episode(
                 f"{srt_idx}\n"
                 f"{format_srt_time(episode_cursor + start_sec)} --> "
                 f"{format_srt_time(episode_cursor + end_sec)}\n"
-                f"{chunk}\n"
+                f"{disp_text}\n"
             )
             srt_idx += 1
-            scene_cursor += chunk_dur
-            time.sleep(0.05)
 
         if scene_ext == "wav" and wav_params is not None:
             final_bytes = build_wav_bytes(wav_params, bytes(wav_pcm_buf))
@@ -2403,7 +2531,7 @@ def process_episode(
         total_duration += scene_duration
         if not quiet:
             print(
-                f"[OK] {scene_id}: {len(chunks)} chunks | {scene_duration:.2f}s | "
+                f"[OK] {scene_id}: {len(units)} unit(s) | {scene_duration:.2f}s | "
                 f"{audio_rel} ({audio_path.stat().st_size} bytes)"
             )
 
@@ -2565,6 +2693,153 @@ def _emit_error(message: str, as_json: bool) -> int:
     return 1
 
 
+def process_audio_spine(
+    dialogue_path: Path,
+    voices_cfg: dict[str, Any],
+    course_path: Path | None = None,
+    cli_profile: str | None = None,
+    cli_provider: str | None = None,
+    cli_voice: str | None = None,
+    cli_rate: str | None = None,
+    cli_pitch: str | None = None,
+    fps: int = 30,
+    quiet: bool = False,
+) -> dict[str, Any]:
+    """Synthesize Stage 2 dialogue beats into per-beat audio & locked audio_spine.json."""
+    dialogue = json.loads(dialogue_path.read_text(encoding="utf-8"))
+    ep_dir = dialogue_path.parent
+    beats = dialogue.get("beats") if isinstance(dialogue.get("beats"), list) else []
+    if not beats:
+        raise ValueError(f"dialogue.json at {dialogue_path} has no beats[]")
+
+    if course_path is None:
+        course_path = _auto_detect_course_path(dialogue_path)
+    course_data = None
+    if course_path and course_path.exists():
+        course_data = json.loads(course_path.read_text(encoding="utf-8"))
+
+    config = resolve_voice_config(
+        voices_cfg,
+        script_data=dialogue,
+        course_data=course_data,
+        cli_profile=cli_profile,
+        cli_provider=cli_provider,
+        cli_voice=cli_voice,
+        cli_rate=cli_rate,
+        cli_pitch=cli_pitch,
+    )
+    safe_profile_id = sanitize_profile_id(
+        config.get("resolved_profile_id"),
+        fallback_voice=config.get("voice_id"),
+        fallback_provider=config.get("provider"),
+    )
+    beats_audio_dir = ep_dir / "audio" / safe_profile_id / "beats"
+    beats_audio_dir.mkdir(parents=True, exist_ok=True)
+    hint_fmt = config.get("response_format") or "mp3"
+
+    fps_val = max(1, int(fps or 30))
+    cursor_ms = 0
+    prev_part: str | None = None
+    providers_used: set[str] = set()
+    spine_beats: list[dict[str, Any]] = []
+
+    for idx, beat in enumerate(beats):
+        if not isinstance(beat, dict):
+            continue
+        raw_id = str(beat.get("beat_id") or f"beat_{idx + 1:02d}").strip()
+        safe_beat_id = re.sub(r"[^A-Za-z0-9._-]+", "_", raw_id) or f"beat_{idx + 1:02d}"
+        part = str(beat.get("part") or "architecture").strip()
+        disp_text = re.sub(r"\s+", " ", str(beat.get("display_text") or "")).strip()
+        tts_text = re.sub(r"\s+", " ", str(beat.get("tts_text") or "")).strip()
+        spoken_text = tts_text or normalize_vietnamese_tts_text(disp_text)
+        if not spoken_text:
+            raise ValueError(f"Beat {raw_id} has empty tts_text and display_text")
+
+        if prev_part is not None and part != prev_part:
+            cursor_ms += 200  # 200ms (~6 frames @30fps) breathing pause at Part transition
+        prev_part = part
+
+        sp_chunks = split_text_for_tts(spoken_text, max_chars=180) or [spoken_text]
+        mp3_buf = bytearray()
+        wav_pcm_buf = bytearray()
+        wav_params: tuple[int, int, int] | None = None
+        beat_ext = "mp3"
+        beat_dur_sec = 0.0
+
+        for idx_c, chunk in enumerate(sp_chunks):
+            raw_audio, used = synthesize_chunk(chunk, config)
+            providers_used.add(used)
+            ext, payload, params, chunk_dur = measure_audio_chunk(raw_audio, hint=hint_fmt)
+            if ext == "wav":
+                beat_ext = "wav"
+                if wav_params is None:
+                    wav_params = params
+                wav_pcm_buf.extend(payload)
+            else:
+                mp3_buf.extend(payload)
+            beat_dur_sec += chunk_dur
+            if ext == "wav" and wav_params is not None and idx_c + 1 < len(sp_chunks):
+                nch, sw, sr = wav_params
+                gap_frames = int(round(sr * 0.08))
+                wav_pcm_buf.extend(b"\x00" * (gap_frames * nch * sw))
+                beat_dur_sec += gap_frames / float(max(1, sr))
+
+        if beat_ext == "wav" and wav_params is not None:
+            final_bytes = build_wav_bytes(wav_params, bytes(wav_pcm_buf))
+            nch, sw, sr = wav_params
+            beat_dur_sec = len(wav_pcm_buf) / float(max(1, nch * sw * sr))
+        else:
+            beat_ext = "mp3"
+            final_bytes = bytes(mp3_buf)
+
+        rel_audio = f"audio/{safe_profile_id}/beats/{safe_beat_id}.{beat_ext}"
+        (ep_dir / rel_audio).write_bytes(final_bytes)
+
+        dur_ms = max(1, int(round(beat_dur_sec * 1000)))
+        start_ms = cursor_ms
+        end_ms = start_ms + dur_ms
+        start_frame = int(round((start_ms / 1000.0) * fps_val))
+        end_frame = max(start_frame + 1, int(round((end_ms / 1000.0) * fps_val)))
+        cursor_ms = end_ms
+
+        spine_beats.append({
+            "beat_id": raw_id,
+            "part": part,
+            "scene_group": str(beat.get("scene_group") or f"scene_{part}").strip(),
+            "display_text": disp_text or spoken_text,
+            "tts_text": spoken_text,
+            "audio_file": rel_audio,
+            "duration_ms": dur_ms,
+            "start_ms": start_ms,
+            "end_ms": end_ms,
+            "start_frame": start_frame,
+            "end_frame": end_frame,
+        })
+        if not quiet:
+            print(f"[SPINE] {raw_id}: {dur_ms}ms ({start_frame}..{end_frame}) -> {rel_audio}")
+
+    effective_profile = config.get("resolved_profile_id") or safe_profile_id
+    spine_payload = {
+        "episode_id": dialogue.get("episode_id") or ep_dir.name,
+        "course_id": dialogue.get("course_id") or "",
+        "fps": fps_val,
+        "total_duration_ms": cursor_ms,
+        "total_frames": int(round((cursor_ms / 1000.0) * fps_val)),
+        "tts_profile": effective_profile,
+        "tts_voice": config.get("voice_id"),
+        "tts_provider_used": sorted(providers_used),
+        "generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "beats": spine_beats,
+    }
+    spine_path = ep_dir / "audio_spine.json"
+    _write_json_atomic(spine_path, spine_payload)
+    return {
+        "ok": True,
+        "audio_spine_path": str(spine_path),
+        "audio_spine": spine_payload,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Pluggable pure-Python TTS & synchronized subtitle pipeline."
@@ -2584,6 +2859,7 @@ def main() -> int:
     parser.add_argument("--pitch", default=None, help="Optional pitch override (e.g. +0Hz or -2Hz)")
 
     # Utility & Web Studio CLI modes
+    parser.add_argument("--audio-spine", default=None, help="Path to Stage 2 dialogue.json to synthesize per-beat audio_spine.json")
     parser.add_argument("--realign-only", action="store_true", help="Re-align scene timings from existing subtitles without TTS")
     parser.add_argument("--scene", default=None, help="Optional single scene_id filter for --realign-only")
     parser.add_argument("--list-profiles", action="store_true", help="List profiles from voices.json")
@@ -2653,8 +2929,31 @@ def main() -> int:
         except Exception as exc:
             return _emit_error(str(exc), args.as_json)
 
+    if args.audio_spine:
+        dialogue_path = Path(args.audio_spine).resolve()
+        if not dialogue_path.exists():
+            return _emit_error(f"dialogue.json not found at {dialogue_path}", args.as_json)
+        course_path = Path(args.course).resolve() if args.course else None
+        try:
+            res = process_audio_spine(
+                dialogue_path=dialogue_path,
+                voices_cfg=voices_cfg,
+                course_path=course_path,
+                cli_profile=args.profile,
+                cli_provider=args.provider,
+                cli_voice=args.voice,
+                cli_rate=args.rate,
+                cli_pitch=args.pitch,
+                quiet=args.as_json,
+            )
+            if args.as_json:
+                print(json.dumps(res, ensure_ascii=False))
+            return 0
+        except Exception as exc:
+            return _emit_error(str(exc), args.as_json)
+
     if not args.episode:
-        return _emit_error("Provide --episode <script.json>, --preview, --list-profiles, or --discover-voicestudio", args.as_json)
+        return _emit_error("Provide --episode <script.json>, --audio-spine <dialogue.json>, --preview, --list-profiles, or --discover-voicestudio", args.as_json)
 
     script_path = Path(args.episode).resolve()
     if not script_path.exists():

@@ -6,6 +6,7 @@ import { BrandHealthGrid, isProviderReady } from "./ai/BrandHealthGrid.mjs";
 import { FloatingBatchBar } from "./ai/FloatingBatchBar.mjs";
 import { HeaderJobsTray } from "./HeaderJobsTray.mjs";
 import { RevisionPanel } from "./RevisionPanel.mjs";
+import { ScriptingStageModal } from "./ScriptingStageModal.mjs";
 import { VoiceStudioModal } from "./VoiceStudioModal.mjs";
 
 const h = React.createElement;
@@ -110,11 +111,15 @@ export function EpisodeRoadmap({
   const [rightTab, setRightTab] = useState("feed"); // "feed" | "revisions" | "curriculum"
   const [curriculumCollapsed, setCurriculumCollapsed] = useState(false);
   const [voiceModalOpen, setVoiceModalOpen] = useState(false);
+  const [scriptingStageEp, setScriptingStageEp] = useState(null);
   const [aiModal, setAiModal] = useState({
     open: false,
     mode: "single",
     episode: null,
     initialSelectedIds: null,
+    initialMode: null,
+    initialPauseAfter: null,
+    startFrom: null,
     resumeJob: null,
   });
   const [providerPanelOpen, setProviderPanelOpen] = useState(false);
@@ -668,6 +673,13 @@ export function EpisodeRoadmap({
                           ep.has_script && !ep.has_audio
                             ? h("span", { className: "ep-storyboard-tag" }, "Storyboard")
                             : null,
+                          ep.scripting_phase === "brief_ready"
+                            ? h("span", { className: "ep-stage-phase-tag" }, "📝 Brief chờ duyệt")
+                            : ep.scripting_phase === "dialogue_ready"
+                              ? h("span", { className: "ep-stage-phase-tag" }, "🗣️ Thoại chờ duyệt")
+                              : ep.scripting_phase === "audio_spine_ready"
+                                ? h("span", { className: "ep-stage-phase-tag" }, "🔒 Audio-Spine")
+                                : null,
                           ep.has_video
                             ? h("span", { className: "ep-video-tag" }, "Video Ready")
                             : null,
@@ -801,6 +813,25 @@ export function EpisodeRoadmap({
                               "✍️ Biên kịch"
                             );
                           })(),
+                          (ep.has_brief ||
+                            ep.has_dialogue ||
+                            ep.scripting_phase === "brief_ready" ||
+                            ep.scripting_phase === "dialogue_ready" ||
+                            ep.scripting_phase === "audio_spine_ready")
+                            ? h(
+                                "button",
+                                {
+                                  type: "button",
+                                  className: "ep-btn-stage-review",
+                                  onClick: (e) => {
+                                    e.stopPropagation();
+                                    setScriptingStageEp(ep);
+                                  },
+                                  title: "Xem & duyệt Brief / Lời thoại (Dual-Text) / Audio-Spine",
+                                },
+                                "📝 Duyệt Brief / Thoại"
+                              )
+                            : null,
                           hasOpenRevs
                             ? canPlay
                               ? h(
@@ -987,6 +1018,29 @@ export function EpisodeRoadmap({
         }),
     }),
 
+    // Scripting 3-Stage Review Modal (Brief / Dialogue / Audio-Spine)
+    h(ScriptingStageModal, {
+      isOpen: Boolean(scriptingStageEp),
+      course,
+      episode: scriptingStageEp,
+      onClose: () => setScriptingStageEp(null),
+      onSaved: async () => {
+        if (onRefreshCourses) await onRefreshCourses();
+      },
+      onContinueToStage: ({ episode: targetEp, startFrom, initialMode, initialPauseAfter }) => {
+        setAiModal({
+          open: true,
+          mode: "single",
+          episode: targetEp,
+          initialSelectedIds: null,
+          initialMode: initialMode || "three_stage",
+          initialPauseAfter: initialPauseAfter || (startFrom === "visual" ? "none" : "dialogue"),
+          startFrom: startFrom || null,
+          resumeJob: null,
+        });
+      },
+    }),
+
     // AI Scripting Modal (Single Episode, Unlimited Batch, Resume, or Manual Web)
     h(AiScriptModal, {
       isOpen: aiModal.open,
@@ -994,6 +1048,9 @@ export function EpisodeRoadmap({
       course,
       targetEpisode: aiModal.episode,
       initialSelectedIds: aiModal.initialSelectedIds,
+      initialMode: aiModal.initialMode,
+      initialPauseAfter: aiModal.initialPauseAfter,
+      startFrom: aiModal.startFrom,
       resumeJob: aiModal.resumeJob,
       providersData,
       onProvidersLoaded,
@@ -1004,6 +1061,9 @@ export function EpisodeRoadmap({
           mode: "single",
           episode: null,
           initialSelectedIds: null,
+          initialMode: null,
+          initialPauseAfter: null,
+          startFrom: null,
           resumeJob: null,
         }),
       onSubmitJob: async (payload) => {

@@ -28,6 +28,7 @@ Tiến độ từng tập video được lưu nguyên tử (atomic) tại `<COUR
    - Thực hiện phỏng vấn `/grill-me` từng câu (mục tiêu chứng chỉ/thực chiến, quy mô `10/20/30` tập, giọng đọc mặc định từ `engine/voices.json`, độ sâu Lab/CLI/Code, phạm vi triển khai).
    - Tạo `course.json` (lưu cấu hình giọng mặc định), `curriculum.md` chia theo từng *Chặng*, và khởi tạo file state cho toàn bộ các tập.
 2. **Conversation 2 — Nhà máy Kịch bản (`episode-producer` / Web Studio AI Engine):**
+   - Hỗ trợ **biên kịch tách 3 giai đoạn (`three_stage`: `brief.json` → `dialogue.json` → `audio_spine.json` → `script.json`)** bên cạnh `two_pass`/`single_pass`, với định tuyến provider động theo từng vai trò (`brief`, `dialogue`, `visual_director`) và modal duyệt/sửa trung gian (`ScriptingStageModal`).
    - Viết từng tập, theo đợt 3–5 tập, hoặc **chọn nhiều tập không giới hạn (`☑️ Chọn nhiều`)** để chạy hàng loạt trên 1 model, xử lý ticket sửa lỗi (`revisions`), viết `script.json` theo cấu trúc chuẩn 4 phần (**Bài toán thực tế `problem` → Sơ đồ kiến trúc `architecture` → Thực hành Setup & Code `setup` → Bẫy đề thi & Thực chiến `exam_tips`**) và tài liệu ôn tập `notes.md`.
    - Tự động kiểm tra va chạm node/nhãn/cạnh và phân vùng trong sơ đồ trước khi chuyển trạng thái `script_ready`. Khi viết lại tập đã có kịch bản/audio/video từ tab **`🛠️ Sửa`** (`🔄 Gửi AI Sửa Kịch Bản`) hoặc từ modal batch, hệ thống yêu cầu ghi rõ ghi chú thay đổi và tự đánh dấu `production.stale = true`.
 3. **Conversation 3 — Nhà máy Video (`episode-producer` + `video-renderer`):**
@@ -46,23 +47,24 @@ Hỗ trợ **9 kênh AI** ngay trong Web Studio (`BrandHealthGrid`) thông qua `
 
 ### 1.3. 7 Visual Templates & Bộ máy Motion V2
 Giao diện trình chiếu (`engine/src/components/` + `engine/src/motion/kernel.mjs`) hỗ trợ 7 mẫu cảnh đối xứng ở tỷ lệ 16:9:
-- **`architecture`**: Sơ đồ kiến trúc động với `zones[]` lồng tối đa 2 cấp (`client`, `network`, `compute`, `security`, `data`, `danger`), định tuyến cạnh (`auto`, `straight`, `orthogonal`, `curved`), `flow_steps` và `camera_focus` (`x`, `y`, `zoom`).
+- **`architecture`**: Sơ đồ kiến trúc động với `zones[]` lồng tối đa 2 cấp (`client`, `network`, `compute`, `security`, `data`, `danger`), kho **15 minh họa SVG đa sắc (`node.svg`, `engine/assets/svg/`)**, định tuyến cạnh (`auto`, `straight`, `orthogonal`, `curved`), `flow_steps` và `camera_focus` (`x`, `y`, `zoom`).
 - **`console_setup`**: Mockup giao diện Cloud/Console sạch sẽ, làm nổi bật từng trường nhập liệu, lựa chọn và nút bấm theo tiến trình lời thoại.
 - **`code_cli`**: Hiển thị code & terminal song song (`split`, `code`, `terminal`) với `highlight_phases`, hỗ trợ `code_override` (`@shikijs/magic-move`) và `laser_scan` (quét tia laser đỏ cảnh báo lỗ hổng/lỗi).
 - **`exam_tips`**: Đối chiếu *Làm sai vs Chuẩn thực chiến/đề thi* kèm thẻ quiz trắc nghiệm tương tác.
 - **`comparison_matrix`**: Bảng so sánh tối đa 4 cột / 6 hàng kèm takeaway.
 - **`timeline_flow`**: Dòng thời gian 2–6 cột mốc (ngang/dọc).
-- **`kpi_metrics`**: Tối đa 4 thẻ KPI (kèm sparkline), biểu đồ cột (`<= 8` điểm) và tem cảnh báo (`alert_stamp`).
-- Hỗ trợ trường `highlight_words` ở mỗi cảnh để nhấn màu thuật ngữ chuyên ngành trong phụ đề V2 không hộp nền.
+- **`kpi_metrics`**: Tối đa 4 thẻ KPI (kèm sparkline, hỗ trợ badge `SharpTag`), biểu đồ cột (`<= 8` điểm) và tem cảnh báo (`alert_stamp`).
+- Hỗ trợ metadata Phase 2 (`world_theme: "dark" | "light"`, `visual_job`, `causal_mechanic`, `sfx_cues`, `bgm_file`) và trường `highlight_words` ở mỗi cảnh để nhấn màu thuật ngữ chuyên ngành trong phụ đề V2 không hộp nền.
 
 ### 1.4. Tổng hợp giọng đọc TTS đa track (Multi-Voice A/B) & Khớp nhịp 2 lớp (`engine/tts_pipeline.py`)
 Viết hoàn toàn bằng thư viện chuẩn Python (`urllib`, `ssl`, `socket`, `wave`, ...):
-- **Kế thừa giọng 3 tầng:** `--profile` CLI / `script.json` (ghi đè riêng từng tập) → `course.json` (mặc định khóa học) → `engine/voices.json` (mặc định toàn Studio).
+- **Kế thừa giọng 3 tầng:** `--profile` CLI / `script.json` (ghi đè riêng từng tập) → `course.json` (mặc định khóa học) → `engine/voices.json` (mặc định toàn Studio — đã tích hợp sẵn **25 giọng VieNeu-TTS v3 Turbo** qua `openai_compat` tại `http://127.0.0.1:8000/v1/audio/speech`).
+- **Dual-Text TTS & `--audio-spine`:** Hỗ trợ `tts_beats` / `tts_narration` (chuẩn hóa đọc Tiếng Việt với `normalize_vietnamese_tts_text`) và tổng hợp xương sống audio (`audio_spine.json`) trước khi dựng visual.
 - **Multi-Voice A/B Preservation:** Mỗi lần tạo audio cho một giọng mới, hệ thống lưu riêng vào `audio/<profile_id>/<scene_id>.(mp3|wav)` + `subtitles.<profile_id>.srt` và cập nhật `script.voice_tracks` — **giữ nguyên toàn bộ file & timing của các giọng đã tạo trước đó** để bạn chuyển đổi A/B tức thì (`0` chi phí tạo lại TTS).
 - **Đồng bộ Animation theo Giọng đọc 2 lớp:**
-  - *Lớp 1 (Subtitle-Cue Alignment):* Khi chạy TTS hoặc `tts_pipeline.py --realign-only [--scene <id>]`, engine đối chiếu từ khóa của từng bước trên cả 7 visual template với mốc thời gian phụ đề thực tế, luôn tính từ ảnh chụp gốc `scene._base_timings` để không trôi lệch qua nhiều lần chạy.
+  - *Lớp 1 (Subtitle-Cue Alignment):* Khi chạy TTS hoặc `tts_pipeline.py --realign-only [--scene <id>]`, engine ưu tiên khớp chính xác theo `cue_sentence` (chỉ số câu 1-based) + `cue_text`/từ khóa trên cả 7 visual template với mốc thời gian phụ đề thực tế, luôn tính từ ảnh chụp gốc `scene._base_timings`.
   - *Lớp 2 (Playhead Calibration):* Tinh chỉnh thủ công từng bước ngay trên Studio Player qua thanh **`⏱️ Khớp nhịp Animation`** (`POST /api/episodes/scene-timings`).
-- **Hỗ trợ đa provider:** `auto` *(mặc định: Edge ReadAloud Neural tự fallback Google TTS)*, `edge`, `google`, `voicestudio` (`http://localhost:8000/v1/audio/speech` hoặc `VOICESTUDIO_API_URL`), `openai_compat` / `custom_http` (xem [`engine/TTS_VOICE_SPEC.md`](engine/TTS_VOICE_SPEC.md)).
+- **Hỗ trợ đa provider:** `openai_compat` / `voicestudio` (`http://127.0.0.1:8000/v1/audio/speech` hoặc `VOICESTUDIO_API_URL`), `auto`, `edge`, `google`, `custom_http` (xem [`engine/TTS_VOICE_SPEC.md`](engine/TTS_VOICE_SPEC.md)).
 
 ### 1.5. Studio Web Dashboard 3 Màn hình (`http://localhost:3030`)
 Khởi chạy qua `engine/server.mjs` và đồng bộ real-time bằng Server-Sent Events (`/api/stream`):
@@ -79,6 +81,9 @@ Khởi chạy qua `engine/server.mjs` và đồng bộ real-time bằng Server-S
 
 ### 1.6. Render Video bằng HyperFrames (`engine/render_video.mjs`)
 - **Engine mặc định: [HyperFrames](https://github.com/heygen-com/hyperframes)** — mỗi tập được biên dịch thành project HyperFrames chuẩn (`<COURSE>/episodes/<EP_ID>/hyperframes/index.html`, 7 template viết lại bằng DOM + GSAP, runtime chính thức `hyperframe.runtime.iife.js` vendor offline), sau đó Chrome headless seek từng frame theo giao thức HyperFrames và mã hoá bằng WebCodecs (H.264/HEVC/VP9 + AAC/Opus) — **không cần FFmpeg hay npm**. Chi tiết: [`engine/HYPERFRAMES_ENGINE.md`](engine/HYPERFRAMES_ENGINE.md).
+- **Motion Grammar & Post-Mix Âm thanh `-16 LUFS` (Phase 2):**
+  - Chuyển động nền `.tvs-bg-grid` liên tục + `creepZoom` (`1.0 → 1.015`, `force3D: false`), chuyển đổi nền Sáng/Tối (`world_theme`), chồng lấn chuyển cảnh thông minh cùng `part` (hoặc `dark breather` `140ms` khi đổi `part`), `SharpTag`, và xoay tua `causal_mechanic`.
+  - Mix tự động 6 hiệu ứng âm thanh 48kHz (`engine/assets/sfx/*.wav`, lead `-33ms`), nhạc nền `bgm_file` cắt EQ giọng (`1800Hz -6dB` qua `OfflineAudioContext`), và chuẩn hóa **ITU-R BS.1770-4 `-16 LUFS`** + soft-limiter (`0.8414` ≈ `-1.5 dBTP`) hoàn toàn bằng JS thuần (`engine/src/audio_dsp.mjs`, `engine/src/hf_encoder.mjs`).
 - Engine Canvas 2D cũ (`window.__STUDIO_RENDER_OFFLINE__`) vẫn dùng được qua `--engine legacy` hoặc lựa chọn **Engine render** trong popover **`🎬 Xuất Video ▾`**.
 - Tùy chọn độ phân giải (`720p`, `1080p`, `1440p`, `2160p`), tốc độ khung hình (`24`, `30`, `60` fps), định dạng (`mp4`, `webm`), tăng tốc (`1x`–`2x`), và chế độ tăng tốc phần cứng (`auto`, `gpu`, `cpu`).
 
@@ -175,6 +180,7 @@ node engine/state_cli.mjs summary --course <COURSE> [--json]
 node engine/state_cli.mjs next --course <COURSE> --stage <scripting|production> [--limit 5] [--json]
 node engine/state_cli.mjs set --course <COURSE> --ep <EP_ID> --stage <scripting|production> --status <STATUS> [--owner "..."] [--note "..."] [--tts-done true] [--video-done true] [--verified true]
 node engine/state_cli.mjs validate-diagrams --course <COURSE> [--ep <EP_ID>] [--json]
+node engine/state_cli.mjs svg-list [--json]
 node engine/state_cli.mjs sync --course <COURSE>
 node engine/state_cli.mjs revisions --course <COURSE> [--ep <EP_ID>] [--status open|in_progress|resolved|all]
 node engine/state_cli.mjs add-revision --course <COURSE> --ep <EP_ID> --scope <script|visual|production> [--scene <SCENE_ID>] --desc "<mô tả lỗi>"
@@ -185,16 +191,19 @@ node engine/state_cli.mjs resolve-revision --course <COURSE> --ep <EP_ID> --rev 
 
 ```powershell
 python engine/tts_pipeline.py --episode "<COURSE>/episodes/<EP_ID>/script.json" --course "<COURSE>/course.json" --json
+python engine/tts_pipeline.py --audio-spine --episode "<COURSE>/episodes/<EP_ID>/dialogue.json" --course "<COURSE>/course.json" --json
 python engine/tts_pipeline.py --realign-only --episode "<COURSE>/episodes/<EP_ID>/script.json" [--scene <SCENE_ID>] [--profile <PROFILE_ID>] --json
 python engine/tts_pipeline.py --list-profiles
 python engine/tts_pipeline.py --discover-voicestudio --json
 python engine/tts_pipeline.py --preview --profile edge-hoaimy --text "Xin chào" --out preview.mp3
 
+node engine/scripts/generate_sfx_assets.mjs   # (Tùy chọn) tạo lại 6 file SFX WAV chuẩn 48kHz trong engine/assets/sfx/
 node engine/render_video.mjs --course <COURSE> --episode <EP_ID> --port 3030 --format mp4 --codec h264 --resolution 1080p --fps 60 --speed 1 --hardware auto [--output <TEN_FILE>] [--workers 1..8] [--engine hyperframes|legacy]
 node engine/render_video.mjs --course <COURSE> --episode <EP_ID> --compile-only   # chỉ sinh project HyperFrames
 node engine/hyperframes/snapshot.mjs --course <COURSE> --episode <EP_ID> --scene 0 --at 0.1,0.5,0.9 --check-determinism
 
-# Chạy bộ kiểm thử E2E + UI Headless Chrome (13 phần) và bộ test engine HyperFrames
+# Chạy các bộ kiểm thử E2E + UI Headless Chrome, 3-Stage Scripting và HyperFrames (-16 LUFS)
+node engine/test_phase1_three_stage.mjs
 node engine/test_ai_bridge_and_templates.mjs
 node engine/test_hyperframes.mjs
 ```
@@ -206,7 +215,9 @@ node engine/test_hyperframes.mjs
 | `GET /api/ai/providers[?force=1]` | Danh sách 9 brand AI, trạng thái auth (`verified`/`invalid`/`quota_exhausted`/`unconfigured`...), model live, `last_selection` (không bao giờ trả về API key). |
 | `POST /api/ai/providers/credentials` | Lưu/cập nhật/xóa key hoặc `base_url` tùy chỉnh vào `engine/.ai_credentials.json` và chạy handshake `$0`. |
 | `POST /api/ai/providers/test` | Kiểm tra lại kết nối hoặc test `ping_one_token: true`. |
-| `POST /api/ai/jobs` | Tạo job `script_episode` hoặc `script_batch` (hỗ trợ `rewrite_notes` / `rewrite_note`, không giới hạn số tập với built-in AI). |
+| `POST /api/ai/preferences/routing` | Lưu cấu hình định tuyến provider động cho từng vai trò (`brief`, `dialogue`, `visual_director`) vào `engine/.ai_preferences.json`. |
+| `POST /api/ai/jobs` | Tạo job `script_episode` hoặc `script_batch` (hỗ trợ `mode: "three_stage"`, `pause_after`, `start_from`, `rewrite_notes` / `rewrite_note`, không giới hạn số tập với built-in AI). |
+| `GET /api/episodes/scripting-artifacts` & `POST /api/episodes/{brief,dialogue,audio-spine}` | Đọc/sửa `brief.json`, `dialogue.json` và chạy TTS xương sống (`audio_spine.json`) cho từng tập. |
 | `POST /api/ai/jobs/resume` | Tiếp tục job đang `paused`/`failed` trên các tập còn lại (có thể đổi sang `provider_id` / `model` khác). |
 | `POST /api/ai/manual-prompt` & `manual-submit` | Tạo Prompt Pack `$0` và validate/lưu JSON kịch bản dán vào. |
 | `POST /api/episodes/voice-track/activate` & `delete` | Chuyển đổi tức thì giữa các track giọng A/B đã tạo (`0` gọi TTS) hoặc xóa track dư. |
@@ -233,6 +244,7 @@ node engine/test_hyperframes.mjs
 ```text
 TechVideoStudio/
 ├── AGENTS.md                         # Nguồn quy tắc workspace chuẩn (Antigravity, Codex, Universal)
+├── CHANGELOG.md                      # Lịch sử nâng cấp & kiểm thử theo từng giai đoạn
 ├── CLAUDE.md                         # Adapter mỏng (~20 dòng) trỏ Claude Code/Desktop về AGENTS.md
 ├── GUIDE.md                          # Runbook setup dành cho AI Agent & người dùng
 ├── README.md                         # Tài liệu Tiếng Việt (file này)
@@ -258,15 +270,19 @@ TechVideoStudio/
 │   ├── render_video.mjs              # CLI render video (mặc định HyperFrames, --engine legacy = Canvas 2D)
 │   ├── hyperframes/                  # Engine HyperFrames: compiler, 7 template DOM+GSAP, renderer CDP, snapshot
 │   ├── HYPERFRAMES_ENGINE.md         # Ghi chép thiết kế & vận hành engine HyperFrames
-│   ├── test_ai_bridge_and_templates.mjs  # Bộ kiểm thử E2E & Chrome UI 13 phần
-│   ├── test_hyperframes.mjs          # Bộ kiểm thử engine HyperFrames
-│   ├── voices.json                   # Danh mục profile giọng đọc
+│   ├── UPGRADE_CHECKLIST.md          # Checklist nâng cấp 3 pha & trạng thái bàn giao
+│   ├── assets/                       # Kho minh họa kiến trúc SVG (svg/) & hiệu ứng âm thanh SFX 48kHz (sfx/)
+│   ├── scripts/                      # Vendor runtime/GSAP pin SHA-256 & tạo SFX WAV (generate_sfx_assets.mjs)
+│   ├── test_phase1_three_stage.mjs   # Kiểm thử quy trình biên kịch 3 bước, dynamic routing & Audio Spine
+│   ├── test_ai_bridge_and_templates.mjs  # Bộ kiểm thử E2E & Chrome UI 17 phần
+│   ├── test_hyperframes.mjs          # Bộ kiểm thử engine HyperFrames (determinism, Light/Dark, -16 LUFS)
+│   ├── voices.json                   # Danh mục profile giọng đọc (gồm VieNeu-TTS v3 Turbo)
 │   ├── MOTION_SPEC.md                # Đặc tả motion engine V2
 │   ├── TTS_VOICE_SPEC.md             # Đặc tả tích hợp custom TTS provider
-│   ├── ai/                           # Multi-provider credentials/handshake, LLM runner, batch queue broker
+│   ├── ai/                           # Multi-provider credentials/handshake, 3-stage LLM runner, batch queue broker
 │   ├── mcp/                          # Dùng chung JSON-RPC handler (9 tools + 4 resources) cho Stdio & HTTP
 │   ├── public/index.html             # Entry Web UI & importmap esm.sh
-│   └── src/                          # Studio player, BrandHealthGrid, FloatingBatchBar, 7 templates, exporter
+│   └── src/                          # Studio player, ScriptingStageModal, 7 templates, audio_dsp (-16 LUFS), exporter
 └── <COURSE>/                         # Khóa học cục bộ tạo trên máy (vd: AWS/, K8S/ — đã được .gitignore loại trừ khỏi Git)
 ```
 

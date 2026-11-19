@@ -375,9 +375,10 @@ HyperFrames có thể không giữ cao độ như WSOLA của mình khi `speed �
 
 | Lệnh | Nội dung |
 |---|---|
-| `node engine/test_hyperframes.mjs` | vendor pin, `audio_probe` (WAV + MP3 CBR), `computeTimeline`, hợp đồng HTML/manifest, Shiki tokens, runtime build 7 template 0 lỗi + determinism, render MP4 720p24 thật + verify (1280×720, 17.5s ±0.15, audio RMS > 0) |
+| `node engine/test_hyperframes.mjs` | vendor pin, `audio_probe` (WAV + MP3 CBR), `computeTimeline`, 6 SFX WAVs + pure-JS BS.1770 `-16 LUFS` DSP, hợp đồng HTML/manifest (SVG/SFX/overlap), Shiki tokens, runtime build 7 template 0 lỗi + determinism, mixed Light/Dark + `causal_mechanic` + `SharpTag` + `bgm.wav` determinism, render MP4 720p24 thật + verify (1280×720, 17.5s ±0.15, RMS > 0, **`-16.02 LUFS`**) |
 | `node engine/test_hyperframes.mjs --skip-render` | như trên, bỏ bước render |
-| `node engine/test_ai_bridge_and_templates.mjs` | test tổng: mục 6 render cả **HyperFrames (mặc định)** lẫn **`--engine legacy`** |
+| `node engine/test_phase1_three_stage.mjs` | dynamic per-role routing, 3-stage `brief -> dialogue -> audio_spine -> script`, Dual-Text TTS |
+| `node engine/test_ai_bridge_and_templates.mjs` | test tổng 17 phần: mục 6 render cả **HyperFrames (mặc định)** lẫn **`--engine legacy`** |
 
 Cách `snapshot --check-determinism` hoạt động: chụp các mốc theo thứ tự xuôi, seek tới cuối composition
 rồi đi ngược lại; so **trạng thái hiệu lực** của mọi phần tử đang hiển thị (computed `opacity`,
@@ -386,13 +387,22 @@ thái ⇒ lỗi. Cùng trạng thái nhưng khác pixel ⇒ chỉ cảnh báo "r
 tiling của Chrome; khi kiểm tra Chrome chạy `--disable-gpu-rasterization` để giảm nhiễu). Phần tử bị ẩn
 (cảnh khác) được bỏ qua vì có thể giữ giá trị tween chưa render khác nhau mà không ảnh hưởng hình.
 
-Kết quả 2026-11-17 (sau khi đủ 7 template): demo `HFDEMO` 7 cảnh × 3 mốc = 21 frame — **0 lỗi trạng thái,
-2 lần liên tiếp**, 1 cảnh báo nhiễu raster thuần pixel (cảnh console, viền field highlight).
+Kết quả 2026-11-19 (Phase 2 Visual Grammar, SFX Bus & `-16 LUFS` Post-Mix):
 
-- `node engine/test_hyperframes.mjs` → **6/6 PASS** (render thật `hf-e2e.mp4` 1280×720, 17.5s, audio AAC có tiếng).
-- `node engine/test_ai_bridge_and_templates.mjs` → **ALL TESTS PASSED** (HyperFrames WebM 896 KB + legacy WebM 926 KB).
-- `node engine/scripts/vendor_libs.mjs --verify-only` → PASS (209 file ESM + 3 file raw pin SHA-256;
-  `.gitattributes` mới giữ nguyên byte, trước đây `core.autocrlf` làm lệch hash toàn bộ vendor).
+- `node engine/test_hyperframes.mjs` → **8/8 PASS** (6 SFX WAVs 48kHz, pure-JS BS.1770 `-28.64 → -16 LUFS`, 7/7 template determinism, fixture `ep02-phase2` Light/Dark + `causal_mechanic` + `SharpTag` + `bgm.wav` determinism 0 lỗi, render `hf-e2e.mp4` `1280×720`, `17.51s`, `rms 0.122`, **`-16.02 LUFS`**).
+- `node engine/test_phase1_three_stage.mjs` → **`ALL PHASE 1 TESTS PASSED!`**.
+- `node engine/test_ai_bridge_and_templates.mjs` → **`ALL TESTS PASSED!`** (17/17 phần, HyperFrames WebM `918 KB` + legacy WebM `918 KB`).
+
+### 11.1. Tóm tắt nâng cấp Phase 2 (2026-11-19)
+
+- **Visual Grammar & Smart Transitions (`tvs-hf.css`, `tvs-hf-common.mjs`, `tvs-hf-main.mjs`, `compiler.mjs`):**
+  - Chuyển động nền `.tvs-bg-grid` (wrap modulo `60px`) + `creepZoom` (`1.0 → 1.015`, `force3D: false`).
+  - Hỗ trợ `world_theme: "dark" | "light"` (`.tvs-bg-light` / `.tvs-scene--light`), `SharpTag` (`sharpTag()`), `CAUSAL_MECHANICS` (`blur-materialize`, `wire-draw`, `width-push`, `arc-emission`, `squash-drop`, `typographic-strike`) kèm reset `filter`/`clipPath` 0s bằng `fromTo` để giữ determinism khi seek ngược.
+  - Tự động chồng lấn chuyển cảnh mượt (`min(0.45s, nextDuration * 0.22)`) giữa các scene cùng `part`, giữ `dark breather` (`140ms`) tại ranh giới chuyển `part`.
+  - Hỗ trợ ảnh SVG đa sắc `node.svg` từ `engine/assets/svg/` trong `scenes/architecture.mjs`.
+- **Programmatic SFX Bus, Vocal-Carve BGM & Pure-JS `-16 LUFS` (`audio_dsp.mjs`, `hf_encoder.mjs`, `render.mjs`, `verify_video.mjs`):**
+  - 6 file 48kHz PCM WAV trong `engine/assets/sfx/` (`whoosh_short`, `pop`, `click`, `typing_fast`, `impact`, `chime`) phát theo `sfx_cues` / auto-derive với lead `-33ms`; `bgm_file` tùy chọn được cắt EQ `1800Hz -6dB Q=1.4` qua `OfflineAudioContext`.
+  - Đo & chuẩn hóa BS.1770-4 K-weighted về `-16 LUFS` kèm soft limiter (`0.8414` ≈ `-1.5 dBTP`) thuần JS (Zero FFmpeg), đo lại trực tiếp trong `verify_video.mjs`.
 
 ---
 

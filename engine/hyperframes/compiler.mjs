@@ -15,7 +15,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { parseSubtitleSegments, SUPPORTED_VISUAL_TYPES } from "../src/motion/kernel.mjs";
+import { MOTION_TOKENS, parseSubtitleSegments, SUPPORTED_VISUAL_TYPES } from "../src/motion/kernel.mjs";
 import { probeAudioDuration } from "./audio_probe.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -23,6 +23,16 @@ const HF_DIR = path.dirname(__filename);
 const ENGINE_DIR = path.resolve(HF_DIR, "..");
 const RUNTIME_DIR = path.join(HF_DIR, "runtime");
 const VENDOR_DIR = path.join(ENGINE_DIR, "public", "vendor");
+const SFX_ASSETS_DIR = path.join(ENGINE_DIR, "assets", "sfx");
+
+export const VALID_SFX_TYPES = Object.freeze([
+  "whoosh_short",
+  "pop",
+  "click",
+  "typing_fast",
+  "impact",
+  "chime",
+]);
 
 export const COMPOSITION_ID = "main";
 export const FRAME_WIDTH = 1920;
@@ -262,11 +272,139 @@ function renderSubtitleHtml(cue, sceneIndex, cueIndex) {
   return `    <div id="sub-${sceneIndex}-${cueIndex}" class="clip tvs-subtitle" data-start="${cue.start}" data-duration="${cue.duration}" data-track-index="2"><span class="tvs-subtitle__text">${inner}</span></div>`;
 }
 
+function clampUnit(n, fallback = 0) {
+  const num = Number(n);
+  if (!Number.isFinite(num)) return fallback;
+  return Math.max(0, Math.min(1, num));
+}
+
+function buildSfxCues(scenes, timing, { sfxDir = SFX_ASSETS_DIR } = {}) {
+  if (!sfxDir || !fs.existsSync(sfxDir)) return [];
+  const validSet = new Set(VALID_SFX_TYPES);
+  const leadSec = (Number(MOTION_TOKENS?.timing?.sfxLeadMs) || -33) / 1000;
+  const speed = Number(timing.speed) > 0 ? Number(timing.speed) : 1;
+  const cues = [];
+  const pushCue = (type, rawSec, volume = 0.65) => {
+    const cleanType = String(type || "").trim();
+    if (!validSet.has(cleanType)) return;
+    if (!fs.existsSync(path.join(sfxDir, `${cleanType}.wav`))) return;
+    const t = Math.max(0, Math.min(Math.max(0, timing.total - 0.04), round3(rawSec + leadSec)));
+    cues.push({
+      type: cleanType,
+      src: `assets/sfx/${cleanType}.wav`,
+      start: t,
+      volume: Number.isFinite(Number(volume)) ? Math.max(0.05, Math.min(1.5, Number(volume))) : 0.65,
+    });
+  };
+
+  for (let i = 0; i < scenes.length; i++) {
+    const sc = scenes[i] || {};
+    const t = timing.scenes[i];
+    if (!t) continue;
+
+    if (Array.isArray(sc.sfx_cues)) {
+      for (const c of sc.sfx_cues) {
+        if (!c || typeof c !== "object") continue;
+        let atSec = t.start;
+        if (Number.isFinite(Number(c.time_sec))) {
+          atSec = t.start + Number(c.time_sec) / speed;
+        } else if (Number.isFinite(Number(c.frame_offset))) {
+          atSec = t.start + (Number(c.frame_offset) / 30) / speed;
+        } else {
+          atSec = t.start + clampUnit(c.progress, 0) * t.duration;
+        }
+        pushCue(c.type, atSec, c.volume ?? 0.65);
+      }
+      continue;
+    }
+
+    // Auto-derived SFX cues (capped <= 4 per scene so narration stays crisp)
+    let sceneCount = 0;
+    const addAuto = (type, p, vol = 0.6) => {
+      if (sceneCount >= 4) return;
+      pushCue(type, t.start + clampUnit(p, 0) * t.duration, vol);
+      sceneCount += 1;
+    };
+    if (i > 0) addAuto("whoosh_short", 0.01, 0.52);
+
+    const vd = sc.visual_data && typeof sc.visual_data === "object" ? sc.visual_data : {};
+    const vt = sc.visual_type || "architecture";
+    if (vt === "architecture") {
+      for (const st of (Array.isArray(vd.flow_steps) ? vd.flow_steps : []).slice(0, 3)) {
+        addAuto("pop", st?.progress_start ?? 0.1, 0.45);
+      }
+    } else if (vt === "console_setup") {
+      for (const st of (Array.isArray(vd.steps) ? vd.steps : []).slice(0, 3)) {
+        addAuto("click", st?.progress_start ?? 0.1, 0.48);
+      }
+    } else if (vt === "code_cli") {
+      const cmds = Array.isArray(vd.terminal_commands) ? vd.terminal_commands : [];
+      if (cmds.length > 0) {
+        for (const cmd of cmds.slice(0, 2)) addAuto("typing_fast", cmd?.progress_start ?? 0.25, 0.48);
+      } else {
+        for (const ph of (Array.isArray(vd.highlight_phases) ? vd.highlight_phases : []).slice(0, 2)) {
+          addAuto("click", ph?.progress_start ?? 0.15, 0.46);
+        }
+      }
+    } else if (vt === "kpi_metrics") {
+      for (const card of (Array.isArray(vd.cards) ? vd.cards : []).slice(0, 2)) {
+        addAuto("pop", card?.progress_start ?? 0.1, 0.48);
+      }
+      if (vd.alert_stamp?.text) addAuto("impact", vd.alert_stamp.show_at_progress ?? 0.72, 0.68);
+    } else if (vt === "exam_tips") {
+      for (const cmp of (Array.isArray(vd.comparisons) ? vd.comparisons : []).slice(0, 2)) {
+        addAuto("pop", cmp?.progress_start ?? 0.12, 0.46);
+      }
+      if (vd.quiz?.question) addAuto("chime", vd.quiz.show_at_progress ?? 0.72, 0.58);
+    } else if (vt === "comparison_matrix") {
+      for (const row of (Array.isArray(vd.rows) ? vd.rows : []).slice(0, 2)) {
+        addAuto("click", row?.progress_start ?? 0.15, 0.44);
+      }
+      if (vd.takeaway?.text) addAuto("chime", vd.takeaway.show_at_progress ?? 0.78, 0.56);
+    } else if (vt === "timeline_flow") {
+      for (const ms of (Array.isArray(vd.milestones) ? vd.milestones : []).slice(0, 2)) {
+        addAuto("pop", ms?.progress_start ?? 0.12, 0.46);
+      }
+      if (vd.callout?.text) addAuto("chime", vd.callout.show_at_progress ?? 0.78, 0.55);
+    }
+  }
+  cues.sort((a, b) => a.start - b.start);
+  return cues;
+}
+
+function resolveBgmSource(rawPath, { episodeDir, courseDir }) {
+  const rel = String(rawPath || "").trim();
+  if (!rel) return null;
+  const bases = [episodeDir, courseDir, path.join(ENGINE_DIR, "assets")].filter(Boolean);
+  for (const base of bases) {
+    const resolvedBase = path.resolve(base);
+    const candidate = path.resolve(resolvedBase, rel);
+    if (candidate.startsWith(resolvedBase + path.sep) && fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
 export function renderIndexHtml({ title, total, scenesTiming, scenes, audioClips, cuesByScene, episodeData }) {
+  const overlapOuts = scenesTiming.map((t, i) => {
+    const cur = scenes[i];
+    const nxt = scenes[i + 1];
+    const nxtT = scenesTiming[i + 1];
+    if (!cur?.part || !nxt?.part || cur.part !== nxt.part || !nxtT) return 0;
+    if (t.duration < 0.8 || nxtT.duration < 0.8) return 0;
+    return round3(Math.min(0.45, nxtT.duration * 0.22));
+  });
+
   const sceneClips = scenesTiming
     .map((t, i) => {
       const sc = scenes[i] || {};
-      return `    <section id="scene-${i}" class="clip tvs-scene" data-start="${t.start}" data-duration="${t.duration}" data-track-index="1" data-scene-id="${escapeAttr(sc.id || t.id)}" data-visual-type="${escapeAttr(sc.visual_type || "architecture")}"></section>`;
+      const overlapOut = overlapOuts[i] || 0;
+      const overlapIn = i > 0 ? overlapOuts[i - 1] || 0 : 0;
+      const clipDuration = round3(t.duration + overlapOut);
+      const theme = sc.world_theme === "light" ? "light" : "dark";
+      const cls = theme === "light" ? "clip tvs-scene tvs-scene--light" : "clip tvs-scene";
+      return `    <section id="scene-${i}" class="${cls}" data-start="${t.start}" data-duration="${clipDuration}" data-slot-duration="${t.duration}" data-overlap-out="${overlapOut}" data-overlap-in="${overlapIn}" data-world-theme="${theme}" data-track-index="1" data-scene-id="${escapeAttr(sc.id || t.id)}" data-visual-type="${escapeAttr(sc.visual_type || "architecture")}"></section>`;
     })
     .join("\n");
   const subtitleClips = cuesByScene
@@ -292,7 +430,8 @@ export function renderIndexHtml({ title, total, scenesTiming, scenes, audioClips
 </head>
 <body>
   <div id="root" data-composition-id="${COMPOSITION_ID}" data-start="0" data-duration="${total}" data-width="${FRAME_WIDTH}" data-height="${FRAME_HEIGHT}">
-    <div class="tvs-bg"></div>
+    <div class="tvs-bg"><div class="tvs-bg-grid"></div></div>
+    <div class="tvs-bg-light"></div>
     <div id="tvs-ambient"></div>
 ${sceneClips}
     <div id="tvs-fx"></div>
@@ -340,6 +479,9 @@ function pickSceneForComposition(scene, extra) {
     part_label: scene.part_label || "",
     title: scene.title || "",
     visual_type: SUPPORTED_VISUAL_TYPES.includes(scene.visual_type) ? scene.visual_type : "architecture",
+    visual_job: scene.visual_job ? String(scene.visual_job) : null,
+    world_theme: scene.world_theme === "light" ? "light" : "dark",
+    causal_mechanic: scene.causal_mechanic ? String(scene.causal_mechanic) : "blur-materialize",
     visual_data: scene.visual_data || {},
     highlight_words: Array.isArray(scene.highlight_words) ? scene.highlight_words : [],
     key_points: Array.isArray(scene.key_points) ? scene.key_points : [],
@@ -380,6 +522,30 @@ export async function compileEpisodeProject({ workspaceRoot, courseId, episode, 
     copyFileIfChanged(path.join(RUNTIME_DIR, rel), path.join(projectDir, "lib", rel));
   }
 
+  // 1b. Rich SVG illustrations referenced by architecture nodes
+  const svgCatalogDir = path.join(ENGINE_DIR, "assets", "svg");
+  const svgOutDir = path.join(projectDir, "assets", "svg");
+  fs.mkdirSync(svgOutDir, { recursive: true });
+  const wantedSvgs = new Set();
+  for (const sc of scenes) {
+    const nodes = Array.isArray(sc?.visual_data?.nodes) ? sc.visual_data.nodes : [];
+    for (const nd of nodes) {
+      const rawSvg = typeof nd?.svg === "string" ? nd.svg.trim() : "";
+      if (!rawSvg) continue;
+      const slug = rawSvg.replace(/\.svg$/i, "");
+      if (!/^[a-z0-9_-]+$/i.test(slug)) continue;
+      const fileName = `${slug}.svg`;
+      const srcFile = path.join(svgCatalogDir, fileName);
+      if (fs.existsSync(srcFile)) {
+        wantedSvgs.add(fileName);
+        copyFileIfChanged(srcFile, path.join(svgOutDir, fileName));
+      }
+    }
+  }
+  for (const stale of fs.readdirSync(svgOutDir)) {
+    if (!wantedSvgs.has(stale)) fs.rmSync(path.join(svgOutDir, stale), { force: true });
+  }
+
   // 2. Timeline
   const timing = computeTimeline(scenes, { episodeDir, speed });
 
@@ -409,6 +575,43 @@ export async function compileEpisodeProject({ workspaceRoot, courseId, episode, 
   }
   for (const stale of fs.readdirSync(path.join(projectDir, "assets", "audio"))) {
     if (!wantedAudio.has(stale)) fs.rmSync(path.join(projectDir, "assets", "audio", stale), { force: true });
+  }
+
+  // 3b. SFX Bus cues + optional background music bed (kept separate from manifest.audio narration clips)
+  const sfxCues = buildSfxCues(scenes, timing, { sfxDir: SFX_ASSETS_DIR });
+  const sfxOutDir = path.join(projectDir, "assets", "sfx");
+  fs.mkdirSync(sfxOutDir, { recursive: true });
+  const wantedSfx = new Set();
+  for (const cue of sfxCues) {
+    const fileName = `${cue.type}.wav`;
+    if (wantedSfx.has(fileName)) continue;
+    const srcFile = path.join(SFX_ASSETS_DIR, fileName);
+    if (fs.existsSync(srcFile)) {
+      wantedSfx.add(fileName);
+      copyFileIfChanged(srcFile, path.join(sfxOutDir, fileName));
+    }
+  }
+  for (const stale of fs.readdirSync(sfxOutDir)) {
+    if (!wantedSfx.has(stale)) fs.rmSync(path.join(sfxOutDir, stale), { force: true });
+  }
+
+  const courseDir = path.join(workspaceRoot, courseId);
+  const bgmOutDir = path.join(projectDir, "assets", "bgm");
+  let bgmManifest = null;
+  const rawBgmPath = script.bgm_file || episode.bgm_file || null;
+  const resolvedBgm = resolveBgmSource(rawBgmPath, { episodeDir, courseDir });
+  if (resolvedBgm) {
+    fs.mkdirSync(bgmOutDir, { recursive: true });
+    const bgmName = path.basename(resolvedBgm);
+    copyFileIfChanged(resolvedBgm, path.join(bgmOutDir, bgmName));
+    bgmManifest = {
+      src: `assets/bgm/${bgmName}`,
+      volume: Number.isFinite(Number(script.bgm_volume)) ? Number(script.bgm_volume) : 0.14,
+      carve_hz: 1800,
+      carve_db: -6,
+    };
+  } else if (fs.existsSync(bgmOutDir)) {
+    fs.rmSync(bgmOutDir, { recursive: true, force: true });
   }
 
   // 4. Per-scene compiled extras (code tokens, subtitle cues)
@@ -476,6 +679,8 @@ export async function compileEpisodeProject({ workspaceRoot, courseId, episode, 
       subtitle_cues: cuesByScene[index].length,
     })),
     audio: audioClips,
+    sfx: sfxCues,
+    bgm: bgmManifest,
     runtime: { hyperframes_core: HF_RUNTIME_VERSION, gsap: GSAP_VERSION },
   };
   fs.writeFileSync(path.join(projectDir, "composition.json"), JSON.stringify(manifest, null, 2) + "\n", "utf-8");

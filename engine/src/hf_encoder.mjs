@@ -18,6 +18,7 @@ import {
   saveVideoToServer,
   timeStretchAudioBuffer,
 } from "./exporter.mjs";
+import { measureIntegratedLufs, normalizeLoudnessAndLimit } from "./audio_dsp.mjs";
 
 const SR = EXPORT_AUDIO_SAMPLE_RATE;
 const CH = EXPORT_AUDIO_CHANNELS;
@@ -55,8 +56,24 @@ async function decodeToStereo48k(arrayBuffer) {
   return ctx.startRendering();
 }
 
-/** Mix all clips into one planar stereo buffer covering the whole composition. */
-async function buildAudioMix(clips, totalDuration) {
+async function applyVocalCarveEq(audioBuf, { carveHz = 1800, carveDb = -6 } = {}) {
+  const frames = Math.max(1, audioBuf.length);
+  const ctx = new OfflineAudioContext(CH, frames, SR);
+  const src = ctx.createBufferSource();
+  src.buffer = audioBuf;
+  const eq = ctx.createBiquadFilter();
+  eq.type = "peaking";
+  eq.frequency.value = Number(carveHz) || 1800;
+  eq.Q.value = 1.4;
+  eq.gain.value = Number.isFinite(Number(carveDb)) ? Number(carveDb) : -6;
+  src.connect(eq);
+  eq.connect(ctx.destination);
+  src.start(0);
+  return ctx.startRendering();
+}
+
+/** Mix narration clips + programmatic SFX bus + optional carved BGM bed, then normalize to target LUFS. */
+async function buildAudioMix({ clips = [], sfx = [], bgm = null, totalDuration = 0, targetLufs = -16 }) {
   const total = Math.max(1, Math.round(totalDuration * SR));
   const left = new Float32Array(total);
   const right = new Float32Array(total);
@@ -83,13 +100,93 @@ async function buildAudioMix(clips, totalDuration) {
     }
     log(`audio ${i + 1}/${clips.length} mixed @${(offset / SR).toFixed(3)}s (${(len / SR).toFixed(3)}s, rate ${rate})`);
   }
-  for (let k = 0; k < total; k++) {
-    if (left[k] > 1) left[k] = 1;
-    else if (left[k] < -1) left[k] = -1;
-    if (right[k] > 1) right[k] = 1;
-    else if (right[k] < -1) right[k] = -1;
+
+  // Mix SFX bus cues (each unique SFX WAV fetched/decoded once)
+  if (Array.isArray(sfx) && sfx.length > 0) {
+    const sfxCache = new Map();
+    for (const cue of sfx) {
+      if (!cue?.url) continue;
+      let buf = sfxCache.get(cue.url);
+      if (buf === undefined) {
+        try {
+          const resp = await fetch(cue.url);
+          if (resp.ok) {
+            buf = await decodeToStereo48k(await resp.arrayBuffer());
+          } else {
+            buf = null;
+          }
+        } catch {
+          buf = null;
+        }
+        sfxCache.set(cue.url, buf);
+      }
+      if (!buf) continue;
+      const offset = Math.max(0, Math.round((Number(cue.start) || 0) * SR));
+      if (offset >= total) continue;
+      const len = Math.min(buf.length, total - offset);
+      const gain = (Number.isFinite(Number(cue.volume)) ? Number(cue.volume) : 0.65) * 0.65;
+      const l = buf.getChannelData(0);
+      const r = buf.numberOfChannels > 1 ? buf.getChannelData(1) : l;
+      for (let k = 0; k < len; k++) {
+        left[offset + k] += l[k] * gain;
+        right[offset + k] += r[k] * gain;
+      }
+    }
   }
-  return { left, right, total };
+
+  // Optional background music bed with 1800Hz -6dB static EQ carve for vocal clarity
+  if (bgm?.url) {
+    try {
+      const resp = await fetch(bgm.url);
+      if (resp.ok) {
+        const rawBgm = await decodeToStereo48k(await resp.arrayBuffer());
+        const carvedBgm = await applyVocalCarveEq(rawBgm, {
+          carveHz: bgm.carve_hz || 1800,
+          carveDb: bgm.carve_db ?? -6,
+        });
+        const bl = carvedBgm.getChannelData(0);
+        const br = carvedBgm.numberOfChannels > 1 ? carvedBgm.getChannelData(1) : bl;
+        const bLen = carvedBgm.length;
+        const bgmVol = Number.isFinite(Number(bgm.volume)) ? Number(bgm.volume) : 0.14;
+        const fadeSamples = Math.min(Math.round(0.45 * SR), Math.floor(total / 4));
+        if (bLen > 0) {
+          for (let k = 0; k < total; k++) {
+            const bIdx = k % bLen;
+            let env = 1;
+            if (fadeSamples > 0) {
+              if (k < fadeSamples) env = k / fadeSamples;
+              else if (k > total - fadeSamples) env = (total - k) / fadeSamples;
+            }
+            left[k] += bl[bIdx] * bgmVol * env;
+            right[k] += br[bIdx] * bgmVol * env;
+          }
+        }
+      }
+    } catch (err) {
+      log(`bgm skipped: ${err?.message || err}`);
+    }
+  }
+
+  let loudness = null;
+  if (targetLufs !== null && targetLufs !== false && Number.isFinite(Number(targetLufs))) {
+    loudness = normalizeLoudnessAndLimit(left, right, {
+      sampleRate: SR,
+      targetLufs: Number(targetLufs),
+    });
+    log(
+      `mixed ${clips.length} voice + ${sfx.length} sfx${bgm?.url ? " + bgm" : ""}; loudness ${loudness.inputLufs} -> ${loudness.outputLufs} LUFS (gain ${loudness.gainDb >= 0 ? "+" : ""}${loudness.gainDb} dB, peak ${loudness.peak})`
+    );
+  } else {
+    for (let k = 0; k < total; k++) {
+      if (left[k] > 1) left[k] = 1;
+      else if (left[k] < -1) left[k] = -1;
+      if (right[k] > 1) right[k] = 1;
+      else if (right[k] < -1) right[k] = -1;
+    }
+    loudness = measureIntegratedLufs(left, right, SR);
+  }
+
+  return { left, right, total, loudness };
 }
 
 function encodeAudioUpTo(targetSample) {
@@ -178,7 +275,13 @@ async function init(config) {
   });
   S.audioEncoder.configure(profile.audioConfig);
 
-  S.mix = await buildAudioMix(Array.isArray(config.audio) ? config.audio : [], Number(config.totalDuration) || 0);
+  S.mix = await buildAudioMix({
+    clips: Array.isArray(config.audio) ? config.audio : [],
+    sfx: Array.isArray(config.sfx) ? config.sfx : [],
+    bgm: config.bgm || null,
+    totalDuration: Number(config.totalDuration) || 0,
+    targetLufs: config.loudnessTargetLufs !== undefined ? config.loudnessTargetLufs : -16,
+  });
   log(
     `ready ${profile.format}/${profile.videoConfig.codec} ${profile.width}x${profile.height}@${profile.fps} hw=${profile.hardwareAcceleration} audio=${profile.audioConfig.codec}`
   );
@@ -193,6 +296,7 @@ async function init(config) {
     bitrate: profile.bitrate,
     hardwareAcceleration: profile.hardwareAcceleration,
     audioSamples: S.mix.total,
+    loudness: S.mix.loudness || null,
   };
 }
 
@@ -225,7 +329,7 @@ async function finish() {
   S.videoEncoder.close();
   S.audioEncoder.close();
   S.muxer.finalize();
-  const { profile, config } = S;
+  const { profile, config, mix } = S;
   const blob = new Blob([S.target.buffer], { type: profile.mimeType });
   const filename = resolveOutputFilename(config.outputFilename, config.episodeId, profile.ext);
   log(`muxed ${S.nextIndex} frames → ${(blob.size / 1024 / 1024).toFixed(2)} MB, saving ${filename}`);
@@ -246,6 +350,7 @@ async function finish() {
     speed: profile.speed,
     frames: S.nextIndex,
     durationSec: Number((S.nextIndex / profile.fps).toFixed(3)),
+    loudness: mix?.loudness || null,
   };
   S = null;
   return result;
@@ -262,5 +367,6 @@ function abort() {
   S = null;
 }
 
+window.__TVS_AUDIO_DSP__ = { measureIntegratedLufs, normalizeLoudnessAndLimit };
 window.__TVS_HF_ENCODER__ = { init, pushFrame, finish, abort };
 window.__TVS_HF_ENCODER_READY__ = true;

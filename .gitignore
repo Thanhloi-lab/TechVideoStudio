@@ -8,21 +8,34 @@
 *.webm
 *.mp3
 *.wav
+*.srt
+!engine/assets/sfx/*.wav
 ref/
 
-# Generated course roadmaps, lesson scripts, subtitles, audio & per-episode state (local only)
+# Generated course roadmaps, lesson scripts, subtitles, audio, HyperFrames renders & state (local only)
 /*/episodes/
 /*/state/
 /*/course.json
 /*/curriculum.md
+/*/hyperframes/
+/*/hyperframes-snapshots/
+/*/hyperframes-verify/
+snapshots/
+snapshots-p2/
 
 # Engine runtime caches, local credentials/preferences, env secrets & Python bytecode
 engine/.voice_preview_cache/
+engine/.voice_cache/
 engine/__pycache__/
 __pycache__/
 engine/.ai_queue.json
 engine/.ai_credentials.json
 engine/.ai_preferences.json
+.venv/
+.xpu_venv/
+node_modules/
+.vscode/
+.idea/
 .env
 .env.*
 !.env.example

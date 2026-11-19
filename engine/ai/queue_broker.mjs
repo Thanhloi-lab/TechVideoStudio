@@ -8,21 +8,33 @@ import {
   markProviderQuotaExhausted,
   pingProviderOneToken,
   probeProvider,
+  resolveRoleProvider,
   saveLastSelection,
+  savePipelineRouting,
   saveProviderCredentials,
+  VALID_PIPELINE_ROLES,
 } from "./providers.mjs";
 import {
   buildManualPromptPack,
   generateEpisodeScript,
   stripMarkdownCodeFences,
 } from "./runner.mjs";
+import { findMissingScriptSvgs, loadSvgCatalog } from "../src/svg_catalog.mjs";
 
 const WORKER_HEARTBEAT_INTERVAL_MS = 5000;
 const WORKER_WATCHER_TTL_MS = Math.max(1000, Number(process.env.VIDEO_MAKER_WATCHER_TTL_MS) || 18_000);
 const WORKER_SCHEDULE_TTL_MS = Math.max(5000, Number(process.env.VIDEO_MAKER_SCHEDULE_TTL_MS) || 90_000);
 const WORKER_SWEEP_INTERVAL_MS = Math.max(500, Number(process.env.VIDEO_MAKER_SWEEP_INTERVAL_MS) || 3000);
 const ALLOWED_AI_TASK_TYPES = new Set(["script_episode", "script_batch"]);
-const VALID_AI_GENERATION_MODES = new Set(["auto", "two_pass", "single_pass", "storyboard_only"]);
+const VALID_AI_GENERATION_MODES = new Set([
+  "auto",
+  "two_pass",
+  "single_pass",
+  "storyboard_only",
+  "three_stage",
+]);
+const VALID_PAUSE_AFTER = new Set(["none", "brief", "dialogue"]);
+const VALID_START_FROM = new Set(["brief", "dialogue", "visual"]);
 const MAX_AI_BATCH_MCP = 5;
 const MAX_AI_BATCH_BUILTIN = 100;
 const MAX_AI_CUSTOM_INSTRUCTIONS_LEN = 1200;
@@ -51,7 +63,16 @@ export function createAiBroker(deps) {
     writeJsonAtomic,
     validateScriptDiagrams,
     SUPPORTED_VISUAL_TYPES,
+    runAudioSpineProcess = null,
   } = deps;
+
+  const validateWithSvgs = (scriptObj) => {
+    const base = validateScriptDiagrams(scriptObj);
+    const svgErrors = findMissingScriptSvgs(scriptObj);
+    if (!svgErrors.length) return base;
+    const errors = [...(base.errors || []), ...svgErrors];
+    return { ...base, valid: errors.length === 0, errors };
+  };
 
   const aiWorkers = new Map(); // worker_id -> worker record
   const pendingWaiterResponses = new Set(); // { res, worker_id, timer }
@@ -150,7 +171,7 @@ export function createAiBroker(deps) {
     if (!rawId || !/^[A-Za-z0-9._-]{1,80}$/.test(rawId)) {
       return { ok: false, status: 400, error: "Invalid worker_id (expected 1-80 chars of A-Za-z0-9._-)" };
     }
-    const model = String(body.model || "Gemini 4 Argon").trim().slice(0, 120) || "Gemini 4 Argon";
+    const model = String(body.model || "connected-agent").trim().slice(0, 120) || "connected-agent";
     const mode = body.mode === "schedule" ? "schedule" : "watcher";
     const session_label = body.session_label ? String(body.session_label).trim().slice(0, 120) : null;
     const nowMs = Date.now();
@@ -188,6 +209,11 @@ export function createAiBroker(deps) {
       provider_id: job.provider_id || "antigravity",
       model: job.model || job.claimed_model || null,
       mode: job.mode || "auto",
+      pause_after: job.pause_after || "none",
+      start_from: job.start_from || null,
+      lock_audio_spine: Boolean(job.lock_audio_spine),
+      role_routing: job.role_routing ? { ...job.role_routing } : null,
+      paused_at: job.paused_at || null,
       compiler_provider_id: job.compiler_provider_id || null,
       compiler_model: job.compiler_model || null,
       episode_ids: [...(job.episode_ids || [])],
@@ -336,11 +362,27 @@ export function createAiBroker(deps) {
     }
   }
 
+  function readJsonOrNull(filePath) {
+    if (!filePath || !fs.existsSync(filePath)) return null;
+    try {
+      return JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    } catch {
+      return null;
+    }
+  }
+
+  function writeTextAtomic(filePath, text) {
+    const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(tmp, String(text ?? ""), "utf-8");
+    fs.renameSync(tmp, filePath);
+  }
+
   function loadEpisodeContextForRunner(course, episodeId) {
     const courseDir = safeResolve(WORKSPACE_ROOT, [course]);
     if (!courseDir || !fs.existsSync(path.join(courseDir, "course.json"))) {
       throw new Error(`Course "${course}" not found.`);
     }
+    const courseJsonPath = path.join(courseDir, "course.json");
     const courseJson = loadCourseJson(courseDir);
     const epMeta = flattenCourseEpisodes(courseJson).find((e) => e.id === episodeId);
     if (!epMeta) {
@@ -349,29 +391,43 @@ export function createAiBroker(deps) {
     const curriculumPath = path.join(courseDir, "curriculum.md");
     const curriculumMd = fs.existsSync(curriculumPath) ? fs.readFileSync(curriculumPath, "utf-8") : "";
     const epDir = safeResolve(WORKSPACE_ROOT, [course, "episodes", episodeId]);
+    const briefPath = safeResolve(WORKSPACE_ROOT, [course, "episodes", episodeId, "brief.json"]);
+    const dialoguePath = safeResolve(WORKSPACE_ROOT, [course, "episodes", episodeId, "dialogue.json"]);
+    const audioSpinePath = safeResolve(WORKSPACE_ROOT, [course, "episodes", episodeId, "audio_spine.json"]);
     const scriptPath = safeResolve(WORKSPACE_ROOT, [course, "episodes", episodeId, "script.json"]);
     const notesPath = safeResolve(WORKSPACE_ROOT, [course, "episodes", episodeId, "notes.md"]);
-    let existingScript = null;
-    if (scriptPath && fs.existsSync(scriptPath)) {
-      try {
-        existingScript = JSON.parse(fs.readFileSync(scriptPath, "utf-8"));
-      } catch {
-        existingScript = null;
-      }
-    }
+    const existingBrief = readJsonOrNull(briefPath);
+    const existingDialogue = readJsonOrNull(dialoguePath);
+    const audioSpine = readJsonOrNull(audioSpinePath);
+    const existingScript = readJsonOrNull(scriptPath);
     const existingNotes = notesPath && fs.existsSync(notesPath) ? fs.readFileSync(notesPath, "utf-8") : "";
     const openRevisions = listRevisions(WORKSPACE_ROOT, course, { episodeId, status: "open" });
+    let availableSvgs = [];
+    try {
+      const cat = loadSvgCatalog(ENGINE_DIR);
+      availableSvgs = Array.isArray(cat?.svgs) ? cat.svgs : [];
+    } catch {
+      availableSvgs = [];
+    }
     return {
       courseDir,
+      courseJsonPath,
       courseJson,
       curriculumMd,
       epMeta,
       epDir,
+      briefPath,
+      dialoguePath,
+      audioSpinePath,
       scriptPath,
       notesPath,
+      existingBrief,
+      existingDialogue,
+      audioSpine,
       existingScript,
       existingNotes,
       openRevisions,
+      availableSvgs,
     };
   }
 
@@ -387,14 +443,13 @@ export function createAiBroker(deps) {
     summaryNote,
     jobId = null,
     validation,
+    scriptingPhase = null,
   }) {
     fs.mkdirSync(epDir, { recursive: true });
     writeJsonAtomic(scriptPath, scriptJson);
 
     if (notesMd !== undefined && notesMd !== null) {
-      const tmpNotes = `${notesPath}.${process.pid}.${Date.now()}.tmp`;
-      fs.writeFileSync(tmpNotes, String(notesMd), "utf-8");
-      fs.renameSync(tmpNotes, notesPath);
+      writeTextAtomic(notesPath, String(notesMd));
     }
 
     const now = new Date().toISOString();
@@ -404,6 +459,9 @@ export function createAiBroker(deps) {
       (epState, artifacts) => {
         epState.scripting = epState.scripting || {};
         epState.scripting.status = "completed";
+        if (scriptingPhase) {
+          epState.scripting.phase = scriptingPhase;
+        }
         epState.scripting.started_at = epState.scripting.started_at || now;
         epState.scripting.completed_at = now;
         epState.scripting.owner = ownerLabel;
@@ -496,21 +554,95 @@ export function createAiBroker(deps) {
           const epRewriteNote =
             (job.rewrite_notes && (job.rewrite_notes[epId] || job.rewrite_notes._shared)) || "";
 
+          const resolvedBriefRole = resolveRoleProvider("brief_scriptwriter", {
+            overrides: job.role_routing,
+            job,
+            engineDir: ENGINE_DIR,
+          });
+          const resolvedDirectorRole = resolveRoleProvider("visual_director", {
+            overrides: job.role_routing,
+            job,
+            engineDir: ENGINE_DIR,
+          });
+          const resolvedRepairRole = resolveRoleProvider("repair", {
+            overrides: job.role_routing,
+            job,
+            engineDir: ENGINE_DIR,
+          });
+          const resolvedRoleRouting = {
+            brief_scriptwriter: resolvedBriefRole,
+            visual_director: resolvedDirectorRole,
+            repair: resolvedRepairRole,
+          };
+
+          const saveStageArtifacts = ({ brief_json, dialogue_json, notes_md }) => {
+            fs.mkdirSync(ctx.epDir, { recursive: true });
+            if (brief_json && ctx.briefPath) {
+              writeJsonAtomic(ctx.briefPath, brief_json);
+            }
+            if (dialogue_json && ctx.dialoguePath) {
+              writeJsonAtomic(ctx.dialoguePath, dialogue_json);
+            }
+            if (notes_md !== undefined && notes_md !== null && String(notes_md).trim() && ctx.notesPath) {
+              writeTextAtomic(ctx.notesPath, String(notes_md));
+            }
+          };
+
           const generated = await generateEpisodeScript({
-            provider_id: job.provider_id,
-            model: job.model,
-            compiler_provider_id: job.compiler_provider_id || null,
-            compiler_model: job.compiler_model || null,
+            provider_id: resolvedBriefRole.provider_id || job.provider_id,
+            model: resolvedBriefRole.model || job.model,
+            compiler_provider_id: resolvedDirectorRole.provider_id || job.compiler_provider_id || null,
+            compiler_model: resolvedDirectorRole.model || job.compiler_model || null,
+            role_routing: resolvedRoleRouting,
             mode: job.mode || "auto",
+            pause_after: job.pause_after || "none",
+            start_from: job.start_from || null,
             courseJson: ctx.courseJson,
             curriculumMd: ctx.curriculumMd,
             episodeMeta: ctx.epMeta,
+            existingBrief: ctx.existingBrief,
+            existingDialogue: ctx.existingDialogue,
+            audioSpine: ctx.audioSpine,
+            availableSvgs: ctx.availableSvgs,
             existingScript: ctx.existingScript,
             existingNotes: ctx.existingNotes,
             openRevisions: ctx.openRevisions,
             customInstructions: job.custom_instructions,
             rewriteNote: epRewriteNote,
-            validateScriptFn: validateScriptDiagrams,
+            validateScriptFn: validateWithSvgs,
+            onBeforeVisualStage:
+              job.mode === "three_stage"
+                ? async ({ brief_json, dialogue_json, notes_md }) => {
+                    saveStageArtifacts({ brief_json, dialogue_json, notes_md });
+                    if (job.lock_audio_spine && typeof runAudioSpineProcess === "function" && ctx.dialoguePath) {
+                      appendAiJobLog(job, `[${epId}] Locking Audio-Spine TTS durations before Visual Director...`);
+                      try {
+                        const spineRes = await runAudioSpineProcess({
+                          courseJsonPath: ctx.courseJsonPath,
+                          epDir: ctx.epDir,
+                          dialoguePath: ctx.dialoguePath,
+                        });
+                        if (spineRes?.ok && spineRes.audio_spine) {
+                          appendAiJobLog(
+                            job,
+                            `[${epId}] Audio-Spine locked (${spineRes.audio_spine.beats?.length || 0} beats, ${spineRes.audio_spine.total_duration_ms || 0}ms).`
+                          );
+                          return spineRes.audio_spine;
+                        }
+                        appendAiJobLog(
+                          job,
+                          `[${epId}] Audio-Spine warning (continuing without lock): ${spineRes?.error || "TTS failed"}`
+                        );
+                      } catch (spineErr) {
+                        appendAiJobLog(
+                          job,
+                          `[${epId}] Audio-Spine warning (continuing without lock): ${spineErr?.message || spineErr}`
+                        );
+                      }
+                    }
+                    return ctx.audioSpine || null;
+                  }
+                : null,
             onProgress: ({ phase, message }) => {
               if (phase) job.step = String(phase);
               if (message) appendAiJobLog(job, `[${epId}] ${message}`);
@@ -538,9 +670,7 @@ export function createAiBroker(deps) {
               storyboard: generated.storyboard,
             });
             if (generated.notes_md) {
-              const tmpNotes = `${ctx.notesPath}.${process.pid}.${Date.now()}.tmp`;
-              fs.writeFileSync(tmpNotes, String(generated.notes_md), "utf-8");
-              fs.renameSync(tmpNotes, ctx.notesPath);
+              writeTextAtomic(ctx.notesPath, String(generated.notes_md));
             }
             try {
               mutateEpisodeStateForJob(
@@ -564,10 +694,49 @@ export function createAiBroker(deps) {
             } catch {
               // ignore if state file missing
             }
+          } else if (generated.paused_at === "brief" || generated.paused_at === "dialogue") {
+            saveStageArtifacts({
+              brief_json: generated.brief_json,
+              dialogue_json: generated.dialogue_json,
+              notes_md: generated.notes_md,
+            });
+            job.paused_at = generated.paused_at;
+            const targetPhase = generated.paused_at === "brief" ? "brief_ready" : "dialogue_ready";
+            const stageHuman = generated.paused_at === "brief" ? "Content Brief (Tầng 1)" : "Lời thoại & Beats (Tầng 2)";
+            try {
+              mutateEpisodeStateForJob(
+                job.course,
+                epId,
+                (epState, artifacts) => {
+                  epState.scripting = epState.scripting || {};
+                  epState.scripting.status = artifacts.script ? "completed" : "reviewing";
+                  epState.scripting.phase = targetPhase;
+                  epState.scripting.owner = ownerLabel;
+                  epState.scripting.notes = `Đang chờ duyệt ${stageHuman}`;
+                  epState.last_error = null;
+                },
+                {
+                  type: "ai_stage_paused",
+                  job_id: job.id,
+                  paused_at: generated.paused_at,
+                  owner: ownerLabel,
+                  message: `Đã hoàn tất ${stageHuman} cho ${epId} — chờ duyệt trước khi tiếp tục.`,
+                }
+              );
+            } catch {
+              // ignore if state file missing
+            }
           } else {
+            if (generated.brief_json || generated.dialogue_json) {
+              saveStageArtifacts({
+                brief_json: generated.brief_json,
+                dialogue_json: generated.dialogue_json,
+                notes_md: null,
+              });
+            }
             const summaryNote = epRewriteNote
               ? `Viết lại KB bởi ${ownerLabel}: ${epRewriteNote.slice(0, 120)}`
-              : `Script biên soạn bởi ${ownerLabel} (${generated.attempts} lần gọi${generated.mode_used === "two_pass" ? ", 2-pass" : ""})`;
+              : `Script biên soạn bởi ${ownerLabel} (${generated.attempts} lần gọi${generated.mode_used === "three_stage" ? ", 3-stage" : generated.mode_used === "two_pass" ? ", 2-pass" : ""})`;
 
             saveEpisodeArtifactsAndState({
               course: job.course,
@@ -581,6 +750,7 @@ export function createAiBroker(deps) {
               summaryNote,
               jobId: job.id,
               validation: generated.validation,
+              scriptingPhase: generated.mode_used === "three_stage" ? "visual_compiled" : null,
             });
           }
 
@@ -659,7 +829,12 @@ export function createAiBroker(deps) {
       releaseAiEpLocks(job);
 
       const spawned = [];
-      if (job.auto_produce && job.mode !== "storyboard_only") {
+      if (
+        job.auto_produce &&
+        job.mode !== "storyboard_only" &&
+        !job.paused_at &&
+        (!job.pause_after || job.pause_after === "none")
+      ) {
         for (const epId of job.episode_ids) {
           const prodRes = enqueueProductionJob({
             course: job.course,
@@ -1022,6 +1197,50 @@ export function createAiBroker(deps) {
         error: `Invalid generation mode "${requestedMode}". Allowed: ${Array.from(VALID_AI_GENERATION_MODES).join(", ")}.`,
       });
     }
+    const pause_after =
+      body.pause_after !== undefined && body.pause_after !== null && String(body.pause_after).trim() !== ""
+        ? String(body.pause_after).trim().toLowerCase()
+        : "none";
+    if (!VALID_PAUSE_AFTER.has(pause_after)) {
+      return sendJson(res, 400, {
+        ok: false,
+        code: "INVALID_PAUSE_AFTER",
+        error: `Invalid pause_after "${pause_after}". Allowed: ${Array.from(VALID_PAUSE_AFTER).join(", ")}.`,
+      });
+    }
+    const start_from =
+      body.start_from !== undefined && body.start_from !== null && String(body.start_from).trim() !== ""
+        ? String(body.start_from).trim().toLowerCase()
+        : null;
+    if (start_from && !VALID_START_FROM.has(start_from)) {
+      return sendJson(res, 400, {
+        ok: false,
+        code: "INVALID_START_FROM",
+        error: `Invalid start_from "${start_from}". Allowed: ${Array.from(VALID_START_FROM).join(", ")}.`,
+      });
+    }
+    const lock_audio_spine = Boolean(body.lock_audio_spine);
+    let role_routing = null;
+    if (body.role_routing && typeof body.role_routing === "object" && !Array.isArray(body.role_routing)) {
+      role_routing = {};
+      for (const [rKey, rVal] of Object.entries(body.role_routing)) {
+        if (!VALID_PIPELINE_ROLES.includes(rKey) || !rVal || typeof rVal !== "object") continue;
+        const rPid = rVal.provider_id ? String(rVal.provider_id).trim() : null;
+        if (rPid && !getBrandSpec(rPid)) {
+          return sendJson(res, 400, {
+            ok: false,
+            code: "INVALID_PROVIDER",
+            error: `Role "${rKey}" provider "${rPid}" is unknown.`,
+          });
+        }
+        role_routing[rKey] = {
+          provider_id: rPid,
+          model: rVal.model ? String(rVal.model).trim().slice(0, 160) : null,
+        };
+      }
+      if (Object.keys(role_routing).length === 0) role_routing = null;
+    }
+
     const compiler_provider_id = body.compiler_provider_id
       ? String(body.compiler_provider_id).trim().slice(0, 80)
       : null;
@@ -1040,7 +1259,8 @@ export function createAiBroker(deps) {
       .trim()
       .slice(0, MAX_AI_CUSTOM_INSTRUCTIONS_LEN);
     const rewrite_notes = normalizeRewriteNotes(body);
-    const auto_produce = Boolean(body.auto_produce);
+    const auto_produce =
+      requestedMode === "three_stage" && pause_after !== "none" ? false : Boolean(body.auto_produce);
     let render_prefs = null;
     if (auto_produce) {
       const rawPrefs = body.render_prefs && typeof body.render_prefs === "object" ? body.render_prefs : {};
@@ -1066,6 +1286,11 @@ export function createAiBroker(deps) {
       provider_id,
       model: resolvedModel,
       mode: requestedMode,
+      pause_after,
+      start_from,
+      lock_audio_spine,
+      role_routing,
+      paused_at: null,
       compiler_provider_id,
       compiler_model,
       episode_ids,
@@ -1466,7 +1691,7 @@ export function createAiBroker(deps) {
       });
     }
 
-    const validation = validateScriptDiagrams(rawPayload);
+    const validation = validateWithSvgs(rawPayload);
     if (!validation.valid) {
       return sendJson(res, 422, {
         ok: false,
@@ -1649,7 +1874,7 @@ export function createAiBroker(deps) {
     job.step = "planning";
     job.progress = 5;
     job.claimed_by = workerId;
-    job.claimed_model = String(body.model || workerRec?.model || "Gemini 4 Argon");
+    job.claimed_model = String(body.model || workerRec?.model || "connected-agent");
     job.started_at = job.started_at || now;
     job.updated_at = now;
     const firstPendingEp = job.episode_ids.find((id) => !job.completed_episodes.includes(id)) || job.episode_ids[0];
@@ -1806,7 +2031,7 @@ export function createAiBroker(deps) {
       });
     }
 
-    const validation = validateScriptDiagrams(scriptJson);
+    const validation = validateWithSvgs(scriptJson);
     if (!validation.valid) {
       return sendJson(res, 422, {
         ok: false,
@@ -1816,7 +2041,7 @@ export function createAiBroker(deps) {
       });
     }
 
-    const ownerLabel = job.claimed_model || workerId || "Gemini 4 Argon";
+    const ownerLabel = job.claimed_model || workerId || "connected-agent";
     const summaryNote = String(body.summary_note || `Script biên soạn bởi AI (${ownerLabel})`).trim();
     const notesMd = body.notes_md ?? body.notesMd;
     const state = saveEpisodeArtifactsAndState({
@@ -2032,6 +2257,7 @@ export function createAiBroker(deps) {
       course_json: courseJson,
       curriculum_md: curriculumMd,
       supported_visual_types: [...SUPPORTED_VISUAL_TYPES],
+      available_svgs: loadSvgCatalog(),
       open_revisions: openRevs,
       episodes,
     });
@@ -2069,8 +2295,27 @@ export function createAiBroker(deps) {
     if (!scriptJson || typeof scriptJson !== "object") {
       return sendJson(res, 400, { ok: false, error: "Provide script_json or { course, episode_id }" });
     }
-    const validation = validateScriptDiagrams(scriptJson);
+    const validation = validateWithSvgs(scriptJson);
     return sendJson(res, 200, { ok: true, validation });
+  }
+
+  async function handleSavePipelineRouting(req, res) {
+    let body;
+    try {
+      body = await readJsonBody(req);
+    } catch (err) {
+      return sendJson(res, 400, { ok: false, error: err.message });
+    }
+    try {
+      const routingInput =
+        body && typeof body.pipeline_routing === "object" && !Array.isArray(body.pipeline_routing)
+          ? body.pipeline_routing
+          : body;
+      const pipeline_routing = savePipelineRouting(routingInput, ENGINE_DIR);
+      return sendJson(res, 200, { ok: true, pipeline_routing });
+    } catch (err) {
+      return sendJson(res, err?.statusCode || 400, { ok: false, error: err?.message || String(err) });
+    }
   }
 
   function startTimersAndLoad() {
@@ -2095,6 +2340,10 @@ export function createAiBroker(deps) {
     }
     if (req.method === "POST" && pathname === "/api/ai/providers/test") {
       void handleTestProvider(req, res);
+      return true;
+    }
+    if (req.method === "POST" && pathname === "/api/ai/preferences/routing") {
+      void handleSavePipelineRouting(req, res);
       return true;
     }
     if (req.method === "GET" && pathname === "/api/ai/jobs") {

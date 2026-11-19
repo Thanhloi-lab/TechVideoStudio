@@ -61,11 +61,18 @@ Write `{{WORKSPACE_ROOT}}/<COURSE_CODE>/episodes/<ep-slug>/script.json` matching
 - `"setup"` (`Phần 3: Thực hành Setup & Code`)
 - `"exam_tips"` (`Phần 4: Bẫy đề thi & Thực chiến`)
 
-### Optional V2 Motion Fields (`script.json`)
+### Optional V2 Motion & Sync Fields (`script.json`)
 - `scene.highlight_words` (`string[]`): optional extra keywords accented in V2 box-free subtitles alongside default core keywords.
 - `flow_step.camera_focus` (`{ x, y, zoom }`): optional explicit 16:9 camera rig pan/zoom (`x`/`y` in `0..100`, `zoom` in `1.0..1.25`) inside `architecture` `flow_steps`.
+- `cue_sentence` (`number`, 1-based) & `cue_text` (`string`): attach to every `flow_step`, `milestone`, `card`, `highlight_phase`, `comparison`, `row`, `terminal_command`, `quiz`, `callout`, `takeaway`, `chart`, and `alert_stamp` so `tts_pipeline.py` locks each component to the exact millisecond that sentence begins in real synthesized audio.
+  - **Strict Narration-to-Visual Order:** Write `scene.narration` as crisp sentences in the **exact chronological order** of visual steps (`cue_sentence: 1`, `2`, `3`, ...), and never mention a later step's keywords prematurely in the opening sentence if you want keyword fallback to stay clean.
 - `highlight_phase.code_override` (`string[] | string`): optional updated code lines for `@shikijs/magic-move` smooth code morphing between phases in `code_cli`.
 - `highlight_phase.laser_scan` (`boolean | number[]`): optional red laser scanline sweep and danger emphasis for security vulnerability or error phases in `code_cli`.
+
+### Mandatory SVG Illustration Check (Before Authoring `architecture` Scenes)
+1. **Always check the rich SVG catalog first:** inspect `{{WORKSPACE_ROOT}}/engine/assets/svg/catalog.json` (or run `node "{{WORKSPACE_ROOT}}/engine/state_cli.mjs" svg-list` / inspect `available_svgs` from `studio_get_context`).
+2. **If a needed illustration is missing:** Search/fetch an official or open-source dark-theme vector SVG (or author a crisp multi-color `<id>.svg` in `{{WORKSPACE_ROOT}}/engine/assets/svg/`) and register it in `catalog.json` **BEFORE** referencing `svg: "<id>"` in `script.json` (`validate-diagrams` rejects missing `node.svg` assets).
+3. Always provide `svg: "<id>"` for prominent multi-color illustration nodes alongside a fallback `icon` (`VALID_ICONS`) for legacy Canvas compatibility.
 
 ### Supported `visual_type` schemas
 
@@ -75,9 +82,10 @@ Write `{{WORKSPACE_ROOT}}/<COURSE_CODE>/episodes/<ep-slug>/script.json` matching
      - **Max 2 nested levels** via `parent_zone` (e.g. `aws-cloud` -> `vpc-private`).
      - `role`: `"client" | "network" | "compute" | "security" | "data" | "danger"`.
      - Supply `node_ids` for automatic bounding boxes around member nodes, or explicit `x, y, w, h` in `0..100`. Parent zones auto-expand around child zones.
-   - `visual_data.nodes`: array of `{ id, label, sublabel, icon, x?, y?, tier?, tone }`
+   - `visual_data.nodes`: array of `{ id, label, sublabel, icon, svg?, x?, y?, tier?, tone }`
      - `x`, `y` are percentages `0..100` on the stage canvas (optional when `layout_mode: "auto"`).
-     - `icon`: `"user" | "iam-user" | "iam-group" | "iam-role" | "iam-policy" | "sts" | "ec2" | "s3" | "lambda" | "apigw" | "dynamodb" | "vpc" | "docker" | "database" | "shield" | "hacker" | "code" | "check" | "deny"`
+     - `svg`: rich SVG asset id from `engine/assets/svg/catalog.json` (e.g. `"server-rack"`, `"redis-stack"`, `"ram-stick"`, `"ssd-disk"`, `"postgres"`). Check/add missing SVGs first!
+     - `icon`: fallback `"user" | "iam-user" | "iam-group" | "iam-role" | "iam-policy" | "sts" | "ec2" | "s3" | "lambda" | "apigw" | "dynamodb" | "vpc" | "docker" | "database" | "shield" | "hacker" | "code" | "check" | "deny"`
      - `tone`: `"orange" | "blue" | "green" | "purple" | "red" | "slate"`
    - `visual_data.edges`: array of `{ id, from, to, label, style, routing? }`
      - `style`: `"solid" | "dashed" | "danger"`
@@ -143,7 +151,8 @@ Write `{{WORKSPACE_ROOT}}/<COURSE_CODE>/episodes/<ep-slug>/script.json` matching
    ```
    *(Fix any reported errors before approving; built-in AI jobs in `runner.mjs` / `queue_broker.mjs` also support 2-Pass Storyboard->Compiler generation and targeted scene-level self-repair `repairInvalidScenes`.)*
 3. Preview the episode silently in **Storyboard Preview Mode** on `http://localhost:3030/?course=<COURSE_CODE>&ep=<ep-slug>&view=player` (available as soon as `script.json` exists, even without audio).
-4. If fixing tickets from the Revision Queue (`REV-XXX` with `scope: "script"` or `"visual"`), resolve each fixed ticket first, then approve scripting (`state_cli.mjs set --stage scripting --status completed` also runs `validateScriptDiagrams` automatically):
+4. **Automatic Audio & Sync (Do Not Leave Manual Timing to User):** Whenever the local TTS server (e.g. VieNeu-TTS at `127.0.0.1:8000`) is running, run `tts_pipeline.py` right after script approval so `subtitles[]` are built from real sentence audio durations and every visual step is locked via `cue_sentence` / `cue_text` automatically.
+5. If fixing tickets from the Revision Queue (`REV-XXX` with `scope: "script"` or `"visual"`), resolve each fixed ticket first, then approve scripting (`state_cli.mjs set --stage scripting --status completed` also runs `validateScriptDiagrams` automatically):
    ```powershell
    node "{{WORKSPACE_ROOT}}/engine/state_cli.mjs" resolve-revision --course <COURSE_CODE> --ep <ep-slug> --rev <REV_ID> --note "<what was fixed>"
    node "{{WORKSPACE_ROOT}}/engine/state_cli.mjs" set --course <COURSE_CODE> --ep <ep-slug> --stage scripting --status reviewing --owner "<reviewer>"

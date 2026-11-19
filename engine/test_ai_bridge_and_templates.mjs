@@ -1795,18 +1795,19 @@ ${err}`));
     assert.ok(uiRoadmapAndGridCheck.floatingText.includes("Biên kịch hàng loạt (1 Model)"));
     assertNoSecretsLeaked(uiRoadmapAndGridCheck.bodyHtml, forbiddenSecrets, "Chrome UI Roadmap DOM");
 
-    // Verify Studio Player topbar unified export popover, inline tab 🛠️ Sửa form, AI Rewrite modal & Timing Calibrator
+    // Verify Studio Player topbar unified export popover, inline tab 🛠️ Sửa form & AI Rewrite modal (manual timing calibrator hidden from UI)
     const uiPlayerCheck = await runChromeUiCheck(
       testPort,
       `http://127.0.0.1:${testPort}/?view=player&course=TESTCOURSE&ep=ep01-test&scene=s1_matrix`,
       `(async () => {
         const deadline = Date.now() + 8000;
         while (Date.now() < deadline) {
-          if (document.querySelector('.btn-export-unified') && document.querySelector('.timing-calibrator-head')) break;
+          if (document.querySelector('.btn-export-unified') && document.querySelector('.scenes-list')) break;
           await new Promise(r => setTimeout(r, 100));
         }
 
         const hasTopbarRevisionBtn = Boolean(document.querySelector('#btn-revision-topbar, .btn-revision-topbar'));
+        const hasTimingCalibratorUi = Boolean(document.querySelector('.timing-calibrator-head, .timing-calibrator'));
 
         // 1) Unified Export Popover
         const exportBtn = document.querySelector('.btn-export-unified');
@@ -1821,17 +1822,8 @@ ${err}`));
         popover?.querySelector('.jobs-popover-close')?.click();
         await new Promise(r => setTimeout(r, 100));
 
-        // 2) Timing Calibrator inside default tab 🎬 Phân cảnh (defaults open; click only if collapsed)
-        const calHead = document.querySelector('.timing-calibrator-head');
-        if (calHead && !document.querySelector('.timing-calibrator-playhead')) {
-          calHead.click();
-          await new Promise(r => setTimeout(r, 150));
-        }
-        const hasPlayhead = Boolean(document.querySelector('.timing-calibrator-playhead'));
-        const stepRowsCount = document.querySelectorAll('.timing-step-row').length;
-        const hasStampBtn = Boolean(document.querySelector('.timing-stamp-btn'));
-        const hasAutoBtn = Boolean(document.querySelector('.timing-auto-btn'));
-        const hasSaveBtn = Boolean(document.querySelector('.timing-save-btn'));
+        // 2) Confirm manual Timing Calibrator is removed from UI (handled automatically by Agents / tts_pipeline)
+        const sceneCardsCount = document.querySelectorAll('.scenes-list .scene-item, .scenes-list button').length;
 
         // 3) Switch to tab 🛠️ Sửa -> Inline Revision Quick-Add + Scene switching + 🔄 Gửi AI Sửa Kịch Bản
         const sửaTab = Array.from(document.querySelectorAll('.drawer-tab')).find((b) => b.textContent.includes('Sửa'));
@@ -1868,17 +1860,14 @@ ${err}`));
 
         return {
           hasTopbarRevisionBtn,
+          hasTimingCalibratorUi,
+          sceneCardsCount,
           popoverOpen: Boolean(popover),
           qualityPillCount,
           hasTtsCheckbox,
           hasExportCta,
           hasDownloadLink,
           hasAnyDownloadBtn,
-          hasPlayhead,
-          stepRowsCount,
-          hasStampBtn,
-          hasAutoBtn,
-          hasSaveBtn,
           defaultSceneValue,
           hasLockHintAfterSwitch,
           aiRewriteText: aiRewriteBtn.textContent.trim(),
@@ -1890,17 +1879,14 @@ ${err}`));
       })()`
     );
     assert.equal(uiPlayerCheck.hasTopbarRevisionBtn, false);
+    assert.equal(uiPlayerCheck.hasTimingCalibratorUi, false);
+    assert.ok(uiPlayerCheck.sceneCardsCount >= 1);
     assert.equal(uiPlayerCheck.popoverOpen, true);
     assert.ok(uiPlayerCheck.qualityPillCount >= 8);
     assert.equal(uiPlayerCheck.hasTtsCheckbox, true);
     assert.equal(uiPlayerCheck.hasExportCta, true);
     assert.equal(uiPlayerCheck.hasDownloadLink, false);
     assert.equal(uiPlayerCheck.hasAnyDownloadBtn, false);
-    assert.equal(uiPlayerCheck.hasPlayhead, true);
-    assert.ok(uiPlayerCheck.stepRowsCount >= 2);
-    assert.equal(uiPlayerCheck.hasStampBtn, true);
-    assert.equal(uiPlayerCheck.hasAutoBtn, true);
-    assert.equal(uiPlayerCheck.hasSaveBtn, true);
     assert.equal(uiPlayerCheck.defaultSceneValue, "s1_matrix");
     assert.equal(uiPlayerCheck.hasLockHintAfterSwitch, true);
     assert.ok(uiPlayerCheck.aiRewriteText.includes("Gửi AI Sửa Kịch Bản"));

@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <!-- Docker Whale + Containers -->
+  <g fill="#38BDF8" stroke="#BAE6FD" stroke-width="1.2">
+    <rect x="34" y="32" width="12" height="10" rx="1.5"/>
+    <rect x="49" y="32" width="12" height="10" rx="1.5"/>
+    <rect x="49" y="19" width="12" height="10" rx="1.5"/>
+    <rect x="64" y="32" width="12" height="10" rx="1.5"/>
+    <rect x="64" y="19" width="12" height="10" rx="1.5"/>
+    <rect x="79" y="32" width="12" height="10" rx="1.5"/>
+  </g>
+  <path d="M16 56 H86 C92 56 97 51 100 45 C106 47 109 53 107 59 C112 60 113 65 109 68 C104 71 98 69 96 68 C90 83 74 94 52 94 C28 94 14 78 16 56 Z"
+        fill="#0284C7" stroke="#7DD3FC" stroke-width="2" stroke-linejoin="round"/>
+  <circle cx="77" cy="69" r="3" fill="#F8FAFC"/>
+  <path d="M26 74 C38 80 54 80 68 76" stroke="#BAE6FD" stroke-width="2" stroke-linecap="round"/>
+</svg>

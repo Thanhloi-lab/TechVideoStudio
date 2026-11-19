@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <defs>
+    <linearGradient id="pgGrad" x1="20" y1="16" x2="100" y2="104" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#60A5FA"/>
+      <stop offset="100%" stop-color="#2563EB"/>
+    </linearGradient>
+  </defs>
+  <ellipse cx="60" cy="60" rx="44" ry="44" fill="#1E3A8A" fill-opacity="0.24" stroke="#3B82F6" stroke-opacity="0.45" stroke-width="1.5"/>
+  <!-- Stylized PostgreSQL Elephant Head + Ears + Trunk -->
+  <path d="M40 34 C25 34 20 52 26 68 C31 79 40 78 44 70 L45 50" fill="url(#pgGrad)" fill-opacity="0.85" stroke="#93C5FD" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M80 34 C95 34 100 52 94 68 C89 79 80 78 76 70 L75 50" fill="url(#pgGrad)" fill-opacity="0.85" stroke="#93C5FD" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M40 32 C46 22 74 22 80 32 C84 44 82 62 72 70 C68 74 68 85 68 92 C68 98 59 101 56 96 C54 91 58 84 56 76 C52 72 44 68 41 58 C38 48 37 39 40 32 Z"
+        fill="url(#pgGrad)" stroke="#DBEAFE" stroke-width="2" stroke-linejoin="round"/>
+  <!-- Eyes & Tusks -->
+  <circle cx="51" cy="48" r="3" fill="#0F172A"/>
+  <circle cx="69" cy="48" r="3" fill="#0F172A"/>
+  <circle cx="52" cy="47" r="1" fill="#FFFFFF"/>
+  <circle cx="70" cy="47" r="1" fill="#FFFFFF"/>
+  <path d="M46 66 C44 76 47 82 51 84" stroke="#E0F2FE" stroke-width="2.6" stroke-linecap="round"/>
+  <path d="M74 66 C76 76 73 82 69 84" stroke="#E0F2FE" stroke-width="2.6" stroke-linecap="round"/>
+</svg>

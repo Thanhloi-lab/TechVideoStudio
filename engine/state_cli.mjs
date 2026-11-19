@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { validateScriptDiagrams } from "./src/diagram_validator.mjs";
+import { loadSvgCatalog, validateScriptWithSvgs } from "./src/svg_catalog.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -105,6 +106,9 @@ export function flattenCourseEpisodes(courseJson) {
 
 export function inspectEpisodeArtifacts(courseDir, epId) {
   const epDir = path.join(courseDir, "episodes", epId);
+  const brief = fs.existsSync(path.join(epDir, "brief.json"));
+  const dialogue = fs.existsSync(path.join(epDir, "dialogue.json"));
+  const audio_spine = fs.existsSync(path.join(epDir, "audio_spine.json"));
   const script = fs.existsSync(path.join(epDir, "script.json"));
   const notes = fs.existsSync(path.join(epDir, "notes.md"));
   const subtitles = fs.existsSync(path.join(epDir, "subtitles.srt"));
@@ -174,6 +178,9 @@ export function inspectEpisodeArtifacts(courseDir, epId) {
   }
 
   return {
+    brief,
+    dialogue,
+    audio_spine,
     script,
     notes,
     audio_count,
@@ -626,7 +633,7 @@ export function validateCourseDiagrams(workspaceRoot, courseId, epId = null) {
       continue;
     }
     const scriptJson = JSON.parse(fs.readFileSync(scriptPath, "utf-8"));
-    const validation = validateScriptDiagrams(scriptJson);
+    const validation = validateScriptWithSvgs(scriptJson);
     if (!validation.valid) allValid = false;
     results.push({
       episode_id: ep.id,
@@ -818,7 +825,7 @@ export function setEpisodeState(workspaceRoot, courseId, epId, opts) {
     const scriptPath = path.join(courseDir, "episodes", epId, "script.json");
     if (fs.existsSync(scriptPath)) {
       const scriptJson = JSON.parse(fs.readFileSync(scriptPath, "utf-8"));
-      const validation = validateScriptDiagrams(scriptJson);
+      const validation = validateScriptWithSvgs(scriptJson);
       for (const w of validation.warnings || []) {
         console.error(`[DIAGRAM WARNING] ${w.scene_id || "-"} (${w.code}): ${w.message}`);
       }
@@ -1033,8 +1040,22 @@ function main() {
         "  node state_cli.mjs revisions --course <COURSE> [--ep <EP_ID>] [--status open|in_progress|resolved|all] [--json]",
         "  node state_cli.mjs resolve-revision --course <COURSE> --ep <EP_ID> --rev <REV-XXX> --note \"<text>\" [--owner \"<name>\"] [--json]",
         "  node state_cli.mjs validate-diagrams --course <COURSE> [--ep <EP_ID>] [--json]",
+        "  node state_cli.mjs svg-list [--json]",
       ].join("\n")
     );
+    process.exit(0);
+  }
+
+  if (command === "svg-list") {
+    const svgs = loadSvgCatalog();
+    if (flags.json) {
+      console.log(JSON.stringify({ ok: true, count: svgs.length, svgs }, null, 2));
+    } else {
+      console.log(`Available SVG illustrations (${svgs.length}):`);
+      for (const s of svgs) {
+        console.log(`  - ${s.id} [${s.category}]${s.exists ? "" : " (MISSING FILE)"} — ${s.label} (${s.keywords.join(", ")})`);
+      }
+    }
     process.exit(0);
   }
 

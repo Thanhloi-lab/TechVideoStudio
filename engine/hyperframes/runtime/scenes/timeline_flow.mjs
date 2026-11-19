@@ -366,7 +366,7 @@ export default function buildTimelineFlow(ctx) {
   };
 
   const t0 = at(0);
-  blurIn(head, t0 + 0.05, { y: -10 });
+  common.reveal(tl, head, t0 + 0.05, { y: -10, mechanic: ctx.mechanic || "blur-materialize" });
   if (segs.length) blurIn(rails, t0 + 0.08, { blur: 6 });
 
   // Exact state changes of every milestone from the shared kernel (pending/started/active/done).

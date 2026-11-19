@@ -66,6 +66,25 @@ const BOKEH_COLORS = [palette.accentPrimary, palette.accentCyan, palette.accentG
 const SPARKLE_COLORS = [palette.accentCyan, palette.accentGlow, palette.gold, palette.success, "#FFFFFF", palette.accentPrimary];
 
 function buildAmbient(tl, gsap, root, total) {
+  const grid = root.querySelector(".tvs-bg-grid");
+  if (grid) {
+    const wrapGrid = gsap.utils.wrap(0, 60);
+    tl.fromTo(
+      grid,
+      { x: 0, y: 0 },
+      {
+        x: Math.max(12, total * 4.2),
+        y: Math.max(8, total * 2.8),
+        duration: Math.max(0.01, total),
+        ease: "none",
+        modifiers: {
+          x: (v) => `${wrapGrid(parseFloat(v)).toFixed(2)}px`,
+          y: (v) => `${wrapGrid(parseFloat(v)).toFixed(2)}px`,
+        },
+      },
+      0
+    );
+  }
   const layer = root.querySelector("#tvs-ambient");
   if (!layer) return;
   const rand = rng(133742);
@@ -212,51 +231,121 @@ function buildSceneBursts(tl, layer, scene, index, start, dur) {
 // Scene chrome + envelope
 // ---------------------------------------------------------------------------
 
+function buildWorldThemeLayer(tl, gsap, root, scenes, timingScenes) {
+  const lightBg = root.querySelector(".tvs-bg-light");
+  if (!lightBg || !Array.isArray(scenes) || !scenes.length) return;
+  let prevLight = scenes[0]?.world_theme === "light";
+  gsap.set(lightBg, { autoAlpha: prevLight ? 1 : 0 });
+  for (let i = 1; i < scenes.length; i++) {
+    const curLight = scenes[i]?.world_theme === "light";
+    if (curLight === prevLight) continue;
+    const tStart = Number(timingScenes?.[i]?.start ?? 0);
+    tl.fromTo(
+      lightBg,
+      { autoAlpha: prevLight ? 1 : 0 },
+      { autoAlpha: curLight ? 1 : 0, duration: 0.32, ease: "power2.inOut", immediateRender: false },
+      Math.max(0, tStart - 0.1)
+    );
+    prevLight = curLight;
+  }
+}
+
 function buildTopBar(data, scene) {
   const ep = String(data.episode?.number || 1).padStart(2, "0");
+  const rightTag = scene.visual_job
+    ? common.sharpTag(scene.visual_job, `Tập ${ep} • ${data.episode?.course_id || ""}`, { tone: "blue" })
+    : el("div.tvs-topbar__badge", { text: `Tập ${ep} • ${data.episode?.course_id || ""}` });
   return el(
     "header.tvs-topbar",
     {},
     el("div.tvs-topbar__pill", { text: scene.part_label || "Bài học" }),
     el("div.tvs-topbar__title", { text: scene.title || "" }),
-    el("div.tvs-topbar__badge", { text: `Tập ${ep} • ${data.episode?.course_id || ""}` })
+    rightTag
   );
 }
 
-function buildEnvelope(tl, inner, start, dur) {
+function buildEnvelope(tl, inner, stage, start, slotDur, { overlapOut = 0, mechanic = "blur-materialize" } = {}) {
   let reveal = DUR.reveal;
   let exit = DUR.exit;
-  let breather = DUR.breather;
-  const minTotal = reveal + exit + breather;
-  if (dur < minTotal + 0.05) {
-    const k = dur / (minTotal + 0.05);
+  let breather = overlapOut > 0 ? 0 : DUR.breather;
+  const minTotal = reveal + (overlapOut > 0 ? 0.05 : exit + breather);
+  if (slotDur < minTotal + 0.05) {
+    const k = slotDur / (minTotal + 0.05);
     reveal *= k;
     exit *= k;
     breather *= k;
   }
-  const breatherStart = Math.max(0, dur - breather);
-  const exitStart = Math.max(0, breatherStart - exit);
+
+  // Zero-static-frame micro-motion floor: subtle deterministic creep zoom on active stage
+  if (stage) {
+    tl.fromTo(stage, { scale: 1 }, { scale: 1.015, duration: Math.max(0.1, slotDur), ease: "none" }, start);
+  }
+
+  let fromVars = { autoAlpha: 0, scale: 0.94, filter: "blur(20px)" };
+  let toVars = { autoAlpha: 1, scale: 1, filter: "blur(0px)", duration: Math.max(0.01, reveal), ease: EASE.reveal };
+  if (mechanic === "width-push" || mechanic === "wire-draw") {
+    fromVars = { autoAlpha: 0, x: -24, scale: 1, clipPath: "inset(0 100% 0 0)" };
+    toVars = { autoAlpha: 1, x: 0, scale: 1, clipPath: "inset(0 0% 0 0)", duration: Math.max(0.01, reveal), ease: EASE.reveal };
+  } else if (mechanic === "arc-emission") {
+    fromVars = { autoAlpha: 0, x: -16, y: 18, scale: 0.95, filter: "blur(10px)" };
+    toVars = { autoAlpha: 1, x: 0, y: 0, scale: 1, filter: "blur(0px)", duration: Math.max(0.01, reveal), ease: EASE.reveal };
+  } else if (mechanic === "squash-drop") {
+    fromVars = { autoAlpha: 0, y: -22, scaleX: 0.96, scaleY: 1.05 };
+    toVars = { autoAlpha: 1, y: 0, scaleX: 1, scaleY: 1, duration: Math.max(0.01, reveal), ease: EASE.spring };
+  } else if (mechanic === "typographic-strike") {
+    fromVars = { autoAlpha: 0, scale: 1.06, filter: "blur(8px)" };
+  }
+
+  tl.fromTo(inner, fromVars, toVars, start);
+  // Explicit zero-duration transition so forward & reverse seeks leave crisp filter:"none", clipPath:"none".
   tl.fromTo(
     inner,
-    { autoAlpha: 0, scale: 0.94, filter: "blur(20px)" },
-    { autoAlpha: 1, scale: 1, filter: "blur(0px)", duration: Math.max(0.01, reveal), ease: EASE.reveal },
-    start
-  );
-  // No filter/transform surface while the scene is static (crisp text, seek-order-stable raster).
-  tl.set(inner, { filter: "none" }, start + Math.max(0.01, reveal));
-  tl.fromTo(
-    inner,
-    { autoAlpha: 1, scale: 1, filter: "blur(0px)" },
     {
-      autoAlpha: 0,
-      scale: 0.96,
-      filter: "blur(20px)",
-      duration: Math.max(0.01, exit),
-      ease: EASE.exit,
+      filter: toVars.filter || "none",
+      clipPath: toVars.clipPath || "none",
+    },
+    {
+      filter: "none",
+      clipPath: "none",
+      duration: 0,
       immediateRender: false,
     },
-    start + exitStart
+    start + Math.max(0.01, reveal)
   );
+
+  if (overlapOut > 0) {
+    const outStart = Math.max(start + reveal + 0.02, start + slotDur - 0.04);
+    const outDur = Math.max(0.05, overlapOut + 0.02);
+    tl.fromTo(
+      inner,
+      { autoAlpha: 1, scale: 1, filter: "blur(0px)" },
+      {
+        autoAlpha: 0,
+        scale: 0.97,
+        filter: "blur(14px)",
+        duration: outDur,
+        ease: EASE.exit,
+        immediateRender: false,
+      },
+      outStart
+    );
+  } else {
+    const breatherStart = Math.max(0, slotDur - breather);
+    const exitStart = Math.max(0, breatherStart - exit);
+    tl.fromTo(
+      inner,
+      { autoAlpha: 1, scale: 1, filter: "blur(0px)" },
+      {
+        autoAlpha: 0,
+        scale: 0.96,
+        filter: "blur(20px)",
+        duration: Math.max(0.01, exit),
+        ease: EASE.exit,
+        immediateRender: false,
+      },
+      start + exitStart
+    );
+  }
 }
 
 function buildSubtitles(tl, root) {
@@ -299,12 +388,17 @@ async function main() {
   buildProgressBar(tl, root, total);
 
   const scenes = Array.isArray(data.scenes) ? data.scenes : [];
+  buildWorldThemeLayer(tl, gsap, root, scenes, data.timing?.scenes || []);
   const builders = await loadBuilders(scenes.map((s) => s.visual_type));
   scenes.forEach((scene, index) => {
     const clip = root.querySelector(`#scene-${index}`);
     if (!clip) return;
     const start = Number(clip.getAttribute("data-start")) || 0;
-    const dur = Math.max(0.1, Number(clip.getAttribute("data-duration")) || 0.1);
+    const clipDur = Math.max(0.1, Number(clip.getAttribute("data-duration")) || 0.1);
+    const slotDur = Math.max(0.1, Number(clip.getAttribute("data-slot-duration")) || clipDur);
+    const overlapOut = Math.max(0, Number(clip.getAttribute("data-overlap-out")) || 0);
+    const mechanic = scene.causal_mechanic || "blur-materialize";
+    const worldTheme = scene.world_theme === "light" ? "light" : "dark";
     const inner = el("div.tvs-scene-inner");
     const stage = el("div.tvs-stage");
     inner.appendChild(buildTopBar(data, scene));
@@ -312,7 +406,7 @@ async function main() {
     clip.appendChild(inner);
 
     const builder = builders[scene.visual_type];
-    const at = (p) => start + common.clamp01(Number(p) || 0) * dur;
+    const at = (p) => start + common.clamp01(Number(p) || 0) * slotDur;
     const ctx = {
       gsap,
       tl,
@@ -322,10 +416,12 @@ async function main() {
       vd: scene.visual_data || {},
       index,
       start,
-      dur,
+      dur: slotDur,
       at,
       stage,
       sceneEl: inner,
+      mechanic,
+      worldTheme,
       seed: hashString(`${data.episode?.id || ""}:${scene.id}:${index}`),
     };
     try {
@@ -335,8 +431,8 @@ async function main() {
       reportBuildError(`scene ${index} (${scene.id}, ${scene.visual_type})`, err);
       stage.appendChild(el("div.tvs-build-error", { text: `⚠ ${scene.visual_type}: ${err?.message || err}` }));
     }
-    buildEnvelope(tl, inner, start, dur);
-    buildSceneBursts(tl, fxLayer, scene, index, start, dur);
+    buildEnvelope(tl, inner, stage, start, slotDur, { overlapOut, mechanic });
+    buildSceneBursts(tl, fxLayer, scene, index, start, slotDur);
   });
 
   buildSubtitles(tl, root);

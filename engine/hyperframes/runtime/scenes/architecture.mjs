@@ -69,9 +69,13 @@ const CSS = `
   padding: 0 12px; text-align: center; }
 .arch__node-icon { flex: none; width: 54px; height: 54px; border-radius: 14px; border: 1.5px solid; display: grid; place-items: center; margin-bottom: 9px; }
 .arch__node-icon .tvs-icon-glyph { font-size: 28px; }
+.arch__node-art { flex: none; width: 100%; height: 68px; display: flex; align-items: center; justify-content: center; margin-bottom: 5px; }
+.arch__node-art-img { width: 112px; height: 68px; object-fit: contain; display: block; filter: drop-shadow(0 6px 14px rgba(0, 0, 0, 0.55)); }
 .arch__node-label { max-width: 100%; font: 700 22px/28px var(--tvs-font); color: #F8FAFC; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .arch__node-sub { max-width: 100%; margin-top: 3px; font: 600 17px/22px var(--tvs-font); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .arch__node-body--wrap .arch__node-icon { width: 44px; height: 44px; border-radius: 12px; margin-bottom: 6px; }
+.arch__node-body--wrap .arch__node-art { height: 54px; margin-bottom: 4px; }
+.arch__node-body--wrap .arch__node-art-img { width: 92px; height: 54px; }
 .arch__node-body--wrap .arch__node-label { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; white-space: normal;
   overflow-wrap: anywhere; text-wrap: balance; font-size: 18px; line-height: 22px; }
 .arch__node-body--wrap .arch__node-sub { line-height: 20px; }
@@ -598,11 +602,24 @@ export default function buildArchitecture(ctx) {
     const wrapLabel = labelSize < 18;
     const subSize = subText ? fit(600, wrapLabel ? 15 : 17, 13, subText) : 17;
 
+    const rawSvg = typeof n.svg === "string" ? n.svg.trim().replace(/\.svg$/i, "") : "";
+    const hasSvgArt = Boolean(rawSvg && /^[a-z0-9_-]+$/i.test(rawSvg));
+    const artNode = hasSvgArt
+      ? el(
+          "div.arch__node-art",
+          {},
+          el("img.arch__node-art-img", {
+            attrs: { src: `./assets/svg/${rawSvg}.svg`, alt: labelText },
+            style: { filter: `drop-shadow(0 0 12px ${tone.glow}) drop-shadow(0 6px 14px rgba(0, 0, 0, 0.55))` },
+          })
+        )
+      : el("div.arch__node-icon", { style: { background: tone.bg, borderColor: tone.border } }, icon(n.icon, tone.text, wrapLabel ? 26 : 32));
+
     const hl = el("div.arch__node-hl", { style: { borderColor: tone.border, boxShadow: `0 0 28px 2px ${tone.glow}, 0 10px 28px rgba(2, 10, 20, 0.65)` } });
     const body = el(
       wrapLabel ? "div.arch__node-body.arch__node-body--wrap" : "div.arch__node-body",
       {},
-      el("div.arch__node-icon", { style: { background: tone.bg, borderColor: tone.border } }, icon(n.icon, tone.text, wrapLabel ? 26 : 32)),
+      artNode,
       el("div.arch__node-label", { text: labelText, style: !wrapLabel && labelSize !== 22 ? { fontSize: `${labelSize}px` } : undefined }),
       subText ? el("div.arch__node-sub", { text: subText, style: { color: tone.text, fontSize: `${subSize}px` } }) : null
     );

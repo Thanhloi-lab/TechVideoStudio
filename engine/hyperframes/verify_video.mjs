@@ -10,7 +10,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { evaluate, launchChrome, navigate, openPage } from "./cdp.mjs";
+import { evaluate, launchChrome, navigate, openPage, sleep } from "./cdp.mjs";
 import { ensureStudioServer } from "./studio_server.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -27,6 +27,10 @@ export async function verifyEpisodeVideo({ port = 3030, course, episode, file, f
     const { cdp } = chrome;
     const { sessionId } = await openPage(cdp);
     await navigate(cdp, sessionId, `http://127.0.0.1:${port}/public/hf-encoder.html`);
+    for (let i = 0; i < 50; i++) {
+      if (await evaluate(cdp, sessionId, "Boolean(window.__TVS_AUDIO_DSP__)")) break;
+      await sleep(100);
+    }
     const url = `/courses/${encodeURIComponent(course)}/episodes/${encodeURIComponent(episode)}/${encodeURIComponent(file)}`;
     const info = await evaluate(
       cdp,
@@ -43,9 +47,18 @@ export async function verifyEpisodeVideo({ port = 3030, course, episode, file, f
           const ctx = new OfflineAudioContext(2, 1, 48000);
           const audio = await ctx.decodeAudioData(buf.slice(0));
           const ch = audio.getChannelData(0);
+          const chR = audio.numberOfChannels > 1 ? audio.getChannelData(1) : ch;
           let sum = 0, peak = 0;
           for (let i = 0; i < ch.length; i++) { const s = ch[i]; sum += s * s; if (Math.abs(s) > peak) peak = Math.abs(s); }
-          out.audio = { duration: audio.duration, sampleRate: audio.sampleRate, channels: audio.numberOfChannels, rms: Math.sqrt(sum / Math.max(1, ch.length)), peak };
+          const dsp = window.__TVS_AUDIO_DSP__?.measureIntegratedLufs(ch, chR, audio.sampleRate);
+          out.audio = {
+            duration: audio.duration,
+            sampleRate: audio.sampleRate,
+            channels: audio.numberOfChannels,
+            rms: Math.sqrt(sum / Math.max(1, ch.length)),
+            peak: dsp ? dsp.peak : peak,
+            lufs: dsp ? Number(dsp.lufs.toFixed(2)) : null,
+          };
         } catch (err) { out.audio = { error: String(err && err.message || err) }; }
         const canvas = document.createElement("canvas");
         canvas.width = v.videoWidth; canvas.height = v.videoHeight;

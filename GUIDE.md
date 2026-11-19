@@ -35,8 +35,9 @@ Khi người dùng yêu cầu làm theo `GUIDE.md`, Agent thực hiện tuần t
    ```powershell
    node setup.mjs --check --json
    node engine/state_cli.mjs summary --course AWS
-   node engine/test_ai_bridge_and_templates.mjs   # Chạy bộ test tự động 13 phần + Chrome UI
-   node engine/test_hyperframes.mjs               # Test engine render HyperFrames (compile, determinism 7 template, render MP4)
+   node engine/test_phase1_three_stage.mjs         # Test quy trình biên kịch 3 bước, dynamic routing & Audio Spine
+   node engine/test_ai_bridge_and_templates.mjs   # Chạy bộ test tự động 17 phần + Chrome UI
+   node engine/test_hyperframes.mjs               # Test engine render HyperFrames (compile, determinism, Light/Dark, -16 LUFS)
    node engine/scripts/vendor_libs.mjs --verify-only   # Kiểm tra SHA-256 thư viện vendor (gồm runtime HyperFrames + GSAP)
    ```
    *(Nếu repo chưa có khóa học nào hoặc bạn tạo khóa mới, bỏ qua bước `state_cli.mjs`. Toàn bộ khóa học cục bộ `<COURSE>/`, `*.mp3`, `*.mp4`, adapter `.agents/`, `.claude/`, `.mcp.json` và file key/cache `engine/.ai_*.json`, `.env` đều đã được loại trừ trong `.gitignore`.)*

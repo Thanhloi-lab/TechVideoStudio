@@ -448,7 +448,7 @@ export default function buildExamTips(ctx) {
   };
 
   const t0 = at(0);
-  blurIn(head, t0 + 0.05, { y: -10 });
+  common.reveal(tl, head, t0 + 0.05, { y: -10, mechanic: ctx.mechanic || "blur-materialize" });
 
   cards.forEach((c, i) => {
     const tc = Math.max(t0 + 0.08, at(mark(c.cmp.progress_start, 0))) + (mark(c.cmp.progress_start, 0) <= 0 ? i * DUR.stagger : 0);

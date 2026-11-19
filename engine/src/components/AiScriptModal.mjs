@@ -40,6 +40,9 @@ export function AiScriptModal({
   course,
   targetEpisode = null,
   initialSelectedIds = null,
+  initialMode = null,
+  initialPauseAfter = null,
+  startFrom = null,
   resumeJob = null,
   providersData = null,
   onProvidersLoaded = null,
@@ -60,6 +63,10 @@ export function AiScriptModal({
   const [instructions, setInstructions] = useState("");
   const [sharedRewriteNote, setSharedRewriteNote] = useState("");
   const [epRewriteNotes, setEpRewriteNotes] = useState({});
+
+  const [generationMode, setGenerationMode] = useState("three_stage");
+  const [pauseAfter, setPauseAfter] = useState("dialogue");
+  const [lockAudioSpine, setLockAudioSpine] = useState(false);
 
   const [autoProduce, setAutoProduce] = useState(false);
   const [voiceProfileId, setVoiceProfileId] = useState("");
@@ -157,6 +164,14 @@ export function AiScriptModal({
     setHardware(renderPrefs?.hardware || "auto");
     setFps(renderPrefs?.fps || 60);
 
+    const nextGenMode = initialMode || "three_stage";
+    const defaultPause =
+      initialPauseAfter ||
+      (startFrom === "visual" ? "none" : mode === "batch" ? "none" : "dialogue");
+    setGenerationMode(nextGenMode);
+    setPauseAfter(defaultPause);
+    setLockAudioSpine(false);
+
     let nextIds = [];
     if (mode === "resume" && resumeJob) {
       const doneSet = new Set(resumeJob.completed_episodes || []);
@@ -167,7 +182,11 @@ export function AiScriptModal({
     } else if (mode === "single" && targetEpisode) {
       nextIds = [targetEpisode.id];
       setInstructions("");
-      setAutoProduce(Boolean(effectiveProvidersData?.last_selection?.auto_produce));
+      setAutoProduce(
+        nextGenMode === "three_stage" && defaultPause !== "none"
+          ? false
+          : Boolean(effectiveProvidersData?.last_selection?.auto_produce)
+      );
       setSharedRewriteNote("");
     } else {
       if (Array.isArray(initialSelectedIds) && initialSelectedIds.length > 0) {
@@ -179,7 +198,11 @@ export function AiScriptModal({
           .map((e) => e.id);
       }
       setInstructions("");
-      setAutoProduce(Boolean(effectiveProvidersData?.last_selection?.auto_produce));
+      setAutoProduce(
+        nextGenMode === "three_stage" && defaultPause !== "none"
+          ? false
+          : Boolean(effectiveProvidersData?.last_selection?.auto_produce)
+      );
       setSharedRewriteNote("");
     }
 
@@ -215,7 +238,7 @@ export function AiScriptModal({
     return () => {
       alive = false;
     };
-  }, [isOpen, mode, course?.id, targetEpisode?.id, resumeJob?.id]);
+  }, [isOpen, mode, course?.id, targetEpisode?.id, resumeJob?.id, initialMode, initialPauseAfter, startFrom]);
 
   useEffect(() => {
     if (!isOpen || !autoProduce || voices.length > 0) return;
@@ -275,6 +298,11 @@ export function AiScriptModal({
   const selectedProvider = providersList.find((p) => p.id === selectedProviderId) || null;
   const selectedProviderReady = isProviderReady(selectedProvider);
   const isManualWeb = selectedProviderId === "manual_web";
+  const isBuiltinSelected = Boolean(
+    selectedProviderId && selectedProviderId !== "antigravity" && selectedProviderId !== "manual_web"
+  );
+  const effectivePausedGate =
+    isBuiltinSelected && generationMode === "three_stage" && pauseAfter !== "none";
   const mcpBatchLimitExceeded =
     selectedProviderId === "antigravity" && mode !== "resume" && selectedIds.length > 5;
 
@@ -429,6 +457,7 @@ export function AiScriptModal({
           rewrite_notes: Object.keys(rewriteNotesPayload).length > 0 ? rewriteNotesPayload : undefined,
         });
       } else {
+        const effectiveAutoProduce = effectivePausedGate ? false : autoProduce;
         await onSubmitJob({
           type: mode === "single" && selectedIds.length === 1 ? "script_episode" : "script_batch",
           course: course.id,
@@ -436,11 +465,19 @@ export function AiScriptModal({
           provider_id: selectedProviderId,
           model: selectedModel || undefined,
           execution_mode: selectedProviderId === "antigravity" ? "mcp" : "builtin",
+          mode: isBuiltinSelected ? generationMode : "auto",
+          pause_after:
+            isBuiltinSelected && generationMode === "three_stage" ? pauseAfter : "none",
+          start_from: isBuiltinSelected && startFrom ? startFrom : undefined,
+          lock_audio_spine:
+            isBuiltinSelected && generationMode === "three_stage" && pauseAfter === "none"
+              ? Boolean(lockAudioSpine)
+              : false,
           custom_instructions: instructions.trim(),
           rewrite_note: sharedRewriteNote.trim() || undefined,
           rewrite_notes: Object.keys(rewriteNotesPayload).length > 0 ? rewriteNotesPayload : undefined,
-          auto_produce: autoProduce,
-          render_prefs: autoProduce
+          auto_produce: effectiveAutoProduce,
+          render_prefs: effectiveAutoProduce
             ? {
                 mode: "tts_and_render",
                 profile_id: voiceProfileId || null,
@@ -755,6 +792,94 @@ export function AiScriptModal({
           })
         ),
 
+        isBuiltinSelected && mode !== "resume"
+          ? h(
+              "div",
+              { className: "form-field ai-pipeline-stage-box" },
+              startFrom
+                ? h(
+                    "div",
+                    { className: "ai-stage-resume-banner" },
+                    startFrom === "dialogue"
+                      ? "▶ Tiếp tục từ Content Brief đã duyệt → Viết lời thoại & Beats (Tầng 2)"
+                      : "▶ Tiếp tục từ Lời thoại đã chốt → Đạo diễn Visual & Component (Tầng 3)"
+                  )
+                : null,
+              h(
+                "div",
+                { className: "ai-render-prefs-grid" },
+                h(
+                  "div",
+                  null,
+                  h("label", { className: "form-label-sm" }, "Quy trình biên kịch"),
+                  h(
+                    "select",
+                    {
+                      className: "studio-input studio-input-sm",
+                      value: generationMode,
+                      onChange: (e) => {
+                        const nextM = e.target.value;
+                        setGenerationMode(nextM);
+                        if (nextM === "three_stage" && pauseAfter !== "none") {
+                          setAutoProduce(false);
+                        }
+                      },
+                      disabled: busy,
+                    },
+                    h("option", { value: "three_stage" }, "3 Tầng tách biệt (Brief → Thoại → Visual)"),
+                    h("option", { value: "two_pass" }, "2-Pass (Storyboard → Compiler)"),
+                    h("option", { value: "auto" }, "Tự động nhanh (auto)")
+                  )
+                ),
+                generationMode === "three_stage"
+                  ? h(
+                      "div",
+                      null,
+                      h("label", { className: "form-label-sm" }, "Điểm dừng duyệt"),
+                      h(
+                        "select",
+                        {
+                          className: "studio-input studio-input-sm",
+                          value: pauseAfter,
+                          onChange: (e) => {
+                            const nextP = e.target.value;
+                            setPauseAfter(nextP);
+                            if (nextP !== "none") setAutoProduce(false);
+                          },
+                          disabled: busy,
+                        },
+                        h("option", { value: "brief" }, "Dừng sau Brief (Duyệt dàn ý)"),
+                        h("option", { value: "dialogue" }, "Dừng sau Lời thoại (Khuyến nghị)"),
+                        h("option", { value: "none" }, "Chạy liền tới Visual (script.json)")
+                      )
+                    )
+                  : null
+              ),
+              generationMode === "three_stage" && pauseAfter === "none"
+                ? h(
+                    "label",
+                    { className: "ai-switch-row ai-spine-toggle" },
+                    h("input", {
+                      type: "checkbox",
+                      checked: lockAudioSpine,
+                      onChange: (e) => setLockAudioSpine(e.target.checked),
+                      disabled: busy,
+                    }),
+                    h(
+                      "span",
+                      { className: "ai-switch-text" },
+                      h("strong", null, "🔒 Khóa Audio-Spine (TTS từng beat) trước khi dựng Visual"),
+                      h(
+                        "small",
+                        null,
+                        "Tạo audio từng beat giữa Tầng 2 và Tầng 3 để đo thời lượng thật trước khi bố cục animation (tự bỏ qua nếu TTS offline)."
+                      )
+                    )
+                  )
+                : null
+            )
+          : null,
+
         // Manual Web Flow (when provider_id === "manual_web")
         isManualWeb
           ? h(
@@ -842,7 +967,7 @@ export function AiScriptModal({
                 })
               )
             )
-          : mode !== "resume"
+          : mode !== "resume" && !effectivePausedGate
             ? // Auto-produce Toggle (DEFAULT FALSE)
               h(
                 "div",

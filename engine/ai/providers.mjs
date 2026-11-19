@@ -247,6 +247,33 @@ function resolveProviderCredentialsInternal(providerId, engineDir = DEFAULT_ENGI
   };
 }
 
+export const VALID_PIPELINE_ROLES = Object.freeze([
+  "outliner",
+  "brief_scriptwriter",
+  "visual_director",
+  "repair",
+]);
+
+function normalizePipelineRoutingMap(rawRouting) {
+  const out = {};
+  const src = rawRouting && typeof rawRouting === "object" ? rawRouting : {};
+  for (const role of VALID_PIPELINE_ROLES) {
+    const entry = src[role];
+    if (entry && typeof entry === "object" && entry.provider_id) {
+      const pid = String(entry.provider_id).trim();
+      if (getBrandSpec(pid)) {
+        out[role] = {
+          provider_id: pid,
+          model: entry.model ? String(entry.model).trim().slice(0, 160) : null,
+        };
+        continue;
+      }
+    }
+    out[role] = null;
+  }
+  return out;
+}
+
 export function loadAiPreferences(engineDir = DEFAULT_ENGINE_DIR) {
   const filePath = getPreferencesFilePath(engineDir);
   const raw = readJsonSafe(filePath, {});
@@ -260,6 +287,7 @@ export function loadAiPreferences(engineDir = DEFAULT_ENGINE_DIR) {
           updated_at: sel.updated_at || null,
         }
       : null,
+    pipeline_routing: normalizePipelineRoutingMap(raw?.pipeline_routing),
   };
 }
 
@@ -275,9 +303,125 @@ export function saveLastSelection({ provider_id, model, auto_produce = false }, 
       auto_produce: Boolean(auto_produce),
       updated_at: new Date().toISOString(),
     },
+    pipeline_routing: normalizePipelineRoutingMap(existing?.pipeline_routing),
   };
   writeJsonAtomicLocal(filePath, next);
   return next.last_selection;
+}
+
+export function savePipelineRouting(routing = {}, engineDir = DEFAULT_ENGINE_DIR) {
+  if (!routing || typeof routing !== "object" || Array.isArray(routing)) {
+    throw Object.assign(new Error("pipeline_routing must be an object."), { statusCode: 400 });
+  }
+  const filePath = getPreferencesFilePath(engineDir);
+  const existing = readJsonSafe(filePath, {});
+  const merged = { ...normalizePipelineRoutingMap(existing?.pipeline_routing) };
+
+  for (const [role, value] of Object.entries(routing)) {
+    if (!VALID_PIPELINE_ROLES.includes(role)) {
+      throw Object.assign(
+        new Error(`Unknown pipeline role "${role}". Allowed: ${VALID_PIPELINE_ROLES.join(", ")}`),
+        { statusCode: 400 }
+      );
+    }
+    if (value === null || value === undefined || value === "") {
+      merged[role] = null;
+      continue;
+    }
+    if (typeof value !== "object" || Array.isArray(value)) {
+      throw Object.assign(new Error(`Role "${role}" routing entry must be null or { provider_id, model }.`), {
+        statusCode: 400,
+      });
+    }
+    const pid = String(value.provider_id || "").trim();
+    if (!pid) {
+      merged[role] = null;
+      continue;
+    }
+    const spec = getBrandSpec(pid);
+    if (!spec) {
+      throw Object.assign(new Error(`Unknown provider "${pid}" for role "${role}".`), { statusCode: 400 });
+    }
+    merged[role] = {
+      provider_id: pid,
+      model: value.model ? String(value.model).trim().slice(0, 160) : null,
+    };
+  }
+
+  const next = {
+    ...existing,
+    version: 1,
+    pipeline_routing: merged,
+    updated_at: new Date().toISOString(),
+  };
+  writeJsonAtomicLocal(filePath, next);
+  return next.pipeline_routing;
+}
+
+export function resolveRoleProvider(
+  role,
+  { overrides = null, job = null, engineDir = DEFAULT_ENGINE_DIR } = {}
+) {
+  const prefs = loadAiPreferences(engineDir);
+  const isReadyBuiltinOrNonBuiltin = (pid) => {
+    const spec = getBrandSpec(pid);
+    if (!spec) return false;
+    if (spec.execution_mode !== "builtin") return true;
+    return resolveProviderExecutionConfig(pid, engineDir).ok;
+  };
+
+  // 1. Explicit per-job override (overrides[role])
+  const ov = overrides && typeof overrides === "object" ? overrides[role] : null;
+  if (ov && typeof ov === "object" && (ov.provider_id || ov.model)) {
+    const pid = String(ov.provider_id || job?.provider_id || prefs.last_selection?.provider_id || "").trim();
+    const spec = pid ? getBrandSpec(pid) : null;
+    if (spec) {
+      const mdl =
+        (ov.model ? String(ov.model).trim() : null) ||
+        (pid === job?.provider_id ? job?.model || null : null) ||
+        (pid === prefs.last_selection?.provider_id ? prefs.last_selection?.model || null : null);
+      return { provider_id: pid, model: mdl, source: "override" };
+    }
+  }
+
+  // 2. Saved pipeline_routing[role] (only when provider is configured/ready)
+  const savedRole = VALID_PIPELINE_ROLES.includes(role) ? prefs.pipeline_routing?.[role] : null;
+  if (savedRole && savedRole.provider_id && isReadyBuiltinOrNonBuiltin(savedRole.provider_id)) {
+    const mdl =
+      savedRole.model ||
+      (savedRole.provider_id === job?.provider_id ? job?.model || null : null) ||
+      (savedRole.provider_id === prefs.last_selection?.provider_id ? prefs.last_selection?.model || null : null);
+    return { provider_id: savedRole.provider_id, model: mdl, source: "pipeline_routing" };
+  }
+
+  // 3. Legacy compiler_provider_id / compiler_model for visual_director & repair
+  if ((role === "visual_director" || role === "repair") && (job?.compiler_provider_id || job?.compiler_model)) {
+    const pid = String(job.compiler_provider_id || job.provider_id || "").trim();
+    if (pid && getBrandSpec(pid)) {
+      const mdl = job.compiler_model || (pid === job.provider_id ? job.model || null : null);
+      return { provider_id: pid, model: mdl, source: "compiler_legacy" };
+    }
+  }
+
+  // 4. Job's primary provider/model
+  if (job?.provider_id && getBrandSpec(job.provider_id)) {
+    return {
+      provider_id: String(job.provider_id).trim(),
+      model: job.model ? String(job.model).trim() : null,
+      source: "job",
+    };
+  }
+
+  // 5. Saved last_selection
+  if (prefs.last_selection?.provider_id && isReadyBuiltinOrNonBuiltin(prefs.last_selection.provider_id)) {
+    return {
+      provider_id: prefs.last_selection.provider_id,
+      model: prefs.last_selection.model || null,
+      source: "last_selection",
+    };
+  }
+
+  return { provider_id: null, model: null, source: "none" };
 }
 
 export function invalidateProviderCache(providerId = null) {
@@ -964,6 +1108,7 @@ export async function getProvidersOverview({ force = false, workerStatus = null,
   return {
     providers,
     last_selection: prefs.last_selection,
+    pipeline_routing: prefs.pipeline_routing,
   };
 }
 

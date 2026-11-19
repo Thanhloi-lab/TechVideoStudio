@@ -12,6 +12,7 @@ import { EpisodeRoadmap } from "./components/EpisodeRoadmap.mjs";
 import { HeaderJobsTray } from "./components/HeaderJobsTray.mjs";
 import { AiScriptModal } from "./components/AiScriptModal.mjs";
 import { RevisionPanel } from "./components/RevisionPanel.mjs";
+import { ScriptingStageModal } from "./components/ScriptingStageModal.mjs";
 import { VoiceStudioModal } from "./components/VoiceStudioModal.mjs";
 import { ParticleStage } from "./motion/ParticleStage.mjs";
 import { computeSceneEnvelope, getSceneBurstInfo, parseSubtitleSegments } from "./motion/kernel.mjs";
@@ -549,6 +550,12 @@ function StudioApp() {
   const [exportStatus, setExportStatus] = useState(null);
   const [exportSeekActive, setExportSeekActive] = useState(false);
   const [playerAiModalOpen, setPlayerAiModalOpen] = useState(false);
+  const [playerAiOptions, setPlayerAiOptions] = useState({
+    initialMode: null,
+    initialPauseAfter: null,
+    startFrom: null,
+  });
+  const [playerStageModalOpen, setPlayerStageModalOpen] = useState(false);
   const [voiceModalOpen, setVoiceModalOpen] = useState(false);
   const [voiceTrackBusy, setVoiceTrackBusy] = useState(false);
   const [calibratorOpen, setCalibratorOpen] = useState(true);
@@ -3031,143 +3038,6 @@ function StudioApp() {
             ? h(
                 "div",
                 { className: "scenes-tab-wrap" },
-                currentScene
-                  ? h(
-                      "div",
-                      { className: `timing-calibrator ${calibratorOpen ? "is-open" : ""}` },
-                      h(
-                        "button",
-                        {
-                          type: "button",
-                          className: "timing-calibrator-head",
-                          onClick: () => setCalibratorOpen((v) => !v),
-                          "aria-expanded": calibratorOpen,
-                        },
-                        h(
-                          "span",
-                          { className: "timing-calibrator-title" },
-                          `⏱️ Khớp nhịp Animation · Cảnh ${sceneIdx + 1}`
-                        ),
-                        h(
-                          "span",
-                          { className: "timing-calibrator-meta" },
-                          timingDraftDirty
-                            ? "Chưa lưu"
-                            : `${sceneTime.toFixed(1)}s / ${currentSceneDuration.toFixed(1)}s`,
-                          " ",
-                          calibratorOpen ? "▾" : "▸"
-                        )
-                      ),
-                      calibratorOpen
-                        ? h(
-                            "div",
-                            { className: "timing-calibrator-body" },
-                            h(
-                              "div",
-                              { className: "timing-calibrator-playhead" },
-                              h(
-                                "span",
-                                null,
-                                `Playhead: ${sceneTime.toFixed(1)}s (${Math.round(sceneProgress * 100)}%)`
-                              ),
-                              h(
-                                "button",
-                                {
-                                  type: "button",
-                                  className: "timing-auto-btn",
-                                  disabled: timingAutoAligning || timingSaving,
-                                  onClick: handleAutoAlignTimings,
-                                  title: "Tự căn chỉnh lại các bước theo phụ đề hiện tại",
-                                },
-                                timingAutoAligning ? "⏳ Đang căn..." : "⚡ Tự căn lại theo phụ đề"
-                              )
-                            ),
-                            calibratableItems.length === 0
-                              ? h(
-                                  "div",
-                                  { className: "timing-empty-note" },
-                                  "Cảnh này chưa có danh sách bước/phase để căn chỉnh."
-                                )
-                              : h(
-                                  "div",
-                                  { className: "timing-steps-list" },
-                                  ...calibratableItems.map((item) => {
-                                    const startSec = (item.start * currentSceneDuration).toFixed(1);
-                                    const endSec =
-                                      item.end !== null
-                                        ? (item.end * currentSceneDuration).toFixed(1)
-                                        : null;
-                                    const startPct = Math.round(item.start * 100);
-                                    const endPct =
-                                      item.end !== null ? Math.round(item.end * 100) : null;
-                                    return h(
-                                      "div",
-                                      { key: item.id, className: "timing-step-row" },
-                                      h(
-                                        "div",
-                                        { className: "timing-step-info" },
-                                        h(
-                                          "span",
-                                          { className: "timing-step-label", title: item.label },
-                                          `${item.stepNum}. ${item.label}`
-                                        ),
-                                        h(
-                                          "span",
-                                          { className: "timing-step-range" },
-                                          endSec !== null
-                                            ? `${startSec}s → ${endSec}s (${startPct}%–${endPct}%)`
-                                            : `@ ${startSec}s (${startPct}%)`
-                                        )
-                                      ),
-                                      h(
-                                        "button",
-                                        {
-                                          type: "button",
-                                          className: "timing-stamp-btn",
-                                          disabled: timingSaving || timingAutoAligning,
-                                          onClick: () => handleCalibrateStepStart(item),
-                                          title: `Đặt đầu Bước ${item.stepNum} tại vị trí playhead hiện tại (${sceneTime.toFixed(1)}s)`,
-                                        },
-                                        `📍 Đặt đầu Bước ${item.stepNum} tại đây (${sceneTime.toFixed(1)}s)`
-                                      )
-                                    );
-                                  })
-                                ),
-                            calibratableItems.length > 0
-                              ? h(
-                                  "div",
-                                  { className: "timing-calibrator-footer" },
-                                  h(
-                                    "button",
-                                    {
-                                      type: "button",
-                                      className: "timing-save-btn",
-                                      disabled: timingSaving || timingAutoAligning,
-                                      onClick: handleSaveTimings,
-                                    },
-                                    timingSaving ? "⏳ Đang lưu..." : "💾 Lưu Timing"
-                                  ),
-                                  timingDraftDirty
-                                    ? h(
-                                        "button",
-                                        {
-                                          type: "button",
-                                          className: "timing-reset-btn",
-                                          disabled: timingSaving || timingAutoAligning,
-                                          onClick: () => {
-                                            setTimingDraft(null);
-                                            setTimingDraftDirty(false);
-                                          },
-                                        },
-                                        "Hoàn tác"
-                                      )
-                                    : null
-                                )
-                              : null
-                          )
-                        : null
-                    )
-                  : null,
                 h(
                   "div",
                   { className: "scenes-list" },
@@ -3214,7 +3084,11 @@ function StudioApp() {
                     episode: currentEpisode,
                     currentSceneId: currentScene?.id || "",
                     scenes: scenes.map((s, idx) => ({ id: s.id, title: s.title, index: idx })),
-                    onOpenAiRewrite: () => setPlayerAiModalOpen(true),
+                    onOpenAiRewrite: () => {
+                      setPlayerAiOptions({ initialMode: null, initialPauseAfter: null, startFrom: null });
+                      setPlayerAiModalOpen(true);
+                    },
+                    onOpenScriptingStage: () => setPlayerStageModalOpen(true),
                     onJumpToTicket: (_epId, targetSceneId) => {
                       if (!targetSceneId) return;
                       const idx = scenes.findIndex((s) => s.id === targetSceneId);
@@ -3236,16 +3110,41 @@ function StudioApp() {
       )
     ),
 
+    // Scripting 3-Stage Review Modal inside Studio Player
+    h(ScriptingStageModal, {
+      isOpen: playerStageModalOpen,
+      course: currentCourse,
+      episode: currentEpisode,
+      onClose: () => setPlayerStageModalOpen(false),
+      onSaved: async () => {
+        await fetchCourses();
+      },
+      onContinueToStage: ({ startFrom, initialMode, initialPauseAfter }) => {
+        setPlayerAiOptions({
+          initialMode: initialMode || "three_stage",
+          initialPauseAfter: initialPauseAfter || (startFrom === "visual" ? "none" : "dialogue"),
+          startFrom: startFrom || null,
+        });
+        setPlayerAiModalOpen(true);
+      },
+    }),
+
     // AI Rewrite / Scripting Modal directly inside Studio Player
     h(AiScriptModal, {
       isOpen: playerAiModalOpen,
       mode: "single",
       course: currentCourse,
       targetEpisode: currentEpisode,
+      initialMode: playerAiOptions.initialMode,
+      initialPauseAfter: playerAiOptions.initialPauseAfter,
+      startFrom: playerAiOptions.startFrom,
       providersData,
       onProvidersLoaded: setProvidersData,
       renderPrefs,
-      onClose: () => setPlayerAiModalOpen(false),
+      onClose: () => {
+        setPlayerAiModalOpen(false);
+        setPlayerAiOptions({ initialMode: null, initialPauseAfter: null, startFrom: null });
+      },
       onSubmitJob: async (payload) => {
         await handleStartAiScript(payload);
       },

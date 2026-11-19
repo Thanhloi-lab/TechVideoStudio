@@ -28,6 +28,7 @@ Every episode's lifecycle is tracked atomically in `<COURSE>/state/<ep-slug>.jso
    - Runs a sequential `/grill-me` onboarding interview (target exam/production goal, `10/20/30` episodes, default voice selection from `engine/voices.json`, lab/CLI depth, and immediate rollout scope).
    - Generates `course.json` (with default TTS voice metadata), a staged `curriculum.md` roadmap, and initializes sharded per-episode state files.
 2. **Conversation 2 — Script Factory (`episode-producer` / Web Studio AI Engine):**
+   - Supports **decoupled 3-stage scripting (`three_stage`: `brief.json` → `dialogue.json` → `audio_spine.json` → `script.json`)** alongside `two_pass`/`single_pass`, with dynamic per-role provider routing (`brief`, `dialogue`, `visual_director`) and a review/edit modal (`ScriptingStageModal`).
    - Produces single episodes, 3–5 episode waves, or **unlimited multi-select batches (`☑️ Chọn nhiều`)** on a single model, handles open revision tickets, writes `script.json` following the 4-part blueprint (**Real-World Problem `problem` → Animated Architecture `architecture` → Practical Setup & Code `setup` → Exam Tips & Production Traps `exam_tips`**) plus `notes.md`.
    - Automatically validates architecture diagrams against node, label, edge, and zone collisions before advancing to `script_ready`. Rewriting an existing episode from the Player's **`🛠️ Sửa`** tab (**`🔄 Gửi AI Sửa Kịch Bản`**) or batch modal requires explicit change notes and automatically flags `production.stale = true` if prior audio/video existed.
 3. **Conversation 3 — Video Factory (`episode-producer` + `video-renderer`):**
@@ -46,23 +47,24 @@ Supports **9 AI channels** directly from the Web Studio (`BrandHealthGrid`) via 
 
 ### 1.3. 7 Visual Templates & V2 Motion Engine
 The 16:9 stage renderer (`engine/src/components/` + `engine/src/motion/kernel.mjs`) supports 7 visual scene templates:
-- **`architecture`**: Animated architecture diagrams with up to 2 nested `zones[]` levels (`client`, `network`, `compute`, `security`, `data`, `danger`), smart edge routing (`auto`, `straight`, `orthogonal`, `curved`), `flow_steps`, and `camera_focus` (`x`, `y`, `zoom`).
+- **`architecture`**: Animated architecture diagrams with up to 2 nested `zones[]` levels (`client`, `network`, `compute`, `security`, `data`, `danger`), a catalog of **15 multi-color SVG illustrations (`node.svg`, `engine/assets/svg/`)**, smart edge routing (`auto`, `straight`, `orthogonal`, `curved`), `flow_steps`, and `camera_focus` (`x`, `y`, `zoom`).
 - **`console_setup`**: Clean Console UI mockups highlighting fields, dropdown options, and action buttons step by step.
 - **`code_cli`**: Split/code/terminal layouts with `highlight_phases`, `code_override` (`@shikijs/magic-move`), and `laser_scan` (red scanline sweeps for vulnerabilities/errors).
 - **`exam_tips`**: Side-by-side *Wrong vs Right* cards with interactive certification quiz overlays.
 - **`comparison_matrix`**: Comparison table (up to 4 columns / 6 rows) with a summary takeaway.
 - **`timeline_flow`**: Horizontal or vertical protocol/lifecycle timelines (2–6 milestones).
-- **`kpi_metrics`**: Up to 4 animated KPI cards (with sparklines), an optional bar chart (`<= 8` bars), and an `alert_stamp`.
-- Supports per-scene `highlight_words` to accent domain keywords in box-free V2 subtitles.
+- **`kpi_metrics`**: Up to 4 animated KPI cards (with sparklines and optional `SharpTag` badges), an optional bar chart (`<= 8` bars), and an `alert_stamp`.
+- Supports Phase 2 scene metadata (`world_theme: "dark" | "light"`, `visual_job`, `causal_mechanic`, `sfx_cues`, `bgm_file`) and per-scene `highlight_words` to accent domain keywords in box-free V2 subtitles.
 
 ### 1.4. Pure-Python Pluggable Multi-Voice TTS & 2-Layer Sync (`engine/tts_pipeline.py`)
 Built strictly on Python standard library modules (`urllib`, `ssl`, `socket`, `wave`, etc.):
-- **3-Tier Voice Inheritance:** CLI `--profile` / `script.json` (per-episode override) → `course.json` (course default) → `engine/voices.json` (Studio default).
+- **3-Tier Voice Inheritance:** CLI `--profile` / `script.json` (per-episode override) → `course.json` (course default) → `engine/voices.json` (Studio default — pre-configured with **25 VieNeu-TTS v3 Turbo voices** via `openai_compat` at `http://127.0.0.1:8000/v1/audio/speech`).
+- **Dual-Text TTS & `--audio-spine`:** Supports `tts_beats` / `tts_narration` (`normalize_vietnamese_tts_text`) and audio-first synthesis (`--audio-spine` writing `audio_spine.json`) before visual direction compilation.
 - **Multi-Voice A/B Preservation:** Synthesizing a new voice writes to `audio/<profile_id>/<scene_id>.(mp3|wav)` + `subtitles.<profile_id>.srt` and updates `script.voice_tracks`—**preserving all previously synthesized voice tracks and timings** for instant `$0` A/B switching.
 - **2-Layer Animation-to-Voice Sync:**
-  - *Layer 1 (Subtitle-Cue Alignment):* Runs automatically on TTS generation or standalone via `tts_pipeline.py --realign-only [--scene <id>]`, matching visual cues across all 7 templates against measured subtitle timestamps using a once-snapshotted `scene._base_timings` reference so repeated runs never drift.
+  - *Layer 1 (Subtitle-Cue Alignment):* Runs automatically on TTS generation or standalone via `tts_pipeline.py --realign-only [--scene <id>]`, prioritizing 1-based `cue_sentence` + `cue_text`/keyword matching across all 7 templates against measured subtitle timestamps using `scene._base_timings`.
   - *Layer 2 (Playhead Calibration):* Fine-tune individual animation step thresholds right inside Studio Player's **`⏱️ Khớp nhịp Animation`** panel (`POST /api/episodes/scene-timings`).
-- **Supported Providers:** `auto` *(default: Microsoft Edge ReadAloud neural voices with Google Translate fallback)*, `edge`, `google`, `voicestudio` (`http://localhost:8000/v1/audio/speech` or `VOICESTUDIO_API_URL`), `openai_compat` / `custom_http` (see [`engine/TTS_VOICE_SPEC.md`](engine/TTS_VOICE_SPEC.md)).
+- **Supported Providers:** `openai_compat` / `voicestudio` (`http://127.0.0.1:8000/v1/audio/speech` or `VOICESTUDIO_API_URL`), `auto`, `edge`, `google`, `custom_http` (see [`engine/TTS_VOICE_SPEC.md`](engine/TTS_VOICE_SPEC.md)).
 
 ### 1.5. 3-Screen Web Studio Dashboard (`http://localhost:3030`)
 Served by `engine/server.mjs` with live Server-Sent Events (`/api/stream`):
@@ -79,6 +81,9 @@ Served by `engine/server.mjs` with live Server-Sent Events (`/api/stream`):
 
 ### 1.6. HyperFrames Video Renderer (`engine/render_video.mjs`)
 - **Default engine: [HyperFrames](https://github.com/heygen-com/hyperframes)** — each episode is compiled into a standard HyperFrames project (`<COURSE>/episodes/<EP_ID>/hyperframes/index.html`, the 7 templates rewritten in DOM + GSAP, official `hyperframe.runtime.iife.js` vendored offline), then headless Chrome seeks every frame through the HyperFrames protocol and encodes with WebCodecs (H.264/HEVC/VP9 + AAC/Opus) — **no FFmpeg, no npm**. Details: [`engine/HYPERFRAMES_ENGINE.md`](engine/HYPERFRAMES_ENGINE.md).
+- **Phase 2 Motion Grammar & `-16 LUFS` Post-Mix:**
+  - Continuous `.tvs-bg-grid` ambient drift + stage `creepZoom` (`1.0 → 1.015`, `force3D: false`), `world_theme` (`dark`/`light`) alternation, smart same-`part` overlaps (with `140ms` dark breathers on `part` changes), `SharpTag` badges, and `causal_mechanic` entrance rotation.
+  - WebAudio SFX bus mixing 6 procedural 48kHz WAVs (`engine/assets/sfx/*.wav`, `-33ms` lead), optional looping `bgm_file` (`1800Hz -6dB` peaking EQ carve via `OfflineAudioContext`), and pure-JS **ITU-R BS.1770-4 `-16 LUFS`** normalization + soft limiter (`0.8414` ≈ `-1.5 dBTP`) in `engine/src/audio_dsp.mjs` and `engine/src/hf_encoder.mjs`.
 - The previous Canvas 2D exporter (`window.__STUDIO_RENDER_OFFLINE__`) remains available via `--engine legacy` or the **Engine render** choice in the **`🎬 Xuất Video ▾`** popover.
 - Configurable resolution (`720p`, `1080p`, `1440p`, `2160p`), FPS (`24`, `30`, `60`), container (`mp4`, `webm`), playback speed (`1x`–`2x`), and hardware mode (`auto`, `gpu`, `cpu`).
 
@@ -175,6 +180,7 @@ node engine/state_cli.mjs summary --course <COURSE> [--json]
 node engine/state_cli.mjs next --course <COURSE> --stage <scripting|production> [--limit 5] [--json]
 node engine/state_cli.mjs set --course <COURSE> --ep <EP_ID> --stage <scripting|production> --status <STATUS> [--owner "..."] [--note "..."] [--tts-done true] [--video-done true] [--verified true]
 node engine/state_cli.mjs validate-diagrams --course <COURSE> [--ep <EP_ID>] [--json]
+node engine/state_cli.mjs svg-list [--json]
 node engine/state_cli.mjs sync --course <COURSE>
 node engine/state_cli.mjs revisions --course <COURSE> [--ep <EP_ID>] [--status open|in_progress|resolved|all]
 node engine/state_cli.mjs add-revision --course <COURSE> --ep <EP_ID> --scope <script|visual|production> [--scene <SCENE_ID>] --desc "<details>"
@@ -185,16 +191,19 @@ node engine/state_cli.mjs resolve-revision --course <COURSE> --ep <EP_ID> --rev 
 
 ```powershell
 python engine/tts_pipeline.py --episode "<COURSE>/episodes/<EP_ID>/script.json" --course "<COURSE>/course.json" --json
+python engine/tts_pipeline.py --audio-spine --episode "<COURSE>/episodes/<EP_ID>/dialogue.json" --course "<COURSE>/course.json" --json
 python engine/tts_pipeline.py --realign-only --episode "<COURSE>/episodes/<EP_ID>/script.json" [--scene <SCENE_ID>] [--profile <PROFILE_ID>] --json
 python engine/tts_pipeline.py --list-profiles
 python engine/tts_pipeline.py --discover-voicestudio --json
 python engine/tts_pipeline.py --preview --profile edge-hoaimy --text "Xin chào" --out preview.mp3
 
+node engine/scripts/generate_sfx_assets.mjs   # (Optional) regenerate the 6 procedural 48kHz SFX WAVs in engine/assets/sfx/
 node engine/render_video.mjs --course <COURSE> --episode <EP_ID> --port 3030 --format mp4 --codec h264 --resolution 1080p --fps 60 --speed 1 --hardware auto [--output <FILENAME>] [--workers 1..8] [--engine hyperframes|legacy]
 node engine/render_video.mjs --course <COURSE> --episode <EP_ID> --compile-only   # build the HyperFrames project only
 node engine/hyperframes/snapshot.mjs --course <COURSE> --episode <EP_ID> --scene 0 --at 0.1,0.5,0.9 --check-determinism
 
-# Run the 13-section automated E2E + headless Chrome UI test suite and the HyperFrames engine tests
+# Run automated 3-Stage Scripting, E2E Chrome UI, and HyperFrames (-16 LUFS) test suites
+node engine/test_phase1_three_stage.mjs
 node engine/test_ai_bridge_and_templates.mjs
 node engine/test_hyperframes.mjs
 ```
@@ -206,7 +215,9 @@ node engine/test_hyperframes.mjs
 | `GET /api/ai/providers[?force=1]` | Returns all 9 AI brands, auth status (`verified`/`invalid`/`quota_exhausted`/`unconfigured`, etc.), live models, and `last_selection` (zero key leakage). |
 | `POST /api/ai/providers/credentials` | Saves/updates/clears API keys or custom `base_url` in `engine/.ai_credentials.json` and runs a `$0` handshake. |
 | `POST /api/ai/providers/test` | Re-runs handshake or sends a minimal `ping_one_token: true` probe. |
-| `POST /api/ai/jobs` | Dispatches `script_episode` or `script_batch` (supports `rewrite_notes` / `rewrite_note`, unlimited episodes for built-in providers). |
+| `POST /api/ai/preferences/routing` | Saves dynamic per-role provider routing (`brief`, `dialogue`, `visual_director`) into `engine/.ai_preferences.json`. |
+| `POST /api/ai/jobs` | Dispatches `script_episode` or `script_batch` (supports `mode: "three_stage"`, `pause_after`, `start_from`, `rewrite_notes` / `rewrite_note`, unlimited episodes for built-in providers). |
+| `GET /api/episodes/scripting-artifacts` & `POST /api/episodes/{brief,dialogue,audio-spine}` | Inspects/edits `brief.json`, `dialogue.json` and synthesizes pre-visual audio timings (`audio_spine.json`). |
 | `POST /api/ai/jobs/resume` | Resumes a `paused`/`failed` job across remaining episodes (allows switching `provider_id` / `model`). |
 | `POST /api/ai/manual-prompt` & `manual-submit` | Generates a `$0` Prompt Pack and validates/saves pasted script JSON. |
 | `POST /api/episodes/voice-track/activate` & `delete` | Instantly swaps active Multi-Voice A/B tracks (`0` TTS calls) or deletes unused tracks. |
@@ -233,6 +244,7 @@ node engine/test_hyperframes.mjs
 ```text
 TechVideoStudio/
 ├── AGENTS.md                         # Canonical workspace rules (Antigravity, Codex, Universal)
+├── CHANGELOG.md                      # Upgrade changelog & verified test results
 ├── CLAUDE.md                         # Thin adapter (~20 lines) pointing Claude Code/Desktop to AGENTS.md
 ├── GUIDE.md                          # Agent-executable & manual setup runbook
 ├── README.md                         # Vietnamese documentation
@@ -258,15 +270,19 @@ TechVideoStudio/
 │   ├── render_video.mjs              # Video render CLI (default HyperFrames, --engine legacy = Canvas 2D)
 │   ├── hyperframes/                  # HyperFrames engine: compiler, 7 DOM+GSAP templates, CDP renderer, snapshot
 │   ├── HYPERFRAMES_ENGINE.md         # HyperFrames engine design & operations notes
-│   ├── test_ai_bridge_and_templates.mjs  # 13-section automated E2E & Chrome UI test suite
-│   ├── test_hyperframes.mjs          # HyperFrames engine test suite
-│   ├── voices.json                   # Voice profile catalog
+│   ├── UPGRADE_CHECKLIST.md          # 3-phase upgrade checklist & handover state
+│   ├── assets/                       # Rich architecture SVG catalog (svg/) & 48kHz procedural SFX WAVs (sfx/)
+│   ├── scripts/                      # SHA-256 pinned runtime vendor & SFX WAV generator (generate_sfx_assets.mjs)
+│   ├── test_phase1_three_stage.mjs   # Automated tests for 3-stage scripting, dynamic routing & Audio Spine
+│   ├── test_ai_bridge_and_templates.mjs  # 17-section automated E2E & Chrome UI test suite
+│   ├── test_hyperframes.mjs          # HyperFrames engine test suite (determinism, Light/Dark, -16 LUFS)
+│   ├── voices.json                   # Voice profile catalog (incl. VieNeu-TTS v3 Turbo)
 │   ├── MOTION_SPEC.md                # V2 motion engine specification
 │   ├── TTS_VOICE_SPEC.md             # Custom TTS provider specification
-│   ├── ai/                           # Multi-provider credentials/handshakes, LLM runner, batch queue broker
+│   ├── ai/                           # Multi-provider credentials/handshakes, 3-stage LLM runner, batch queue broker
 │   ├── mcp/                          # Shared JSON-RPC handler (9 tools + 4 resources) for Stdio & HTTP
 │   ├── public/index.html             # Web UI entry point & esm.sh importmap
-│   └── src/                          # Player UI, BrandHealthGrid, FloatingBatchBar, 7 templates, exporter
+│   └── src/                          # Player UI, ScriptingStageModal, 7 templates, audio_dsp (-16 LUFS), exporter
 └── <COURSE>/                         # Local course workspace created on demand (e.g., AWS/, K8S/ — gitignored)
 ```
 

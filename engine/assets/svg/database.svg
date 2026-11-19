@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" fill="none">
+  <defs>
+    <linearGradient id="dbWall" x1="22" y1="24" x2="98" y2="96" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#334155"/>
+      <stop offset="100%" stop-color="#0F172A"/>
+    </linearGradient>
+    <linearGradient id="dbCap" x1="22" y1="16" x2="98" y2="42" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38BDF8"/>
+      <stop offset="100%" stop-color="#0284C7"/>
+    </linearGradient>
+  </defs>
+  <!-- Bottom cylinder slice -->
+  <path d="M22 76 V92 C22 100 39 106 60 106 C81 106 98 100 98 92 V76 Z" fill="url(#dbWall)" stroke="#64748B" stroke-width="1.8"/>
+  <ellipse cx="60" cy="76" rx="38" ry="12" fill="#1E293B" stroke="#38BDF8" stroke-opacity="0.55" stroke-width="1.5"/>
+  <!-- Middle cylinder slice -->
+  <path d="M22 52 V69 C22 77 39 83 60 83 C81 83 98 77 98 69 V52 Z" fill="url(#dbWall)" stroke="#64748B" stroke-width="1.8"/>
+  <ellipse cx="60" cy="52" rx="38" ry="12" fill="#1E293B" stroke="#38BDF8" stroke-opacity="0.7" stroke-width="1.5"/>
+  <!-- Top cylinder slice -->
+  <path d="M22 28 V45 C22 53 39 59 60 59 C81 59 98 53 98 45 V28 Z" fill="url(#dbWall)" stroke="#64748B" stroke-width="1.8"/>
+  <ellipse cx="60" cy="28" rx="38" ry="12" fill="url(#dbCap)" stroke="#BAE6FD" stroke-width="1.6"/>
+  <!-- Glowing status LEDs -->
+  <circle cx="80" cy="43" r="2.6" fill="#10B981"/>
+  <circle cx="80" cy="67" r="2.6" fill="#38BDF8"/>
+  <circle cx="80" cy="90" r="2.6" fill="#38BDF8"/>
+</svg>

@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 90" fill="none">
+  <defs>
+    <linearGradient id="pcb" x1="8" y1="16" x2="132" y2="66" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#0F4C5C"/>
+      <stop offset="50%" stop-color="#0B2D48"/>
+      <stop offset="100%" stop-color="#091E34"/>
+    </linearGradient>
+    <linearGradient id="goldPin" x1="0" y1="64" x2="0" y2="75" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FACC15"/>
+      <stop offset="100%" stop-color="#CA8A04"/>
+    </linearGradient>
+    <filter id="ramGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="2.5" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <!-- Main PCB board with notches -->
+  <path d="M12 18 H128 A4 4 0 0 1 132 22 V38 H128 V46 H132 V62 A4 4 0 0 1 128 66 H73 V60 H67 V66 H12 A4 4 0 0 1 8 62 V46 H12 V38 H8 V22 A4 4 0 0 1 12 18 Z"
+        fill="url(#pcb)" stroke="#22D3EE" stroke-opacity="0.7" stroke-width="1.6"/>
+  <!-- PCB top trace lines -->
+  <path d="M18 24 H122" stroke="#22D3EE" stroke-opacity="0.35" stroke-width="1"/>
+  <path d="M18 58 H122" stroke="#22D3EE" stroke-opacity="0.25" stroke-width="1"/>
+  <!-- 8 DRAM IC Chips (4 left + 4 right) -->
+  <g filter="url(#ramGlow)">
+    <rect x="17" y="29" width="10.5" height="24" rx="1.6" fill="#0F172A" stroke="#38BDF8" stroke-width="1.2"/>
+    <rect x="30" y="29" width="10.5" height="24" rx="1.6" fill="#0F172A" stroke="#38BDF8" stroke-width="1.2"/>
+    <rect x="43" y="29" width="10.5" height="24" rx="1.6" fill="#0F172A" stroke="#38BDF8" stroke-width="1.2"/>
+    <rect x="56" y="29" width="10.5" height="24" rx="1.6" fill="#0F172A" stroke="#38BDF8" stroke-width="1.2"/>
+    <rect x="74" y="29" width="10.5" height="24" rx="1.6" fill="#0F172A" stroke="#38BDF8" stroke-width="1.2"/>
+    <rect x="87" y="29" width="10.5" height="24" rx="1.6" fill="#0F172A" stroke="#38BDF8" stroke-width="1.2"/>
+    <rect x="100" y="29" width="10.5" height="24" rx="1.6" fill="#0F172A" stroke="#38BDF8" stroke-width="1.2"/>
+    <rect x="113" y="29" width="10.5" height="24" rx="1.6" fill="#0F172A" stroke="#38BDF8" stroke-width="1.2"/>
+  </g>
+  <!-- Chip inner highlight bars -->
+  <g fill="#22D3EE" fill-opacity="0.35">
+    <rect x="19.5" y="33" width="5.5" height="16" rx="0.8"/>
+    <rect x="32.5" y="33" width="5.5" height="16" rx="0.8"/>
+    <rect x="45.5" y="33" width="5.5" height="16" rx="0.8"/>
+    <rect x="58.5" y="33" width="5.5" height="16" rx="0.8"/>
+    <rect x="76.5" y="33" width="5.5" height="16" rx="0.8"/>
+    <rect x="89.5" y="33" width="5.5" height="16" rx="0.8"/>
+    <rect x="102.5" y="33" width="5.5" height="16" rx="0.8"/>
+    <rect x="115.5" y="33" width="5.5" height="16" rx="0.8"/>
+  </g>
+  <!-- Gold edge connector pins -->
+  <g fill="url(#goldPin)">
+    <rect x="14" y="66" width="3.5" height="8" rx="0.7"/>
+    <rect x="19.5" y="66" width="3.5" height="8" rx="0.7"/>
+    <rect x="25" y="66" width="3.5" height="8" rx="0.7"/>
+    <rect x="30.5" y="66" width="3.5" height="8" rx="0.7"/>
+    <rect x="36" y="66" width="3.5" height="8" rx="0.7"/>
+    <rect x="41.5" y="66" width="3.5" height="8" rx="0.7"/>
+    <rect x="47" y="66" width="3.5" height="8" rx="0.7"/>
+    <rect x="52.5" y="66" width="3.5" height="8" rx="0.7"/>
+    <rect x="58" y="66" width="3.5" height="8" rx="0.7"/>
+    <rect x="76" y="66" width="3.5" height="8" rx="0.7"/>
+    <rect x="81.5" y="66" width="3.5" height="8" rx="0.7"/>
+    <rect x="87" y="66" width="3.5" height="8" rx="0.7"/>
+    <rect x="92.5" y="66" width="3.5" height="8" rx="0.7"/>
+    <rect x="98" y="66" width="3.5" height="8" rx="0.7"/>
+    <rect x="103.5" y="66" width="3.5" height="8" rx="0.7"/>
+    <rect x="109" y="66" width="3.5" height="8" rx="0.7"/>
+    <rect x="114.5" y="66" width="3.5" height="8" rx="0.7"/>
+    <rect x="120" y="66" width="3.5" height="8" rx="0.7"/>
+  </g>
+</svg>

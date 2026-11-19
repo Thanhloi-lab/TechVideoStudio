@@ -36,7 +36,9 @@ const AI_QUEUE_FILE = process.env.VIDEO_MAKER_AI_QUEUE_FILE
   ? path.resolve(process.env.VIDEO_MAKER_AI_QUEUE_FILE)
   : path.join(ENGINE_DIR, ".ai_queue.json");
 
-const VOICES_JSON_PATH = path.join(ENGINE_DIR, "voices.json");
+const VOICES_JSON_PATH = process.env.VIDEO_MAKER_VOICES_FILE
+  ? path.resolve(process.env.VIDEO_MAKER_VOICES_FILE)
+  : path.join(ENGINE_DIR, "voices.json");
 const VOICE_PREVIEW_CACHE_DIR = path.join(ENGINE_DIR, ".voice_preview_cache");
 const TTS_SCRIPT_PATH = path.join(ENGINE_DIR, "tts_pipeline.py");
 const RENDER_SCRIPT_PATH = path.join(ENGINE_DIR, "render_video.mjs");
@@ -334,6 +336,10 @@ function buildEpisodePayload(courseName, courseDir, stateDir, epMeta, courseMeta
     tts_rate: effectiveRate,
     tts_provider_used: providerUsed,
     tts_fallback_reason: ttsFallbackReason,
+    has_brief: Boolean(artifacts.brief),
+    has_dialogue: Boolean(artifacts.dialogue),
+    has_audio_spine: Boolean(artifacts.audio_spine),
+    scripting_phase: state.scripting?.phase || null,
     has_script: Boolean(script),
     has_audio: audioCount > 0,
     has_video: Boolean(videoFile),
@@ -2889,6 +2895,252 @@ function handleClearFinishedJobs(res) {
   return sendJson(res, 200, { ok: true, removed, jobs: remaining });
 }
 
+function readJsonFileOrNull(filePath) {
+  if (!filePath || !fs.existsSync(filePath)) return null;
+  try {
+    return JSON.parse(fs.readFileSync(filePath, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+
+function resolveEpisodePaths(courseRaw, episodeRaw) {
+  const course = String(courseRaw || "").trim();
+  const episode = String(episodeRaw || "").trim();
+  if (!course || !episode) {
+    return { ok: false, status: 400, error: "course and episode are required" };
+  }
+  const courseDir = safeResolve(WORKSPACE_ROOT, [course]);
+  if (!courseDir || !fs.existsSync(path.join(courseDir, "course.json"))) {
+    return { ok: false, status: 404, error: `Course "${course}" not found` };
+  }
+  const epDir = safeResolve(WORKSPACE_ROOT, [course, "episodes", episode]);
+  if (!epDir) {
+    return { ok: false, status: 400, error: "Invalid episode path" };
+  }
+  return {
+    ok: true,
+    course,
+    episode,
+    courseDir,
+    courseJsonPath: path.join(courseDir, "course.json"),
+    epDir,
+    briefPath: path.join(epDir, "brief.json"),
+    dialoguePath: path.join(epDir, "dialogue.json"),
+    audioSpinePath: path.join(epDir, "audio_spine.json"),
+    scriptPath: path.join(epDir, "script.json"),
+    notesPath: path.join(epDir, "notes.md"),
+  };
+}
+
+async function runAudioSpineProcess({
+  courseJsonPath = null,
+  epDir,
+  dialoguePath,
+  profileId = null,
+  provider = null,
+  voice = null,
+  rate = null,
+  timeoutMs = 180_000,
+}) {
+  if (!dialoguePath || !fs.existsSync(dialoguePath)) {
+    return { ok: false, error: `dialogue.json not found at ${dialoguePath}` };
+  }
+  const ttsArgs = [TTS_SCRIPT_PATH, "--audio-spine", dialoguePath, "--json"];
+  if (fs.existsSync(VOICES_JSON_PATH)) {
+    ttsArgs.push("--voices", VOICES_JSON_PATH);
+  }
+  if (courseJsonPath && fs.existsSync(courseJsonPath)) {
+    ttsArgs.push("--course", courseJsonPath);
+  }
+  if (profileId && isValidSafeTrackId(profileId)) {
+    ttsArgs.push("--profile", String(profileId));
+  }
+  if (provider) ttsArgs.push("--provider", String(provider));
+  if (voice) ttsArgs.push("--voice", String(voice));
+  if (rate) ttsArgs.push("--rate", String(rate));
+
+  const res = await runChildProcess(PYTHON_BIN, ttsArgs, { timeoutMs });
+  const parsed = parseJsonFromStdout(res.stdout);
+  if (res.code !== 0 || parsed?.ok === false) {
+    const errMsg =
+      parsed?.error || res.stderr?.trim() || res.stdout?.trim() || `Audio-spine exited with code ${res.code}`;
+    return { ok: false, error: errMsg };
+  }
+  const spinePath = path.join(epDir, "audio_spine.json");
+  const audio_spine = readJsonFileOrNull(spinePath) || parsed?.audio_spine || parsed;
+  return { ok: true, audio_spine, result: parsed };
+}
+
+function handleGetScriptingArtifacts(res, parsedUrl) {
+  const resolved = resolveEpisodePaths(
+    parsedUrl.searchParams.get("course"),
+    parsedUrl.searchParams.get("episode") || parsedUrl.searchParams.get("ep")
+  );
+  if (!resolved.ok) {
+    return sendJson(res, resolved.status, { ok: false, error: resolved.error });
+  }
+  const stateDir = path.join(resolved.courseDir, "state");
+  const epState = readEpisodeState(stateDir, resolved.episode);
+  return sendJson(res, 200, {
+    ok: true,
+    course: resolved.course,
+    episode: resolved.episode,
+    brief: readJsonFileOrNull(resolved.briefPath),
+    dialogue: readJsonFileOrNull(resolved.dialoguePath),
+    audio_spine: readJsonFileOrNull(resolved.audioSpinePath),
+    notes: fs.existsSync(resolved.notesPath) ? fs.readFileSync(resolved.notesPath, "utf-8") : "",
+    scripting_phase: epState?.scripting?.phase || null,
+  });
+}
+
+async function handleSaveEpisodeBrief(req, res) {
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch (err) {
+    return sendJson(res, 400, { ok: false, error: err.message });
+  }
+  const resolved = resolveEpisodePaths(body.course, body.episode || body.ep);
+  if (!resolved.ok) {
+    return sendJson(res, resolved.status, { ok: false, error: resolved.error });
+  }
+  const brief = body.brief;
+  if (!brief || typeof brief !== "object" || Array.isArray(brief)) {
+    return sendJson(res, 400, { ok: false, error: "brief object is required" });
+  }
+  if (!Array.isArray(brief.teaching_beats) || brief.teaching_beats.length === 0) {
+    return sendJson(res, 400, { ok: false, error: "brief.teaching_beats must be a non-empty array" });
+  }
+
+  fs.mkdirSync(resolved.epDir, { recursive: true });
+  writeJsonAtomic(resolved.briefPath, brief);
+
+  let state = null;
+  try {
+    state = mutateEpisodeStateForJob(
+      resolved.course,
+      resolved.episode,
+      (epState, artifacts) => {
+        epState.scripting = epState.scripting || {};
+        epState.scripting.status = artifacts.script ? "completed" : "reviewing";
+        epState.scripting.phase = "brief_ready";
+        epState.scripting.notes = `Content Brief updated (${brief.teaching_beats.length} beats)`;
+        epState.last_error = null;
+      },
+      {
+        type: "brief_updated",
+        message: `Đã lưu Content Brief cho ${resolved.episode}`,
+      }
+    );
+  } catch {
+    scheduleStateBroadcast();
+  }
+  return sendJson(res, 200, { ok: true, brief, state });
+}
+
+async function handleSaveEpisodeDialogue(req, res) {
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch (err) {
+    return sendJson(res, 400, { ok: false, error: err.message });
+  }
+  const resolved = resolveEpisodePaths(body.course, body.episode || body.ep);
+  if (!resolved.ok) {
+    return sendJson(res, resolved.status, { ok: false, error: resolved.error });
+  }
+  const dialogue = body.dialogue;
+  if (!dialogue || typeof dialogue !== "object" || Array.isArray(dialogue)) {
+    return sendJson(res, 400, { ok: false, error: "dialogue object is required" });
+  }
+  if (!Array.isArray(dialogue.beats) || dialogue.beats.length === 0) {
+    return sendJson(res, 400, { ok: false, error: "dialogue.beats must be a non-empty array" });
+  }
+
+  fs.mkdirSync(resolved.epDir, { recursive: true });
+  writeJsonAtomic(resolved.dialoguePath, dialogue);
+  if (body.notes_md !== undefined && body.notes_md !== null) {
+    const tmpNotes = `${resolved.notesPath}.${process.pid}.${Date.now()}.tmp`;
+    fs.writeFileSync(tmpNotes, String(body.notes_md), "utf-8");
+    fs.renameSync(tmpNotes, resolved.notesPath);
+  }
+
+  let state = null;
+  try {
+    state = mutateEpisodeStateForJob(
+      resolved.course,
+      resolved.episode,
+      (epState, artifacts) => {
+        epState.scripting = epState.scripting || {};
+        epState.scripting.status = artifacts.script ? "completed" : "reviewing";
+        epState.scripting.phase = "dialogue_ready";
+        epState.scripting.notes = `Dialogue updated (${dialogue.beats.length} beats)`;
+        epState.last_error = null;
+      },
+      {
+        type: "dialogue_updated",
+        message: `Đã lưu Lời thoại (Dialogue) cho ${resolved.episode}`,
+      }
+    );
+  } catch {
+    scheduleStateBroadcast();
+  }
+  return sendJson(res, 200, { ok: true, dialogue, state });
+}
+
+async function handleLockEpisodeAudioSpine(req, res) {
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch (err) {
+    return sendJson(res, 400, { ok: false, error: err.message });
+  }
+  const resolved = resolveEpisodePaths(body.course, body.episode || body.ep);
+  if (!resolved.ok) {
+    return sendJson(res, resolved.status, { ok: false, error: resolved.error });
+  }
+  if (!fs.existsSync(resolved.dialoguePath)) {
+    return sendJson(res, 400, { ok: false, error: "dialogue.json does not exist for this episode yet." });
+  }
+
+  const spineRes = await runAudioSpineProcess({
+    courseJsonPath: resolved.courseJsonPath,
+    epDir: resolved.epDir,
+    dialoguePath: resolved.dialoguePath,
+    profileId: body.profile_id || body.profile || null,
+    provider: body.provider || null,
+    voice: body.voice || null,
+    rate: body.rate || null,
+  });
+  if (!spineRes.ok) {
+    return sendJson(res, 502, { ok: false, error: spineRes.error });
+  }
+
+  let state = null;
+  try {
+    state = mutateEpisodeStateForJob(
+      resolved.course,
+      resolved.episode,
+      (epState, artifacts) => {
+        epState.scripting = epState.scripting || {};
+        epState.scripting.status = artifacts.script ? "completed" : "reviewing";
+        epState.scripting.phase = "audio_spine_ready";
+        epState.scripting.notes = `Audio-Spine locked (${spineRes.audio_spine?.beats?.length || 0} beats, ${spineRes.audio_spine?.total_duration_ms || 0}ms)`;
+        epState.last_error = null;
+      },
+      {
+        type: "audio_spine_locked",
+        message: `Đã khóa Audio-Spine TTS cho ${resolved.episode}`,
+      }
+    );
+  } catch {
+    scheduleStateBroadcast();
+  }
+
+  return sendJson(res, 200, { ok: true, audio_spine: spineRes.audio_spine, state });
+}
+
 // --- AI Broker (Providers, Builtin Runner, Worker Heartbeat & Queue) + MCP HTTP ---
 const aiBroker = createAiBroker({
   ENGINE_DIR,
@@ -2912,6 +3164,7 @@ const aiBroker = createAiBroker({
   writeJsonAtomic,
   validateScriptDiagrams,
   SUPPORTED_VISUAL_TYPES,
+  runAudioSpineProcess,
 });
 
 aiBroker.startTimersAndLoad();
@@ -3279,6 +3532,22 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "POST" && pathname === "/api/episodes/scene-timings") {
     return void handleSceneTimings(req, res);
+  }
+
+  if (req.method === "GET" && pathname === "/api/episodes/scripting-artifacts") {
+    return handleGetScriptingArtifacts(res, parsedUrl);
+  }
+
+  if (req.method === "POST" && pathname === "/api/episodes/brief") {
+    return void handleSaveEpisodeBrief(req, res);
+  }
+
+  if (req.method === "POST" && pathname === "/api/episodes/dialogue") {
+    return void handleSaveEpisodeDialogue(req, res);
+  }
+
+  if (req.method === "POST" && pathname === "/api/episodes/audio-spine") {
+    return void handleLockEpisodeAudioSpine(req, res);
   }
 
   if (req.method === "GET" && pathname === "/api/jobs") {

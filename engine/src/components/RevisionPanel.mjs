@@ -145,6 +145,7 @@ export function RevisionPanel({
   currentSceneId = "",
   scenes = null,
   onOpenAiRewrite = null,
+  onOpenScriptingStage = null,
   onJumpToTicket,
   onStateAction,
   onTriggerProduction,
@@ -460,6 +461,18 @@ export function RevisionPanel({
                 openOrProgressCount > 0
                   ? `🔄 Gửi AI Sửa Kịch Bản (${openOrProgressCount} yêu cầu)`
                   : "🔄 Gửi AI Sửa Kịch Bản"
+              )
+            : null,
+          mode === "episode" && onOpenScriptingStage && (episode?.has_brief || episode?.has_dialogue)
+            ? h(
+                "button",
+                {
+                  type: "button",
+                  className: "rev-btn-copy-prompt",
+                  onClick: () => onOpenScriptingStage(),
+                  title: "Mở trình duyệt & chỉnh sửa Brief / Lời thoại (Dual-Text) / Audio-Spine",
+                },
+                "📝 Xem Brief / Thoại"
               )
             : null,
           openOrProgressCount > 0

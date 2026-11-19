@@ -170,10 +170,18 @@ export default function buildKpiMetrics(ctx) {
         while (deltaText && measure(`${deltaText}…`, deltaFont) > cardW - 48 - 28) deltaText = deltaText.slice(0, -1);
         deltaText = `${deltaText.trimEnd()}…`;
       }
-      delta = el("div.km__delta", {
-        text: deltaText,
-        style: { top: `${dy}px`, maxWidth: `${cardW - 48}px`, background: deltaTone.bg, color: deltaTone.text, borderColor: deltaTone.border },
-      });
+      if (vd.sharp_tags || raw.delta_label) {
+        delta = common.sharpTag(raw.delta_label || "DELTA", deltaText, { tone: c.deltaTone || "blue" });
+        delta.style.position = "absolute";
+        delta.style.left = "24px";
+        delta.style.top = `${dy}px`;
+        delta.style.maxWidth = `${cardW - 48}px`;
+      } else {
+        delta = el("div.km__delta", {
+          text: deltaText,
+          style: { top: `${dy}px`, maxWidth: `${cardW - 48}px`, background: deltaTone.bg, color: deltaTone.text, borderColor: deltaTone.border },
+        });
+      }
       card.appendChild(delta);
     }
 

@@ -90,16 +90,18 @@ export function ArchitectureDiagram({ scene, progress }) {
   const activeNodeSet = new Set(activeStep?.active_nodes || []);
   const activeEdgeSet = new Set(activeStep?.active_edges || []);
 
-  const nodeMap = useMemo(() => {
-    const map = new Map();
-    for (const n of nodes) map.set(n.id, n);
-    return map;
-  }, [nodes]);
-
   const layout = useMemo(
     () => computeArchitectureLayout(data, SVG_W, SVG_H),
     [data]
   );
+
+  const nodeMap = useMemo(() => {
+    const map = new Map();
+    for (const ln of layout.nodes) {
+      map.set(ln.id, { ...ln.raw, x: ln.xPct, y: ln.yPct });
+    }
+    return map;
+  }, [layout]);
 
   const edgeGeometries = useMemo(() => {
     const map = new Map();
@@ -501,19 +503,22 @@ export function ArchitectureDiagram({ scene, progress }) {
         ),
 
         // Layer C: Node Cards aligned 1:1 with SVG percentage space
-        ...nodes.map((node) => {
+        ...layout.nodes.map((ln) => {
+          const node = ln.raw;
           const tone = getTone(node.tone);
           const isActive = activeNodeSet.size === 0 || activeNodeSet.has(node.id);
           const isHighlighted = activeNodeSet.has(node.id);
+          const rawSvg = typeof node.svg === "string" ? node.svg.trim().replace(/\.svg$/i, "") : "";
+          const hasSvgArt = Boolean(rawSvg && /^[a-z0-9_-]+$/i.test(rawSvg));
 
           return h(
             "div",
             {
               key: node.id,
-              className: `arch-node ${isHighlighted ? "is-highlighted" : ""} ${!isActive ? "is-dimmed" : ""}`,
+              className: `arch-node ${hasSvgArt ? "has-svg-art" : ""} ${isHighlighted ? "is-highlighted" : ""} ${!isActive ? "is-dimmed" : ""}`,
               style: {
-                left: `${node.x}%`,
-                top: `${node.y}%`,
+                left: `${ln.xPct}%`,
+                top: `${ln.yPct}%`,
                 borderColor: isHighlighted ? tone.border : "rgba(148,163,184,0.24)",
                 background: isHighlighted ? tone.bg : "rgba(11, 20, 38, 0.9)",
                 boxShadow: isHighlighted
@@ -521,14 +526,29 @@ export function ArchitectureDiagram({ scene, progress }) {
                   : "0 8px 24px rgba(0, 0, 0, 0.45)",
               },
             },
-            h(
-              "div",
-              {
-                className: "arch-node-icon",
-                style: { backgroundColor: tone.bg, borderColor: tone.border },
-              },
-              renderIconSvg(React, node.icon, tone.text, 28)
-            ),
+            hasSvgArt
+              ? h(
+                  "div",
+                  { className: "arch-node-art" },
+                  h("img", {
+                    className: "arch-node-art-img",
+                    src: `/assets/svg/${rawSvg}.svg`,
+                    alt: node.label || node.id,
+                    style: {
+                      filter: isHighlighted
+                        ? `drop-shadow(0 0 12px ${tone.glow}) drop-shadow(0 4px 10px rgba(0, 0, 0, 0.55))`
+                        : "drop-shadow(0 4px 10px rgba(0, 0, 0, 0.5))",
+                    },
+                  })
+                )
+              : h(
+                  "div",
+                  {
+                    className: "arch-node-icon",
+                    style: { backgroundColor: tone.bg, borderColor: tone.border },
+                  },
+                  renderIconSvg(React, node.icon, tone.text, 28)
+                ),
             h("div", { className: "arch-node-label" }, node.label),
             node.sublabel
               ? h("div", { className: "arch-node-sub", style: { color: tone.text } }, node.sublabel)

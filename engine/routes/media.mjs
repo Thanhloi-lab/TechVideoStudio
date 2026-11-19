@@ -106,6 +106,7 @@ export function createMediaHandlers({
   const publicDir = path.join(ENGINE_DIR, "public");
   const vendorDir = path.join(publicDir, "vendor");
   const srcDir = path.join(ENGINE_DIR, "src");
+  const svgAssetsDir = path.join(ENGINE_DIR, "assets", "svg");
 
   function handleSaveVideo(req, res, parsedUrl) {
     const course = parsedUrl.searchParams.get("course") || "";
@@ -466,6 +467,18 @@ export function createMediaHandlers({
       }
       const target = safeResolve(courseRoot, rel.slice(1));
       if (!target || target === courseRoot) {
+        res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
+        res.end("Forbidden");
+        return true;
+      }
+      serveFileWithRange(req, res, target);
+      return true;
+    }
+
+    if (req.method === "GET" && pathname.startsWith("/assets/svg/")) {
+      const rel = pathname.slice("/assets/svg/".length).split("/").filter(Boolean);
+      const target = safeResolve(svgAssetsDir, rel);
+      if (!target || target === path.resolve(svgAssetsDir)) {
         res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8" });
         res.end("Forbidden");
         return true;
