@@ -49,9 +49,9 @@ Usage:
   node setup.mjs [options]
 
 Options:
-  --workspace                    Install workspace adapters (default)
+  --workspace                    Install workspace Antigravity plugin (.agents/plugins/tech-video-studio) (default)
   --global                       Install Antigravity plugin into ~/.gemini/config/plugins/tech-video-studio
-  --all                          Install into both workspace and global Antigravity paths
+  --all                          Install into both workspace and global Antigravity paths (same as --workspace --global)
   --agents <list|all>            Target agent adapters: antigravity|claude|codex|all (default: antigravity)
   --claude-desktop               Merge tech-video-studio MCP server into OS claude_desktop_config.json (creates .bak)
   --out <dir>                    Install resolved Antigravity plugin into a custom directory
@@ -73,22 +73,32 @@ function parseArgs(argv) {
     json: false,
     help: false,
   };
+  let sawWorkspace = false;
+  let sawGlobal = false;
+  let sawCustom = false;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--help" || arg === "-h") opts.help = true;
-    else if (arg === "--workspace") opts.target = "workspace";
-    else if (arg === "--global") opts.target = "global";
-    else if (arg === "--all") opts.target = "all";
-    else if (arg === "--out") {
+    else if (arg === "--workspace") sawWorkspace = true;
+    else if (arg === "--global") sawGlobal = true;
+    else if (arg === "--all") {
+      sawWorkspace = true;
+      sawGlobal = true;
+    } else if (arg === "--out") {
       opts.customOut = argv[++i] || "";
-      opts.target = "custom";
+      sawCustom = true;
     } else if (arg === "--target") {
       const val = (argv[++i] || "").toLowerCase();
       if (!["workspace", "global", "all"].includes(val)) {
         throw new Error(`Invalid --target value: ${val} (expected workspace|global|all)`);
       }
-      opts.target = val;
+      if (val === "workspace") sawWorkspace = true;
+      else if (val === "global") sawGlobal = true;
+      else {
+        sawWorkspace = true;
+        sawGlobal = true;
+      }
     } else if (arg === "--agents") {
       opts.agents = normalizeAgentList(argv[++i] || "");
     } else if (arg === "--claude-desktop") {
@@ -103,6 +113,17 @@ function parseArgs(argv) {
       throw new Error(`Unknown argument: ${arg}`);
     }
   }
+
+  if (sawCustom) {
+    opts.target = "custom";
+  } else if (sawWorkspace && sawGlobal) {
+    opts.target = "all";
+  } else if (sawGlobal) {
+    opts.target = "global";
+  } else {
+    opts.target = "workspace";
+  }
+
   return opts;
 }
 
@@ -346,9 +367,9 @@ async function main() {
     console.log("\n--- Existing Installations & Adapters ---");
     console.log(`Antigravity (.agents/plugins) : ${a.antigravityPlugin.installed ? (a.antigravityPlugin.ok ? "OK" : "Incomplete") : "Not installed"}`);
     console.log(`Antigravity Global (~/.gemini): ${report.existing.global.installed ? (report.existing.global.ok ? "OK" : "Incomplete") : "Not installed"}`);
-    console.log(`Agent Skills (.agents/skills) : ${a.agentSkills.installed ? (a.agentSkills.ok ? "OK" : "Incomplete") : "Not installed"}`);
-    console.log(`Claude Skills (.claude/skills): ${a.claudeSkills.installed ? (a.claudeSkills.ok ? "OK" : "Incomplete") : "Not installed"}`);
-    console.log(`Claude MCP (.mcp.json)        : ${a.claudeMcp.installed ? (a.claudeMcp.ok ? "OK" : "Incomplete") : "Not installed"}`);
+    console.log(`Agent Skills (.agents/skills) : ${a.agentSkills.installed ? (a.agentSkills.ok ? "OK" : "Incomplete") : "Not installed (optional; SSOT uses .agents/plugins)"}`);
+    console.log(`Claude Skills (.claude/skills): ${a.claudeSkills.installed ? (a.claudeSkills.ok ? "OK" : "Incomplete") : "Not installed (optional; pass --agents claude if needed)"}`);
+    console.log(`Claude MCP (.mcp.json)        : ${a.claudeMcp.installed ? (a.claudeMcp.ok ? "OK" : "Incomplete") : "Not installed (optional)"}`);
     console.log(`Claude Desktop MCP            : ${a.claudeDesktop.installed ? (a.claudeDesktop.ok ? "Configured" : "Invalid") : "Not configured"}`);
   } else {
     console.log("\n--- Installed Bundles & Adapters ---");

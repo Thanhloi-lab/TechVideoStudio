@@ -1,12 +1,12 @@
 # VideoMaker Workspace Rules & Pipeline Handoff
 
-Every new conversation operating in this VideoMaker workspace must follow these workspace rules, state-discovery steps, onboarding interviews, diagram rules, and model allocation policies strictly.
+Every new conversation operating in this VideoMaker workspace must follow these workspace rules, state-discovery steps, onboarding interviews, independent review gates, multi-part deep-dive workflows, diagram/template rules, and model allocation policies strictly.
 
-> **New machine & multi-agent setup:** Read [`GUIDE.md`](GUIDE.md) or run `node setup.mjs` (default Antigravity workspace plugin) or `node setup.mjs --agents all` (Antigravity + Claude Code `.claude/skills/` & `.mcp.json` + Codex `.agents/skills/`; add `--claude-desktop` to merge into Claude Desktop config with `.bak` backup).
+> **Single Source of Truth & Setup:** [`plugin/tech-video-studio/`](plugin/tech-video-studio/) and `AGENTS.md` are the sole SSOT. Run `node setup.mjs --workspace --global` to sync the Antigravity plugin (6 skills) into `.agents/plugins/tech-video-studio/` and `~/.gemini/config/plugins/tech-video-studio/`. Read [`GUIDE.md`](GUIDE.md) for environment diagnostics (`node setup.mjs --check --json`).
 
 ---
 
-## 1. State Discovery First (Mandatory on Every New Conversation)
+## 1. State Discovery First & Course Structure (Mandatory on Every New Conversation)
 
 Before planning, scripting, or rendering any episode, **never guess progress from memory**. Run the state CLI immediately to inspect live course and episode status:
 
@@ -17,97 +17,105 @@ node "engine/state_cli.mjs" revisions --course AWS --status open
 
 *(Replace `AWS` with the target `<COURSE>` code.)*
 
-- Sharded per-episode state files live in `<COURSE>/state/<ep-id>.json`.
-- Append-only audit events live in `<COURSE>/state/events.jsonl`.
+- Course directories live in `<COURSE>/` containing `course.json`, `curriculum.md`, `curriculum_review.md`, `state/<ep-id>.json`, `state/events.jsonl`, and `episodes/<ep-id>/`.
+- Per-episode deep-dive artifacts live in `<COURSE>/episodes/<ep-id>/`: `brief.json`, `brief_review.md`, `parts/<part_id>/` (`dialogue.json`, `notes.md`, `review.md`, optional `audio_spine.json`, `script.json`, `audio/<profile_id>/*`, `subtitles.srt`, `<part_id>.mp4`), and merged root outputs (`script.json`, `notes.md`, `subtitles.srt`, `<ep-id>.mp4|webm`).
 - Never hand-edit state files directly when `state_cli.mjs` can update them atomically.
 
 ---
 
-## 2. Three-Conversation Pipeline & State Commands
+## 2. Three-Conversation Deep-Dive Pipeline & State Commands
 
 Work is split into three focused conversation roles connected by `<COURSE>/state/*.json` and the 3-screen Dashboard (`http://localhost:3030`).
 
-### Conversation 1 — Curriculum Architect (`curriculum-architect` skill)
+### Conversation 1 — Curriculum Architect + Independent Reviewer (`curriculum-architect` + `curriculum-reviewer` skills)
 1. **Mandatory Course Onboarding `/grill-me` (before authoring `course.json` / `curriculum.md`):**
    Whenever a user starts a new conversation with a broad course request (e.g., `"Tạo video dạy K8s chi tiết, nâng cao"`), **unless the user explicitly says `"bỏ qua hỏi, dùng mặc định"`**, the Agent MUST:
    - Read [`engine/voices.json`](engine/voices.json) (and optionally run `python "engine/tts_pipeline.py" --discover-voicestudio --json` if VoiceStudio may be running).
    - Interview the user **1 question at a time** using `ask_question` with `(Recommended)` first:
-     1. **Q1:** Mục tiêu / Chứng chỉ / Thực chiến & Quy mô số tập (`10` / `20` / `30` tập).
+     1. **Q1:** Mục tiêu / Chứng chỉ / Thực chiến Deep-Dive (10–25 phút/tập chia part `<= 5 phút`) & Quy mô số tập (`10` / `20` / `30` tập).
      2. **Q2:** Chọn Giọng đọc mặc định cho Khóa học from the real list in `voices.json` (+ option to integrate a new VoiceStudio / custom HTTP voice right now per [`engine/TTS_VOICE_SPEC.md`](engine/TTS_VOICE_SPEC.md)).
-     3. **Q3:** Độ sâu Lab / CLI / Code & Phong cách trình bày.
-     4. **Q4:** Phạm vi triển khai ngay sau khi chốt lộ trình (chỉ lên `course.json` + `curriculum.md`, hoặc tiếp tục triển khai sóng Script đầu tiên).
+     3. **Q3:** Độ sâu Lab / CLI / Code & Phong cách trình bày (*under-the-hood* vs thực hành).
+     4. **Q4:** Phạm vi triển khai ngay sau khi chốt lộ trình (chỉ lên `course.json` + `curriculum.md` + review + `init`, hoặc tiếp tục triển khai sóng Script đầu tiên).
    - Save the selected `tts_profile`, `tts_provider`, `tts_voice`, and `tts_rate` into `<COURSE>/course.json`.
-2. Author `<COURSE>/course.json` and `<COURSE>/curriculum.md` with progressive Stages (*Chặng*) and 3–5 minute episodes.
-3. Initialize sharded episode state files from `course.json` and disk artifacts:
-   ```powershell
-   node "engine/state_cli.mjs" init --course <COURSE>
-   node "engine/state_cli.mjs" summary --course <COURSE>
-   ```
+2. **Deep-Dive Episode Sizing (No `3–5 minute` Episode Cap):**
+   - **Total duration of each deep-dive episode is decided by the Curriculum Architect** based on what is needed to master the topic thoroughly (typically **10–25 minutes**, split into `estimated_parts` of **`<= 5 minutes` (`max_part_duration_sec: 300`)** each for focused review).
+   - Author `<COURSE>/course.json` with `course_depth: "deep_dive"`, `max_part_duration_sec: 300`, progressive Stages (*Chặng*), and per-episode `estimated_duration_min`, `estimated_parts`, `prerequisites[]`, `learning_objectives[]`, and `must_cover_concepts[]`. Mirror the full syllabus in `<COURSE>/curriculum.md`.
+3. **Mandatory Independent Review Gate (`curriculum-reviewer`) BEFORE `state_cli.mjs init`:**
+   - **Author MUST NEVER self-approve.** Spawn an independent **`curriculum-reviewer`** subagent with fresh context to audit `course.json` + `curriculum.md` against the 5-criterion rubric (Coverage Depth, Topic Overload & `<= 5m` Part Sizing, Prerequisite Chain, Lab & Production Trap Depth, Duration-to-Depth Realism).
+   - Reviewer outputs `<COURSE>/curriculum_review.md` (`APPROVED` or `REVISE` + `BLOCKER / MAJOR / MINOR`). Iterate up to **2 rounds** until `APPROVED`.
+   - **ONLY after `curriculum_review.md` is `APPROVED`**, initialize sharded episode state:
+     ```powershell
+     node "engine/state_cli.mjs" init --course <COURSE>
+     node "engine/state_cli.mjs" summary --course <COURSE>
+     ```
 
-### Conversation 2 — Script Factory (Planner -> Executor -> Reviewer, `episode-producer` skill)
+### Conversation 2 — Script Factory: Multi-Part Authoring & Independent Review (`episode-producer` + `content-reviewer` skills)
 1. Discover the next wave of episodes needing scripts or revisions (process in stage/batch waves of **3–5 episodes**):
    ```powershell
    node "engine/state_cli.mjs" next --course <COURSE> --stage scripting --limit 5
    node "engine/state_cli.mjs" revisions --course <COURSE> --status open
    ```
-2. Drive each episode through the scripting state transitions:
-   `planning` -> `in_progress` -> `reviewing` -> `completed` (`overall_status: "script_ready"`) or `needs_revision`:
+2. Drive each episode through `planning` -> `in_progress` -> `reviewing` -> `completed` (`overall_status: "script_ready"`) or `needs_revision`:
    ```powershell
    node "engine/state_cli.mjs" set --course <COURSE> --ep <EP_ID> --stage scripting --status planning --owner "<agent>"
    node "engine/state_cli.mjs" set --course <COURSE> --ep <EP_ID> --stage scripting --status in_progress --owner "<agent>"
-   node "engine/state_cli.mjs" set --course <COURSE> --ep <EP_ID> --stage scripting --status reviewing --owner "<reviewer>"
-   # If approved (automatically runs diagram validation on script.json):
-   node "engine/state_cli.mjs" set --course <COURSE> --ep <EP_ID> --stage scripting --status completed --note "Script and notes.md approved"
-   # If defects remain:
-   node "engine/state_cli.mjs" set --course <COURSE> --ep <EP_ID> --stage scripting --status needs_revision --note "<exact fix needed>"
    ```
-3. **Decoupled 3-Stage Scripting (`mode: "three_stage"`) & Strict Production Separation (`auto_produce`):**
-   - Produce `episodes/<ep-id>/script.json` (4-part blueprint: `problem`, `architecture`, `setup`, `exam_tips`) and `episodes/<ep-id>/notes.md`.
-   - Built-in AI runs (`engine/ai/runner.mjs` & `queue_broker.mjs`) support `mode: "three_stage"` alongside `"auto" | "two_pass" | "single_pass" | "storyboard_only"`:
-     - **Stage 1 (`brief.json`):** Content Brief (`hook_angle`, `narrative_arc`, `teaching_beats`).
-     - **Stage 2 (`dialogue.json` + `notes.md`):** Spoken Vietnamese beats with Dual-Text TTS safety (`display_text` vs phonetic `tts_text`, `on_screen_fact`, `scene_group`).
-     - **Optional Pre-Visual Audio-Spine (`audio_spine.json`):** Runs `python "engine/tts_pipeline.py" --audio-spine "<COURSE>/episodes/<EP_ID>/dialogue.json" --course "<COURSE>/course.json" --json` **ONLY** when `lock_audio_spine === true` (with `pause_after === "none"`) or explicitly requested by the user.
-     - **Stage 3 (`script.json`):** Visual Director & Motion Compiler compiles locked beats + optional `audio_spine.json` into the 7 visual templates (`normalizeCompiledScript`) with scene-level self-repair (`repairInvalidScenes`).
-   - **Gates, Resume & Intermediate Review UI:** Control execution with `pause_after: "none" | "brief" | "dialogue"` and `start_from: "brief" | "dialogue" | "visual"`; inspect/edit intermediate artifacts in `ScriptingStageModal` (`GET /api/episodes/scripting-artifacts`, `POST /api/episodes/{brief,dialogue,audio-spine}`).
-   - **Dynamic Per-Role Routing:** Route each pipeline role independently using exact backend role keys **`outliner`**, **`brief_scriptwriter`**, **`visual_director`**, and **`repair`** via `POST /api/ai/preferences/routing` (or per-job `role_routing`), configurable from **`RoleRoutingPanel`** inside `BrandHealthGrid` and `AiScriptModal` (no hardcoded model defaults).
-   - **Strict Scripting vs. Production Separation:** Scripting (Conv 2 & `studio-worker`) MUST stop at `script_ready` (or a `pause_after` gate) and NEVER auto-run full `tts_pipeline.py` or `render_video.mjs` unless `auto_produce === true` (and NEVER when `pause_after` is `"brief"` or `"dialogue"`). Full TTS + rendering belongs to Conv 3 (`video-renderer`) or explicit `auto_produce === true`.
+3. **Unified `deep_course` Multi-Part Pipeline & Independent Subagent Review Gate:**
+   - **Stage 1 — Master Brief (`brief.json`) + Stage 1.5 Review (`brief_review.md`):**
+     Author `episodes/<ep-id>/brief.json` with `hook_angle`, `narrative_arc`, **`episode_canon`** (`shared_glossary`, `running_example`, `target_audience_assumptions`), and **`parts[]`** (`part_01..part_N`, each `target_duration_sec <= 300`, assigning 100% of `must_cover_concepts[]`, `entry_bridge`, `exit_bridge`, and `teaching_beats[]`). Spawn a fresh **`content-reviewer`** subagent to write `brief_review.md` (`APPROVED` / `REVISE`, max 2 rounds).
+   - **Stage 2 — Per-Part Dialogue & Notes (`parts/<part_id>/dialogue.json` + `notes.md`) + Stage 2.5 Review (`parts/<part_id>/review.md`):**
+     Author each part sequentially passing the previous part's summary & `exit_bridge` as handoff so `part_02+` continues smoothly **without repeating intros/outros** (`<= 300s` / ~600–850 spoken Vietnamese words, Dual-Text TTS safety `display_text` vs phonetic `tts_text`, What-vs-Why separation, under-the-hood mechanism + concrete trace).
+     **Mandatory Independent Gate:** Spawn a fresh **`content-reviewer`** subagent (`content-reviewer/SKILL.md`) to audit `parts/<part_id>/dialogue.json` + `notes.md` and write `parts/<part_id>/review.md` (`APPROVED` / `REVISE` + `rewrite_instructions`, max 2 loops). **Author MUST NEVER self-approve.**
+   - **Optional Pre-Visual Audio-Spine & Beat Reuse (`audio_spine.json`):**
+     Runs `python "engine/tts_pipeline.py" --audio-spine "<COURSE>/episodes/<EP_ID>/parts/<part_id>/dialogue.json" --course "<COURSE>/course.json" --json` **ONLY** when `lock_audio_spine === true` (with `pause_after === "none"`) or explicitly requested. When `tts_pipeline.py --episode ...` runs later, `process_episode()` automatically **reuses** matching `audio_spine.json` beat audio chunks (exact `beat_id` + normalized `tts_text`) with zero duplicate TTS synthesis (`reused_scenes`).
+   - **Stage 3 — Visual Compile (`parts/<part_id>/script.json`) Across 11 Templates:**
+     Compile locked dialogue (+ optional `audio_spine.json`) into the **11 visual templates** (`normalizeCompiledScript` + targeted `repairInvalidScenes`).
+   - **Gates, Resume & Intermediate Review UI:** Control execution with `pause_after: "none" | "brief" | "part_review" | "dialogue"` and `start_from: "brief" | "dialogue" | "visual"` (+ optional `part_id`); inspect/edit `brief.json`, `dialogue.json`, `review.md`, and `audio_spine.json` in `ScriptingStageModal`.
+   - **Dynamic Per-Role Routing (5 Roles):** Route all 5 pipeline roles independently using exact backend keys **`outliner`**, **`brief_scriptwriter`**, **`content_reviewer`**, **`visual_director`**, and **`repair`** via `POST /api/ai/preferences/routing` (or per-job `role_routing`), configurable in **`RoleRoutingPanel`** (`BrandHealthGrid` & `AiScriptModal`, zero hardcoded model defaults).
+   - **Per-Part User Review, Approval & Deterministic Merge (`merge-parts`):**
+     Preview each `<= 5m` part in Studio Player (Part Switcher) or via `render_video.mjs --part <part_id>`, approve parts, and merge deterministically into episode root (`script.json` with prefixed scene IDs & remapped `parts/<part_id>/audio/...` + `voice_tracks`, cumulative-offset `subtitles.srt`, and TOC `notes.md`):
+     ```powershell
+     node "engine/state_cli.mjs" parts --course <COURSE> --ep <EP_ID>
+     node "engine/state_cli.mjs" set-part --course <COURSE> --ep <EP_ID> --part <PART_ID> --status completed --ai-verdict APPROVED --approved true
+     node "engine/state_cli.mjs" merge-parts --course <COURSE> --ep <EP_ID>
+     node "engine/state_cli.mjs" set --course <COURSE> --ep <EP_ID> --stage scripting --status completed --note "Multi-part deep-dive script and notes.md approved"
+     ```
+   - **Strict Scripting vs. Production Separation (`auto_produce`):** Scripting (Conv 2 & `studio-worker`) MUST stop at `script_ready` (or a `pause_after` gate) and NEVER auto-run full episode TTS or `render_video.mjs` unless `auto_produce === true` (and NEVER when paused at a gate).
 4. **V2 Motion & Phase 2 `script.json` Optional Fields** (all backward-compatible):
    - `scene.highlight_words` (`string[]`): extra technical keywords accented in box-free subtitles (`parseSubtitleSegments`).
    - `scene.visual_job` (`"Proof" | "Mechanism" | "Consequence" | "Action" | "Transition"`): topbar `SharpTag` editorial badge.
-   - `scene.world_theme` (`"dark" | "light"`): dark/light stage background & palette grammar (default `"dark"`).
+   - `scene.world_theme` (`"dark" | "light"`): dark/light stage background & palette grammar (alternate cleanly across scenes).
    - `scene.causal_mechanic` (`"blur-materialize" | "wire-draw" | "arc-emission" | "width-push" | "squash-drop" | "typographic-strike"`): deterministic scene entrance mechanic (rotate across consecutive scenes).
    - `scene.sfx_cues` (`Array<{ type, progress?, time_sec?, frame_offset?, volume? }>`): explicit SFX triggers (`whoosh_short`, `pop`, `click`, `typing_fast`, `impact`, `chime`); auto-derived if omitted.
    - `bgm_file` (`string`, top-level `script.json` or episode metadata, + optional `bgm_volume`): optional looping background music file carved at `1800Hz -6dB` for vocal clarity.
    - `scene.tts_narration` (`string`) & `scene.tts_beats` (`Array<{ beat_id?, display_text, tts_text? }>`): Dual-Text TTS overrides separating display orthography from phonetic TTS text.
    - `flow_step.camera_focus` (`{ x, y, zoom }`): explicit 16:9 camera rig pan/zoom target (`x`/`y` in `0..100`, `zoom` in `1.0..1.25`) for `architecture` scenes.
-   - `highlight_phase.code_override` (`string[] | string`): updated code snapshot per phase for `@shikijs/magic-move` morphing in `code_cli` scenes.
-   - `highlight_phase.laser_scan` (`boolean | number[]`): triggers red laser scanline sweep and danger highlight on risk/error code phases in `code_cli` scenes.
-5. **Architecture Diagram Zones, Auto-Layout & Clean Routing Rules (`visual_type: "architecture"`):**
-   - **Auto-Layout (`visual_data.layout_mode: "auto"`):** Set `layout_mode: "auto"` (or omit manual node `x, y`) to run Zero-LLM Layered DAG Auto-Layout in `engine/src/motion/kernel.mjs` (supports `orientation: "LR" | "TB"`, optional `node.tier`, zone-aware barycenter ordering, `[8..92] x [14..84]` bounds, and symmetric curved upgrade for bidirectional `routing: "auto"` edges). Supplying finite `x, y` on all nodes with `layout_mode !== "auto"` preserves manual coordinates verbatim.
-   - **Zones (`visual_data.zones[]`):** Group related nodes into clear visual containers (max **2 nested levels** via `parent_zone`; roles: `client`, `network`, `compute`, `security`, `data`, `danger`; supply `node_ids` for auto-bounding or explicit `x, y, w, h` in `0..100`).
-   - **Directional Layout:** Flow **User -> Server -> Cloud** cleanly left-to-right or top-to-bottom so nodes never collide.
-   - **Clean Edge Routing (`edge.routing`):** Default to `"auto"` (straight for aligned unidirectional pairs, orthogonal rounded-elbow otherwise), `"straight"`, or `"orthogonal"`. Use `"curved"` **ONLY** for bidirectional pairs (`A <-> B`) or unavoidable skip-node arcs.
-   - **Short Non-Overlapping Labels:** Keep edge `label` and `packet_label` concise so labels never overlap nodes or other labels.
-   - **Automated 7-Template Validation:** SSOT schema lives in `engine/src/template_schema.mjs`; run `node "engine/state_cli.mjs" validate-diagrams --course <COURSE>` (validates all 7 templates + scene metadata, also enforced automatically by `state_cli.mjs set --stage scripting --status completed`).
+   - `highlight_phase.code_override` (`string[] | string`) & `highlight_phase.laser_scan` (`boolean | number[]`): `@shikijs/magic-move` morphing and red laser scanline alerts in `code_cli` scenes.
+5. **11 Visual Templates, Visual Variety Guard & Diagram Rules:**
+   - **11 Supported Templates (SSOT in `engine/src/template_schema.mjs`):**
+     - Core 7: `architecture`, `console_setup`, `code_cli`, `exam_tips`, `comparison_matrix`, `timeline_flow`, `kpi_metrics`
+     - Deep-Dive 4: `sequence_diagram` (`participants`, `messages[]`, `highlights[]`), `memory_layout` (`regions[]`, `pointers[]`, `steps[]`), `code_diff` (`before_lines[]`, `after_lines[]`, `focus_steps[]` with Shiki), `concept_breakdown` (`root`, `branches[]`, `takeaway`)
+   - **Visual Variety Guard:** Never repeat the same `visual_type` back-to-back (`scene[i].visual_type !== scene[i-1].visual_type`); use `>= 3` distinct `visual_type` templates per part; alternate `world_theme` (`"dark"` / `"light"`) and `causal_mechanic`.
+   - **Architecture Rules (`visual_type: "architecture"`):** Use `layout_mode: "auto"` (Zero-LLM DAG auto-layout in `engine/src/motion/kernel.mjs`), `zones[]` (max 2 nested levels via `parent_zone`), directional User -> Server -> Cloud flow, `edge.routing: "auto"` (`"curved"` only for bidirectional/skip arcs), concise non-overlapping labels, and pre-registered `node.svg` assets (`engine/assets/svg/catalog.json`).
+   - **Automated 11-Template Validation:** Run `node "engine/state_cli.mjs" validate-diagrams --course <COURSE>` (validates all 11 templates, scene metadata, and Visual Variety Guard; also enforced automatically by `state_cli.mjs set --stage scripting --status completed` and `merge-parts`).
 6. Preview scripts visually before audio generation using **Storyboard Preview Mode** in the Studio Player (`http://localhost:3030/?course=<COURSE>&ep=<EP_ID>&view=player`).
 
 ### Conversation 3 — Video Factory (Producer + Verifier, `episode-producer` + `video-renderer` skills)
-1. Query episodes ready for production (`overall_status === "script_ready"`, `production.status === "needs_revision"`, or `production.stale === true` after script/voice updates):
+1. Query episodes ready for production (`overall_status === "script_ready"`, `production.status === "needs_revision"`, or `production.stale === true`):
    ```powershell
    node "engine/state_cli.mjs" next --course <COURSE> --stage production --limit 5
    ```
-2. Synthesize Vietnamese TTS audio (`audio/<profile_id>/*.mp3` or `.wav`) and subtitles (`subtitles.srt` + `subtitles.<profile_id>.srt`) using 3-tier voice inheritance (`CLI / script.json` -> `course.json` -> [`engine/voices.json`](engine/voices.json) default; see [`engine/TTS_VOICE_SPEC.md`](engine/TTS_VOICE_SPEC.md) for custom voices). `tts_pipeline.py` preserves existing `voice_tracks`, runs **Layer 1 Subtitle-Cue Alignment** from `scene._base_timings` (also runnable standalone via `--realign-only [--scene <SCENE_ID>]`), and logs/persists `tts_fallback_reason` in `script.json` (cleared when primary Edge TTS succeeds, surfaced via `/api/courses`):
+2. Synthesize Vietnamese TTS audio (`audio/<profile_id>/*.mp3` or `.wav`) and subtitles (`subtitles.srt` + `subtitles.<profile_id>.srt`) using 3-tier voice inheritance (`CLI / script.json` -> `course.json` -> [`engine/voices.json`](engine/voices.json) default; see [`engine/TTS_VOICE_SPEC.md`](engine/TTS_VOICE_SPEC.md)). `tts_pipeline.py` preserves existing `voice_tracks`, **reuses matching `audio_spine.json` beats automatically** (`reused_scenes`, zero duplicate TTS calls), runs **Layer 1 Subtitle-Cue Alignment** across all **11 visual templates** (`--realign-only [--scene <SCENE_ID>]`), and tracks `tts_fallback_reason`:
    ```powershell
    node "engine/state_cli.mjs" set --course <COURSE> --ep <EP_ID> --stage production --status tts_processing --owner "<agent>"
    python "engine/tts_pipeline.py" --episode "<COURSE>/episodes/<EP_ID>/script.json" --course "<COURSE>/course.json"
    node "engine/state_cli.mjs" set --course <COURSE> --ep <EP_ID> --stage production --status rendering --tts-done true
    ```
-3. Render the video offline with the **HyperFrames engine** (default; full design in [`engine/HYPERFRAMES_ENGINE.md`](engine/HYPERFRAMES_ENGINE.md)): the episode is compiled into a standard [HyperFrames](https://github.com/heygen-com/hyperframes) project (`<COURSE>/episodes/<EP_ID>/hyperframes/index.html`, 7 DOM + GSAP templates in `engine/hyperframes/runtime/scenes/*.mjs`, official `hyperframe.runtime.iife.js` vendored in `engine/public/vendor/raw/`), featuring Phase 2 Light/Dark themes, smart same-`part` overlaps (`140ms` dark breathers), procedural SFX bus (`engine/assets/sfx/*.wav`, `-33ms` lead), vocal-carved BGM (`1800Hz -6dB`), and pure-JS **BS.1770-4 `-16 LUFS`** normalization (`audio_dsp.mjs`, `hf_encoder.mjs`), then captured frame-by-frame in headless Chrome through the HyperFrames seek protocol and encoded with WebCodecs (no FFmpeg, no npm). Phase 3 adds the automated **DOM Layout & Safe-Zone QC Gate** (`engine/hyperframes/layout_qc.mjs`, checking `viewport_overflow`, `stage_overflow`, `topbar_collision`, `subtitle_collision`, `subtitle_overflow`, `clipped_text` at `[0.1, 0.5, 0.9]`). The previous Canvas 2D exporter stays available via `--engine legacy`:
+3. Render the video offline with **HyperFrames** (sole render engine, default **`30` fps**; full design in [`engine/HYPERFRAMES_ENGINE.md`](engine/HYPERFRAMES_ENGINE.md)): compiled into `<COURSE>/episodes/<EP_ID>/hyperframes/index.html` (11 DOM + GSAP templates in `engine/hyperframes/runtime/scenes/*.mjs`, vendored `hyperframe.runtime.iife.js`), Light/Dark themes, smart same-`part` overlaps (`140ms` dark breathers), procedural SFX bus (`-33ms` lead), vocal-carved BGM (`1800Hz -6dB`), pure-JS **BS.1770-4 `-16 LUFS`** normalization, and **DOM Layout & Safe-Zone QC Gate** (`engine/hyperframes/layout_qc.mjs`), captured via headless Chrome CDP and encoded with WebCodecs (no FFmpeg, no npm). Supports `--part <part_id>` for rendering `<= 5m` preview parts and scales timeouts automatically for 15–25m deep-dive episodes:
    ```powershell
-   node "engine/render_video.mjs" --course <COURSE> --episode <EP_ID> [--port 3030] [--format webm|mp4] [--resolution 720p|1080p|1440p|2160p] [--fps 24|30|60] [--workers 1..8] [--check-layout|--no-check-layout] [--qc-strict]
-   node "engine/render_video.mjs" --course <COURSE> --episode <EP_ID> --compile-only          # build the HyperFrames project only
-   node "engine/render_video.mjs" --course <COURSE> --episode <EP_ID> --engine legacy        # old Canvas 2D path
-   node "engine/hyperframes/snapshot.mjs" --course <COURSE> --episode <EP_ID> --scene <N> --at 0.1,0.5,0.9 --check-determinism [--check-layout] [--qc-strict]
+   node "engine/render_video.mjs" --course <COURSE> --episode <EP_ID> [--part <PART_ID>] [--port 3030] [--format webm|mp4] [--resolution 720p|1080p|1440p|2160p] [--fps 24|30|60] [--workers 1..8] [--check-layout|--no-check-layout] [--qc-strict]
+   node "engine/render_video.mjs" --course <COURSE> --episode <EP_ID> --compile-only
+   node "engine/hyperframes/snapshot.mjs" --course <COURSE> --episode <EP_ID> [--part <PART_ID>] --scene <N> --at 0.1,0.5,0.9 --check-determinism [--check-layout] [--qc-strict]
    node "engine/hyperframes/verify_video.mjs" --course <COURSE> --episode <EP_ID> --file <EP_ID>.mp4 [--frames 3,30] [--check-layout] [--qc-strict]
    ```
 4. Verify visually in headless Chrome on `http://localhost:3030/?course=<COURSE>&ep=<EP_ID>&view=player` (0 console/page errors, non-empty video file on disk), then finalize state (which clears `production.stale`):
@@ -129,11 +137,17 @@ Work is split into three focused conversation roles connected by `<COURSE>/state
   ```powershell
   node "engine/state_cli.mjs" resolve-revision --course <COURSE> --ep <EP_ID> --rev <REV_ID> --note "<resolution summary>"
   ```
-- Validate architecture diagrams across a course or single episode:
+- Validate all 11 visual templates & Visual Variety Guard across a course or single episode:
   ```powershell
   node "engine/state_cli.mjs" validate-diagrams --course <COURSE> [--ep <EP_ID>]
   ```
-- Reconcile disk artifacts (`script.json`, `notes.md`, `audio/*`, `subtitles.srt`, `.webm`/`.mp4`) without clobbering active flags:
+- Inspect, approve, or merge multi-part episodes:
+  ```powershell
+  node "engine/state_cli.mjs" parts --course <COURSE> --ep <EP_ID> [--json]
+  node "engine/state_cli.mjs" set-part --course <COURSE> --ep <EP_ID> --part <PART_ID> [--status pending|in_progress|reviewing|needs_revision|completed] [--approved true|false] [--ai-verdict APPROVED|REVISE] [--note "..."]
+  node "engine/state_cli.mjs" merge-parts --course <COURSE> --ep <EP_ID> [--force]
+  ```
+- Reconcile disk artifacts (`brief.json`, `parts/*`, `script.json`, `notes.md`, `audio/*`, `subtitles.srt`, `.webm`/`.mp4`) without clobbering active flags:
   ```powershell
   node "engine/state_cli.mjs" sync --course <COURSE>
   ```
@@ -142,13 +156,13 @@ Work is split into three focused conversation roles connected by `<COURSE>/state
 
 ## 3. Mandatory Model Allocation Policy
 
-- **Curriculum Design, Roadmap Planning, Episode Scripting, Scene Design, and Script Review (Conv 1 & Conv 2):**
+- **Curriculum Design, Roadmap Planning, Episode Scripting, Scene Design, and Independent Review (Conv 1 & Conv 2):**
   - Use **Gemini 4 Argon** (`gemini-4-argon-high` or `gemini-4-argon-medium`).
   - **Automatic Fallback:** If Argon quota runs out (exhausted `quota_remaining`, `[quota]` warning, or capacity/quota error), switch immediately to **Gemini 4 Hydrogen** (`gemini-4-hydrogen-high`) and brief the user clearly on the switch so work continues without interruption.
 - **Video Execution, TTS Synthesis, Headless Rendering, and Verification (Conv 3):**
   - Use **Gemini 4 Hydrogen** (`gemini-4-hydrogen-high`).
 - **Dynamic Runtime Routing (Zero Hardcoded Models in Runtime Code/Tools):**
-  - Built-in Web Studio AI pipelines discover configured providers and models live from `GET /api/ai/providers` and route roles dynamically via **`outliner`**, **`brief_scriptwriter`**, **`visual_director`**, and **`repair`** (`POST /api/ai/preferences/routing`). Never hardcode AI agent/model names in runtime routing configs or MCP worker tool parameters (pass the active session model or `"connected-agent"`).
+  - Built-in Web Studio AI pipelines discover configured providers and models live from `GET /api/ai/providers` and route all **5 roles** dynamically via **`outliner`**, **`brief_scriptwriter`**, **`content_reviewer`**, **`visual_director`**, and **`repair`** (`POST /api/ai/preferences/routing`). Never hardcode AI agent/model names in runtime routing configs or MCP worker tool parameters (pass the active session model or `"connected-agent"`).
 
 ---
 
@@ -158,20 +172,20 @@ Start the pure-Node Studio server if not already running:
 ```powershell
 node "engine/server.mjs"
 ```
-- **Screen 1 (`view=projects`, default `/`):** Project Dashboard showing all courses, segmented progress bars, open revision counts, and live SSE status (`GET /api/stream`). *(Course creation stays strictly in Antigravity/Agent Conv 1 `/grill-me`, never on Web UI.)*
-- **Screen 2 (`view=roadmap`):** Episode Roadmap & Live Monitor grouped by Stage (*Chặng*) with dual Scripting/Video status badges, `production.stale` indicators, and:
-  - **Top Pill (`🤖 AI Worker & Models`), `BrandHealthGrid` & `RoleRoutingPanel`:** Live health & `$0` handshake check across **9 brands** (`antigravity`, `openai`, `anthropic`, `deepseek`, `gemini`, `openrouter`, `ollama`, `lmstudio`, `manual_web`) via `GET /api/ai/providers[?force=1]`, `POST /api/ai/providers/credentials`, and `POST /api/ai/providers/test` (1-token ping). Highlights the single active selection (`◉` + `✓ Đang chọn` + active summary chip) with unclipped `Online` badge. Credentials stay in `engine/.ai_credentials.json` + OS env vars and are **never** leaked back to the frontend. Remembers `last_selection` and per-role `pipeline_routing` (`outliner`, `brief_scriptwriter`, `visual_director`, `repair`) in `engine/.ai_preferences.json`, editable via **`RoleRoutingPanel`** (`🧭 Định tuyến AI theo vai trò`, `POST /api/ai/preferences/routing`) inside `BrandHealthGrid` and `AiScriptModal` (`three_stage`).
-  - **Episode Cards, 3-Stage Review & Batch AI Scripting:** Clicking any scripted card opens Studio Player directly (card footers omit `Mở Studio` and `🔄 Viết lại KB`; unscripted cards keep **`✍️ Biên kịch`**). `AiScriptModal` defaults to `mode: "three_stage"` (with `pause_after`, `start_from`, `lock_audio_spine`, compact `RoleRoutingPanel`, and `auto_produce` defaulting to `false`); intermediate `brief.json`, `dialogue.json`, and `audio_spine.json` artifacts are reviewed/edited in **`ScriptingStageModal`**. Supports **`✍️ Biên kịch Đợt / Hàng loạt`** and **`☑️ Chọn nhiều`** (`FloatingBatchBar` with **`✍️ Biên kịch hàng loạt (1 Model)`**, no 5-episode cap for built-in providers; 5-episode cap for Antigravity MCP worker). Rewriting an existing episode (via Player tab `🛠️ Sửa` **`🔄 Gửi AI Sửa Kịch Bản`** or batch modal) requires a non-empty change note (`rewrite_notes`) and sets `production.stale = true` if prior audio/video existed.
-  - **Quota-Safe Pause & Resume + Manual `$0` Mode:** If a batch hits `429`/`402`/error mid-run, the job enters `status: "paused"` (`pause_reason: "quota_exhausted"|"error"`) keeping completed episodes intact; click **`▶ Tiếp tục (Resume / Đổi Model)`** (`POST /api/ai/jobs/resume`) to switch provider/model and finish remaining episodes. **`manual_web`** builds a Prompt Pack (`POST /api/ai/manual-prompt`) and validates pasted JSON (`POST /api/ai/manual-submit`).
+- **Screen 1 (`view=projects`, default `/`):** Project Dashboard showing all courses, segmented progress bars, open revision counts, and live SSE status (`GET /api/stream`). *(Course creation stays strictly in Agent Conv 1 `/grill-me`, never on Web UI.)*
+- **Screen 2 (`view=roadmap`):** Episode Roadmap & Live Monitor grouped by Stage (*Chặng*) with dual Scripting/Video status badges, multi-part progress, `production.stale` indicators, and:
+  - **Top Pill (`🤖 AI Worker & Models`), `BrandHealthGrid` & `RoleRoutingPanel`:** Live health & `$0` handshake check across **9 brands** (`antigravity`, `openai`, `anthropic`, `deepseek`, `gemini`, `openrouter`, `ollama`, `lmstudio`, `manual_web`) via `GET /api/ai/providers[?force=1]`, `POST /api/ai/providers/credentials`, and `POST /api/ai/providers/test`. Highlights the single active selection with unclipped `Online` badge (`engine/.ai_credentials.json` + OS env vars, never leaked). Remembers `last_selection` and 5-role `pipeline_routing` (`outliner`, `brief_scriptwriter`, `content_reviewer`, `visual_director`, `repair`) in `engine/.ai_preferences.json`, editable via **`RoleRoutingPanel`** (`🧭 Định tuyến AI theo vai trò`, `POST /api/ai/preferences/routing`) inside `BrandHealthGrid` and `AiScriptModal`.
+  - **Episode Cards, Deep-Course Multi-Part Review & Batch Scripting:** Clicking any scripted card opens Studio Player directly; unscripted cards keep **`✍️ Biên kịch`**. `AiScriptModal` runs unified **`deep_course`** mode (with `pause_after: "none" | "brief" | "part_review" | "dialogue"`, `start_from`, `part_id`, `lock_audio_spine`, compact 5-role `RoleRoutingPanel`, and `auto_produce: false`). **`ScriptingStageModal`** adds a **Part selector**, **`review.md` tab**, **Approve Part** (`POST /api/episodes/part/approve`), and **Merge Parts** (`POST /api/episodes/merge-parts`) alongside `brief.json`, `dialogue.json`, and `audio_spine.json`. Supports batch scripting (`FloatingBatchBar`), quota-safe pause/resume (`POST /api/ai/jobs/resume`), and `manual_web` `$0` mode.
   - **Voice, Revisions & Right Tabs:** **`🎙️ Giọng đọc Khóa học`** (`VoiceStudioModal` + `/api/voices*`), **`⚠️ Yêu cầu sửa`** (`RevisionModal`), and 3 right-panel tabs (`📡 Live Activity`, **`🛠️ Yêu cầu sửa`**, `🗺️ curriculum.md`).
-- **Screen 3 (`view=player`):** 16:9 Studio Player supporting full-audio playback, silent **Storyboard Preview Mode** across all **7 symmetric Visual Templates** (`architecture`, `console_setup`, `code_cli`, `exam_tips`, `comparison_matrix`, `timeline_flow`, `kpi_metrics`), deep-linking (`&scene=<scene_id>`), **Multi-Voice A/B Switcher** (`POST /api/episodes/voice-track/activate` & `/delete`), unified **`🎬 Xuất Video ▾`** popover (quality presets, optional TTS toggle, **`🚀 Bắt đầu Xuất Video`**, and existing video download link; no `btn-revision-topbar`), **`⏱️ Khớp nhịp Animation`** Playhead Calibration inside tab `🎬 Phân cảnh` (`POST /api/episodes/scene-timings`), **`🛠️ Sửa`** tab with inline quick-add revision form (defaults to `currentSceneId`, manual lock on scene switch), **`🔄 Gửi AI Sửa Kịch Bản`**, `Copy Prompt cho Agent`, Voice picker, and **`🎙️ Tạo Audio (TTS)`**.
+- **Screen 3 (`view=player`):** 16:9 Studio Player supporting full-audio playback, **Part Switcher** (`GET /api/episodes/part` to inspect any `part_01..part_N` or the merged full episode), silent **Storyboard Preview Mode** across all **11 symmetric Visual Templates**, deep-linking (`&scene=<scene_id>`), **Multi-Voice A/B Switcher** (`POST /api/episodes/voice-track/activate` & `/delete`), unified **`🎬 Xuất Video ▾`** popover (HyperFrames sole renderer, default `30` fps, optional `part_id` preview, optional TTS toggle), **`⏱️ Khớp nhịp Animation`** Playhead Calibration (`POST /api/episodes/scene-timings`), **`🛠️ Sửa`** tab with inline quick-add revision form, **`🔄 Gửi AI Sửa Kịch Bản`**, Voice picker, and **`🎙️ Tạo Audio (TTS)`**.
 - **Universal MCP Bridge (`engine/mcp/rpc.mjs`):** Available via Stdio (`engine/mcp_server.mjs`) and loopback HTTP (`GET|POST /mcp` on `:3030`), exposing 9 `studio_*` tools and 4 MCP resources (`studio://courses`, `studio://courses/{course}`, `studio://jobs/queue`, `studio://templates/schema`).
 
 ---
 
-## 5. Environment & Binary Guardrails
+## 5. Language, Accuracy & Environment Guardrails
 
-- On Windows Application Control environments, unsigned `.exe` wrappers (`pip.exe`, `esbuild.exe`, `ffmpeg.exe`) are blocked.
-- **Allowed runtimes only:** `python` (pure Python standard library for `tts_pipeline.py`), `node` (pure Node.js ES modules for `server.mjs`, `state_cli.mjs`, `render_video.mjs`), and Google Chrome (`C:\Program Files\Google\Chrome\Application\chrome.exe` or `CHROME_PATH` env var).
-- Never install npm/pip dependencies or run `ffmpeg.exe` / unsigned `.exe` tools. For integrating custom TTS engines, follow [`engine/TTS_VOICE_SPEC.md`](engine/TTS_VOICE_SPEC.md).
-- HyperFrames is used **without** its npm CLI: only its browser runtime file (`@hyperframes/core` `hyperframe.runtime.iife.js`) and the GSAP UMD build are vendored as plain JS, SHA-256 pinned in `engine/scripts/vendor_libs.mjs` (`node "engine/scripts/vendor_libs.mjs" --raw-only` / `--verify-only`). Do not run `npx hyperframes render` here (it needs FFmpeg + `esbuild.exe`); see `engine/HYPERFRAMES_ENGINE.md` §10 for machines where that is allowed.
+- **Natural Vietnamese + Authentic Tech Terms:** Write narration and notes in crisp Vietnamese while keeping industry English technical terms intact (*Explicit Deny*, *AssumeRole*, *Consistent Hashing*, *Write-Ahead Log*). Never fabricate CLI flags, API parameters, system limits, or Big-O facts; verify against official documentation.
+- **Windows Application Control & Allowed Runtimes:** Unsigned `.exe` wrappers (`pip.exe`, `esbuild.exe`, `ffmpeg.exe`) are blocked.
+  - **Allowed runtimes only:** `python` (pure Python stdlib `>= 3.10` for `tts_pipeline.py`), `node` (pure Node.js ESM `>= 22` for `server.mjs`, `state_cli.mjs`, `render_video.mjs`), and Google Chrome (`C:\Program Files\Google\Chrome\Application\chrome.exe` or `CHROME_PATH`).
+  - Never install npm/pip dependencies or run `ffmpeg.exe` / unsigned `.exe` tools. For custom TTS engines, follow [`engine/TTS_VOICE_SPEC.md`](engine/TTS_VOICE_SPEC.md).
+  - HyperFrames runs without its npm CLI: only `@hyperframes/core` `hyperframe.runtime.iife.js` and GSAP UMD are vendored as plain JS, SHA-256 pinned in `engine/scripts/vendor_libs.mjs` (`node "engine/scripts/vendor_libs.mjs" --raw-only` / `--verify-only`). Never run `npx hyperframes render` here (needs FFmpeg + `esbuild.exe`).

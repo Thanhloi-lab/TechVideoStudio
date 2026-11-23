@@ -1,38 +1,39 @@
 # Tech Course Video Studio (`tech-video-studio`)
 
-A portable multi-agent plugin and pure-Node/Python Web Studio for building complete technical tutorial video courses—roadmaps, 4-part scene scripts, Vietnamese + English-term voiceovers with **Multi-Voice A/B switching**, **2-layer animation-to-voice synchronization**, animated architecture diagrams, clean console mockups, code/CLI walkthroughs, and offline Full HD/4K export—inside your VideoMaker workspace (`{{WORKSPACE_ROOT}}`).
+A portable Antigravity plugin and pure-Node/Python Web Studio for building complete deep-dive technical tutorial video courses—roadmaps with independent curriculum review, multi-part scripts (`<= 5m` per review part) with independent content review, Vietnamese + English-term voiceovers with **Multi-Voice A/B switching** and **Audio-Spine beat reuse**, **2-layer animation-to-voice synchronization**, 11 animated visual templates, and offline Full HD/4K export via HyperFrames—inside your VideoMaker workspace (`{{WORKSPACE_ROOT}}`).
 
 > **Zero External Packages:** Pure Node.js (`>= 22`) + Python standard library (`>= 3.10`) + Google Chrome. Never runs `npm install`, `pip install`, or unsigned `.exe` wrappers (`ffmpeg.exe`, `pip.exe`, `esbuild.exe`), keeping full compatibility with Windows Application Control.
 
 ---
 
-## Multi-Agent Installation (`setup.mjs`)
+## Single Source of Truth Installation (`setup.mjs`)
 
-Run from the root of your cloned repository:
+Run from the root of your cloned repository (`plugin/tech-video-studio/` + `AGENTS.md` are the SSOT):
 
 ```powershell
-# Recommended: Install adapters for Antigravity, Claude Code, and Codex at once
-node setup.mjs --agents all
+# Recommended: Sync Antigravity plugin into workspace + global (~/.gemini/config/plugins)
+node setup.mjs --workspace --global
 
-# Default: Antigravity workspace plugin only (.agents/plugins/tech-video-studio)
-node setup.mjs
-
-# Include Claude Desktop global config (creates timestamped .bak backup before merge)
-node setup.mjs --agents claude --claude-desktop
-
-# Global Antigravity install or read-only environment diagnostics
+# Workspace only (.agents/plugins/tech-video-studio) or Global only
+node setup.mjs --workspace
 node setup.mjs --global
+
+# Read-only environment & adapter diagnostics
 node setup.mjs --check --json
 ```
 
+*(Note: `--agents claude|codex|all` and `--claude-desktop` remain available if explicitly opting into external agent adapters.)*
+
 ---
 
-## Supported Agent Workflows & Skills
+## Supported Agent Workflows & Skills (6 Skills)
 
-1. **Curriculum Architect (`curriculum-architect`):** Runs sequential `/grill-me` onboarding (goal, `10/20/30` episode scale, default voice from `engine/voices.json`, lab depth, rollout scope), generates `<COURSE>/course.json` and `curriculum.md`, and initializes sharded state via `engine/state_cli.mjs init`.
-2. **Episode Producer (`episode-producer`):** Produces `script.json` (4-part blueprint: `problem`, `architecture`, `setup`, `exam_tips`) across **7 symmetric 16:9 visual templates** (`architecture` with nested `zones[]`, **15 rich SVG illustrations via `node.svg`** & clean `auto` edge routing, `console_setup`, `code_cli` with Shiki Magic Move & `laser_scan`, `exam_tips`, `comparison_matrix`, `timeline_flow`, `kpi_metrics` with `SharpTag`), supports decoupled **3-stage scripting (`mode: "three_stage"`: `brief.json` -> `dialogue.json` + `notes.md` -> optional `audio_spine.json` via `--audio-spine` -> `script.json`)** with `pause_after: "none" | "brief" | "dialogue"`, `start_from: "brief" | "dialogue" | "visual"`, `lock_audio_spine`, `ScriptingStageModal`, dynamic per-role routing (`outliner`, `brief_scriptwriter`, `visual_director`, `repair`), Phase 2 metadata (`visual_job`, `world_theme: "dark" | "light"`, `causal_mechanic`, `sfx_cues`, `bgm_file`, `tts_narration`, `tts_beats`) + `cue_sentence`/`cue_text` 1:1 sync, and `notes.md`, validated by `validate-diagrams`. Strictly stops at `script_ready` (never auto-runs TTS/Render unless `auto_produce === true` and not paused).
-3. **Video Renderer (`video-renderer`):** Synthesizes multi-voice TTS audio + `subtitles.srt` via `engine/tts_pipeline.py` (including VieNeu-TTS v3 Turbo presets) and exports 720p–4K `.webm`/`.mp4` offline via headless Chrome CDP (`engine/render_video.mjs` + HyperFrames Phase 2 Light/Dark grammar, smart overlaps, procedural SFX bus, carved BGM & pure-JS BS.1770 `-16 LUFS` normalization, plus Phase 3 **DOM Layout & Safe-Zone QC Gate**: `render_video.mjs [--check-layout|--no-check-layout] [--qc-strict]`, `snapshot.mjs --check-layout [--qc-strict]`, `verify_video.mjs --check-layout [--qc-strict]`).
-4. **Standby Web Worker (`studio-worker`):** Runs `engine/worker_wait.mjs` at **0 idle token cost** to handle `script_episode` / `script_batch` jobs dispatched from the Web UI (passing its active session model or `"connected-agent"` without hardcoded model strings, and respecting strict `auto_produce` separation).
+1. **Curriculum Architect (`curriculum-architect`):** Runs sequential `/grill-me` onboarding (goal, deep-dive depth, `10/20/30` episode scale, default voice from `engine/voices.json`, lab depth, rollout scope), generates `<COURSE>/course.json` (`course_depth: "deep_dive"`, `max_part_duration_sec: 300`, `estimated_duration_min`, `estimated_parts`, `prerequisites[]`, `learning_objectives[]`, `must_cover_concepts[]`) and `curriculum.md`, passes the mandatory **`curriculum-reviewer`** gate (`curriculum_review.md`), and initializes sharded state via `engine/state_cli.mjs init`.
+2. **Curriculum Reviewer (`curriculum-reviewer`):** Independent fresh-context subagent auditing `course.json` + `curriculum.md` across 5 criteria (Coverage Depth, Topic Overload & `<= 5m` Part Sizing, Prerequisite Chain, Lab & Production Trap Depth, Duration-to-Depth Realism) -> `<COURSE>/curriculum_review.md` (`APPROVED` / `REVISE`).
+3. **Episode Producer (`episode-producer`):** Produces deep-dive multi-part scripts in **`deep_course`** mode: Master Brief (`brief.json` with `episode_canon` + `parts[] <= 5m`) -> `content-reviewer` (`brief_review.md`) -> per-part `parts/<part_id>/dialogue.json` + `notes.md` -> mandatory independent `content-reviewer` (`parts/<part_id>/review.md`) -> optional `audio_spine.json` -> `parts/<part_id>/script.json` across **11 symmetric 16:9 visual templates** (`architecture`, `console_setup`, `code_cli`, `exam_tips`, `comparison_matrix`, `timeline_flow`, `kpi_metrics`, plus `sequence_diagram`, `memory_layout`, `code_diff`, `concept_breakdown`) enforcing the **Visual Variety Guard** -> user approval (`set-part`) -> deterministic `merge-parts` (`script.json`, remapped audio/`voice_tracks`, offset `subtitles.srt`, TOC `notes.md`). Strictly stops at `script_ready` unless `auto_produce === true`.
+4. **Content Reviewer (`content-reviewer`):** Independent fresh-context subagent auditing `brief.json` (`brief_review.md`) and each `parts/<part_id>/dialogue.json` + `notes.md` (`parts/<part_id>/review.md`) across 5 criteria (Technical Accuracy, Under-the-Hood Depth, Self-Learner Clarity, `episode_canon` & Bridge Continuity, `<= 5m` Budget & 100% `must_cover_concepts` Coverage). Author must never self-approve.
+5. **Video Renderer (`video-renderer`):** Synthesizes multi-voice TTS audio + `subtitles.srt` via `engine/tts_pipeline.py` (automatically reusing matching `audio_spine.json` beats with zero duplicate TTS calls and aligning cues across all 11 templates) and exports 720p–4K `.webm`/`.mp4` offline via headless Chrome CDP + **HyperFrames** (sole render engine, default **`30` fps**, `--part <part_id>` support for 5-min previews, pure-JS BS.1770 `-16 LUFS` normalization, and **DOM Layout & Safe-Zone QC Gate**).
+6. **Standby Web Worker (`studio-worker`):** Runs `engine/worker_wait.mjs` at **0 idle token cost** to handle `script_episode` / `script_batch` jobs dispatched from the Web UI (passing its active session model or `"connected-agent"` without hardcoded model strings).
 
 ---
 
@@ -50,23 +51,18 @@ Start the server with `node engine/server.mjs` and open `http://localhost:3030`:
 
 1. **Project Dashboard (`?view=projects`):** Cross-course progress cards, segmented stage bars, open revision counts, and live SSE (`/api/stream`).
 2. **Episode Roadmap & Live Monitor (`?view=roadmap`):**
-   - **`🤖 AI Worker & Models` (`BrandHealthGrid` + `RoleRoutingPanel`):** Supports **9 AI brands** (`antigravity`, `openai`, `anthropic`, `deepseek`, `gemini`, `openrouter`, `ollama`, `lmstudio`, `manual_web`) with `$0` handshakes, zero key leakage (`engine/.ai_credentials.json`), `🧪 Test 1 token`, `last_selection` memory, and dynamic per-role routing (`outliner`, `brief_scriptwriter`, `visual_director`, `repair` via `POST /api/ai/preferences/routing`) in `engine/.ai_preferences.json`.
-   - **Clean Episode Cards, 3-Stage Review & Batch Dispatch:** Click any scripted card to open Studio Player; unscripted cards retain `✍️ Biên kịch` (`AiScriptModal` defaults to `three_stage` with compact `RoleRoutingPanel` and `auto_produce: false`; intermediate `brief.json`, `dialogue.json`, and `audio_spine.json` artifacts are reviewed/edited in `ScriptingStageModal`); **`☑️ Chọn nhiều`** + **`FloatingBatchBar`** dispatches unlimited-size batches with quota-safe pause (`⏸️`) and **`▶ Tiếp tục (Resume / Đổi Model)`**.
+   - **`🤖 AI Worker & Models` (`BrandHealthGrid` + `RoleRoutingPanel`):** Supports **9 AI brands** (`antigravity`, `openai`, `anthropic`, `deepseek`, `gemini`, `openrouter`, `ollama`, `lmstudio`, `manual_web`) with `$0` handshakes, zero key leakage (`engine/.ai_credentials.json`), `🧪 Test 1 token`, `last_selection` memory, and dynamic per-role routing across **5 roles** (`outliner`, `brief_scriptwriter`, `content_reviewer`, `visual_director`, `repair` via `POST /api/ai/preferences/routing`) in `engine/.ai_preferences.json`.
+   - **Multi-Part Scripting & Review Modal (`ScriptingStageModal`):** `AiScriptModal` runs unified `deep_course` mode (`auto_produce: false` default); `ScriptingStageModal` provides a **Part selector**, **`review.md` tab**, **Approve Part** (`POST /api/episodes/part/approve`), and **Merge Parts** (`POST /api/episodes/merge-parts`) alongside `brief.json`, `dialogue.json`, and `audio_spine.json`.
    - **Right Tabs:** `📡 Live Activity`, `🛠️ Yêu cầu sửa`, and collapsible `🗺️ curriculum.md`.
 3. **Studio Player (`?view=player`):**
-   - **Unified `🎬 Xuất Video ▾` Popover & `📁 Video đã xuất`:** Quality presets (Hardware, Engine `hyperframes|legacy`, Format/Codec, 720p–4K, FPS, Speed), optional TTS re-synthesis checkbox, editable output filename with overwrite collision warning, primary export CTA, and in-app video preview/management (`📁 Video đã xuất`).
-   - **Multi-Voice A/B Switcher:** Switch instantly between synthesized voice tracks (`audio/<profile_id>/` + `subtitles.<profile_id>.srt`) via `POST /api/episodes/voice-track/activate` or remove unused tracks via `/api/episodes/voice-track/delete` (`0` re-synthesis cost).
-   - **2-Layer Animation-to-Voice Sync:**
-     - *Layer 1 (Subtitle-Cue Alignment):* `tts_pipeline.py` auto-aligns animation step timings from `_base_timings` against measured subtitle timestamps (also runnable via `--realign-only --scene <id>`).
-     - *Layer 2 (Playhead Calibration):* Expand **`⏱️ Khớp nhịp Animation`** inside tab `🎬 Phân cảnh` to stamp steps to the playhead, trigger `⚡ Tự căn lại theo phụ đề`, and persist via `POST /api/episodes/scene-timings`.
-   - **Inline Revision & AI Rewrite (`🛠️ Sửa` tab):** Quick-add revision form (auto-tracks `currentSceneId` until manually switched) + **`🔄 Gửi AI Sửa Kịch Bản`** button launching `AiScriptModal` with open tickets & rewrite notes.
+   - **Part Switcher & 11 Templates:** Switch between merged episode and individual parts (`GET /api/episodes/part`), preview all 11 visual templates silently, and deep-link to scenes.
+   - **Unified `🎬 Xuất Video ▾` Popover & `📁 Video đã xuất`:** HyperFrames sole renderer (default 30fps, Format/Codec, 720p–4K, Speed, optional `--part` preview, optional TTS toggle), editable output filename with collision warning, and in-app video management.
+   - **Multi-Voice A/B Switcher & 2-Layer Sync:** Instant A/B switching (`POST /api/episodes/voice-track/activate` / `delete`), Layer 1 (`--realign-only`), and Layer 2 **`⏱️ Khớp nhịp Animation`** (`POST /api/episodes/scene-timings`).
 
 ---
 
 ## Pluggable TTS Providers (`engine/tts_pipeline.py`)
 
 3-tier voice inheritance (`CLI / script.json` -> `course.json` -> `engine/voices.json`), storing tracks under `audio/<profile_id>/<scene_id>.(mp3|wav)`:
-- `auto` (default: Microsoft Edge ReadAloud neural voices with Google TTS fallback)
-- `edge` / `google`
-- `voicestudio` (`http://localhost:8000/v1/audio/speech` or `VOICESTUDIO_API_URL`)
-- `openai_compat` / `custom_http` (see [`engine/TTS_VOICE_SPEC.md`](../../engine/TTS_VOICE_SPEC.md))
+- `auto` (Microsoft Edge ReadAloud neural voices with Google TTS fallback)
+- `edge` / `google` / `voicestudio` / `openai_compat` / `custom_http` (see [`engine/TTS_VOICE_SPEC.md`](../../engine/TTS_VOICE_SPEC.md))

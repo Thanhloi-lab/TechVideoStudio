@@ -9,14 +9,18 @@ export const EXPECTED_PLUGIN_FILES = [
   "assets/logo.svg",
   "rules/AGENTS.md",
   "skills/curriculum-architect/SKILL.md",
+  "skills/curriculum-reviewer/SKILL.md",
   "skills/episode-producer/SKILL.md",
+  "skills/content-reviewer/SKILL.md",
   "skills/studio-worker/SKILL.md",
   "skills/video-renderer/SKILL.md",
 ];
 
 export const EXPECTED_SKILLS = [
   "curriculum-architect",
+  "curriculum-reviewer",
   "episode-producer",
+  "content-reviewer",
   "studio-worker",
   "video-renderer",
 ];
