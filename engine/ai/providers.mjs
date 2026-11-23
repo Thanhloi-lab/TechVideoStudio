@@ -250,6 +250,7 @@ function resolveProviderCredentialsInternal(providerId, engineDir = DEFAULT_ENGI
 export const VALID_PIPELINE_ROLES = Object.freeze([
   "outliner",
   "brief_scriptwriter",
+  "content_reviewer",
   "visual_director",
   "repair",
 ]);

@@ -20,25 +20,37 @@ import {
   stripMarkdownCodeFences,
 } from "./runner.mjs";
 import { findMissingScriptSvgs, loadSvgCatalog } from "../src/svg_catalog.mjs";
+import { reconcileEpisodeParts } from "../state_cli.mjs";
 
 const WORKER_HEARTBEAT_INTERVAL_MS = 5000;
 const WORKER_WATCHER_TTL_MS = Math.max(1000, Number(process.env.VIDEO_MAKER_WATCHER_TTL_MS) || 18_000);
 const WORKER_SCHEDULE_TTL_MS = Math.max(5000, Number(process.env.VIDEO_MAKER_SCHEDULE_TTL_MS) || 90_000);
 const WORKER_SWEEP_INTERVAL_MS = Math.max(500, Number(process.env.VIDEO_MAKER_SWEEP_INTERVAL_MS) || 3000);
 const ALLOWED_AI_TASK_TYPES = new Set(["script_episode", "script_batch"]);
-const VALID_AI_GENERATION_MODES = new Set([
+const VALID_AI_GENERATION_MODES = new Set(["deep_course", "three_stage"]);
+const LEGACY_AI_GENERATION_MODES = new Set([
   "auto",
   "two_pass",
   "single_pass",
   "storyboard_only",
   "three_stage",
+  "deep_course",
 ]);
-const VALID_PAUSE_AFTER = new Set(["none", "brief", "dialogue"]);
+const VALID_PAUSE_AFTER = new Set(["none", "brief", "part_review", "dialogue"]);
 const VALID_START_FROM = new Set(["brief", "dialogue", "visual"]);
+const PART_ID_RE = /^[a-zA-Z0-9._-]{1,64}$/;
 const MAX_AI_BATCH_MCP = 5;
 const MAX_AI_BATCH_BUILTIN = 100;
 const MAX_AI_CUSTOM_INSTRUCTIONS_LEN = 1200;
 const MAX_AI_REWRITE_NOTE_LEN = 4000;
+
+function normalizeIncomingGenerationMode(rawMode) {
+  if (rawMode === undefined || rawMode === null || String(rawMode).trim() === "") {
+    return "deep_course";
+  }
+  const clean = String(rawMode).trim().toLowerCase();
+  return LEGACY_AI_GENERATION_MODES.has(clean) ? "deep_course" : null;
+}
 
 export function createAiBroker(deps) {
   const {
@@ -208,12 +220,15 @@ export function createAiBroker(deps) {
       execution_mode: job.execution_mode || "mcp",
       provider_id: job.provider_id || "antigravity",
       model: job.model || job.claimed_model || null,
-      mode: job.mode || "auto",
+      mode: normalizeIncomingGenerationMode(job.mode) || "deep_course",
       pause_after: job.pause_after || "none",
       start_from: job.start_from || null,
+      part_id: job.part_id || null,
+      max_part_duration_sec: job.max_part_duration_sec ?? null,
       lock_audio_spine: Boolean(job.lock_audio_spine),
       role_routing: job.role_routing ? { ...job.role_routing } : null,
       paused_at: job.paused_at || null,
+      paused_part_id: job.paused_part_id || null,
       compiler_provider_id: job.compiler_provider_id || null,
       compiler_model: job.compiler_model || null,
       episode_ids: [...(job.episode_ids || [])],
@@ -299,6 +314,10 @@ export function createAiBroker(deps) {
       for (const item of list) {
         if (!item || !item.id || !ALLOWED_AI_TASK_TYPES.has(item.type)) continue;
         item.completed_episodes = Array.isArray(item.completed_episodes) ? item.completed_episodes : [];
+        item.mode = normalizeIncomingGenerationMode(item.mode) || "deep_course";
+        if (item.part_id === undefined) item.part_id = null;
+        if (item.max_part_duration_sec === undefined) item.max_part_duration_sec = null;
+        if (item.paused_part_id === undefined) item.paused_part_id = null;
         const isBuiltin = item.execution_mode === "builtin" || isBuiltinProviderId(item.provider_id);
         if (item.status === "running" || (isBuiltin && item.status === "queued")) {
           item.status = "paused";
@@ -371,7 +390,25 @@ export function createAiBroker(deps) {
     }
   }
 
+  function readTextOrEmpty(filePath) {
+    if (!filePath || !fs.existsSync(filePath)) return "";
+    try {
+      return fs.readFileSync(filePath, "utf-8");
+    } catch {
+      return "";
+    }
+  }
+
+  function getFileMtimeMs(filePath) {
+    try {
+      return filePath && fs.existsSync(filePath) ? fs.statSync(filePath).mtimeMs : 0;
+    } catch {
+      return 0;
+    }
+  }
+
   function writeTextAtomic(filePath, text) {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
     const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
     fs.writeFileSync(tmp, String(text ?? ""), "utf-8");
     fs.renameSync(tmp, filePath);
@@ -392,15 +429,59 @@ export function createAiBroker(deps) {
     const curriculumMd = fs.existsSync(curriculumPath) ? fs.readFileSync(curriculumPath, "utf-8") : "";
     const epDir = safeResolve(WORKSPACE_ROOT, [course, "episodes", episodeId]);
     const briefPath = safeResolve(WORKSPACE_ROOT, [course, "episodes", episodeId, "brief.json"]);
+    const briefReviewPath = safeResolve(WORKSPACE_ROOT, [course, "episodes", episodeId, "brief_review.md"]);
     const dialoguePath = safeResolve(WORKSPACE_ROOT, [course, "episodes", episodeId, "dialogue.json"]);
     const audioSpinePath = safeResolve(WORKSPACE_ROOT, [course, "episodes", episodeId, "audio_spine.json"]);
     const scriptPath = safeResolve(WORKSPACE_ROOT, [course, "episodes", episodeId, "script.json"]);
     const notesPath = safeResolve(WORKSPACE_ROOT, [course, "episodes", episodeId, "notes.md"]);
     const existingBrief = readJsonOrNull(briefPath);
+    const existingBriefReviewMd = readTextOrEmpty(briefReviewPath);
     const existingDialogue = readJsonOrNull(dialoguePath);
     const audioSpine = readJsonOrNull(audioSpinePath);
     const existingScript = readJsonOrNull(scriptPath);
-    const existingNotes = notesPath && fs.existsSync(notesPath) ? fs.readFileSync(notesPath, "utf-8") : "";
+    const existingNotes = readTextOrEmpty(notesPath);
+
+    const existingParts = {};
+    const partsDir = path.join(epDir, "parts");
+    if (fs.existsSync(partsDir) && fs.statSync(partsDir).isDirectory()) {
+      const partDirs = fs
+        .readdirSync(partsDir, { withFileTypes: true })
+        .filter((d) => d.isDirectory() && /^part_/i.test(d.name))
+        .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" }));
+      for (const ent of partDirs) {
+        const partId = ent.name;
+        const pDir = path.join(partsDir, partId);
+        const pDialoguePath = path.join(pDir, "dialogue.json");
+        const pSpinePath = path.join(pDir, "audio_spine.json");
+        const pNotesPath = path.join(pDir, "notes.md");
+        existingParts[partId] = {
+          part_id: partId,
+          part_dir: pDir,
+          dialogue_json: readJsonOrNull(pDialoguePath),
+          review_md: readTextOrEmpty(path.join(pDir, "review.md")),
+          audio_spine: readJsonOrNull(pSpinePath),
+          script_json: readJsonOrNull(path.join(pDir, "script.json")),
+          notes_md: readTextOrEmpty(pNotesPath),
+        };
+      }
+      // For single-part episodes edited via root endpoints (/api/episodes/dialogue or /audio-spine),
+      // prefer whichever artifact on disk was updated more recently.
+      const partKeys = Object.keys(existingParts);
+      if (partKeys.length === 1) {
+        const onlyKey = partKeys[0];
+        const pDir = existingParts[onlyKey].part_dir;
+        if (existingDialogue && getFileMtimeMs(dialoguePath) > getFileMtimeMs(path.join(pDir, "dialogue.json"))) {
+          existingParts[onlyKey].dialogue_json = existingDialogue;
+        }
+        if (audioSpine && getFileMtimeMs(audioSpinePath) > getFileMtimeMs(path.join(pDir, "audio_spine.json"))) {
+          existingParts[onlyKey].audio_spine = audioSpine;
+        }
+        if (existingNotes && getFileMtimeMs(notesPath) > getFileMtimeMs(path.join(pDir, "notes.md"))) {
+          existingParts[onlyKey].notes_md = existingNotes;
+        }
+      }
+    }
+
     const openRevisions = listRevisions(WORKSPACE_ROOT, course, { episodeId, status: "open" });
     let availableSvgs = [];
     try {
@@ -417,12 +498,15 @@ export function createAiBroker(deps) {
       epMeta,
       epDir,
       briefPath,
+      briefReviewPath,
       dialoguePath,
       audioSpinePath,
       scriptPath,
       notesPath,
       existingBrief,
+      existingBriefReviewMd,
       existingDialogue,
+      existingParts,
       audioSpine,
       existingScript,
       existingNotes,
@@ -431,8 +515,78 @@ export function createAiBroker(deps) {
     };
   }
 
+  function persistPartArtifacts({ epDir, partId, partData }) {
+    if (!epDir || !partId || !partData || typeof partData !== "object") return;
+    const partDir = path.join(epDir, "parts", partId);
+    fs.mkdirSync(partDir, { recursive: true });
+    if (partData.dialogue_json && typeof partData.dialogue_json === "object") {
+      writeJsonAtomic(path.join(partDir, "dialogue.json"), partData.dialogue_json);
+    }
+    if (partData.review_md !== undefined && partData.review_md !== null && String(partData.review_md).trim()) {
+      writeTextAtomic(path.join(partDir, "review.md"), String(partData.review_md));
+    }
+    if (partData.audio_spine && typeof partData.audio_spine === "object") {
+      writeJsonAtomic(path.join(partDir, "audio_spine.json"), partData.audio_spine);
+    }
+    if (partData.script_json && typeof partData.script_json === "object") {
+      writeJsonAtomic(path.join(partDir, "script.json"), partData.script_json);
+    }
+    if (partData.notes_md !== undefined && partData.notes_md !== null && String(partData.notes_md).trim()) {
+      writeTextAtomic(path.join(partDir, "notes.md"), String(partData.notes_md));
+    }
+  }
+
+  function syncGeneratedPartsIntoEpisodeState(courseDir, epId, epState, artifacts, { partOutputs = {}, pausedAt = null } = {}) {
+    reconcileEpisodeParts(courseDir, epId, epState, artifacts);
+    if (!Array.isArray(epState.parts)) epState.parts = [];
+    const byId = new Map(epState.parts.map((p) => [p.part_id, p]));
+    for (const [partId, partData] of Object.entries(partOutputs || {})) {
+      if (!partData || typeof partData !== "object") continue;
+      let entry = byId.get(partId);
+      if (!entry) {
+        entry = {
+          part_id: partId,
+          title: String(partData.part_spec?.title || partData.dialogue_json?.title || partId),
+          target_duration_sec: partData.part_spec?.target_duration_sec ?? null,
+          status: "pending",
+          ai_review_verdict: null,
+          approved: false,
+          approved_at: null,
+          tts_done: false,
+          video_file: null,
+          notes: "",
+        };
+        epState.parts.push(entry);
+        byId.set(partId, entry);
+      }
+      if (partData.review_json?.verdict) {
+        entry.ai_review_verdict = partData.review_json.verdict;
+      }
+      if (partData.script_json) {
+        entry.status = "completed";
+        entry.approved = false;
+        entry.approved_at = null;
+        entry.notes =
+          partData.review_json?.verdict === "REVISE"
+            ? "AI đã compile nhưng Content Review ghi chú REVISE (xem review.md)"
+            : "Đã compile visual part — chờ user duyệt & merge-parts";
+      } else if (pausedAt === "part_review") {
+        entry.status = partData.review_json?.verdict === "REVISE" ? "needs_revision" : "reviewing";
+        entry.approved = false;
+        entry.approved_at = null;
+        entry.notes = `Đã hoàn tất Content Review (${partData.review_json?.verdict || "DONE"})`;
+      } else if (pausedAt === "dialogue") {
+        entry.status = "in_progress";
+        entry.approved = false;
+        entry.approved_at = null;
+        entry.notes = "Đã viết xong Lời thoại — chờ duyệt trước review/visual";
+      }
+    }
+  }
+
   function saveEpisodeArtifactsAndState({
     course,
+    courseDir = null,
     episodeId,
     epDir,
     scriptPath,
@@ -444,6 +598,7 @@ export function createAiBroker(deps) {
     jobId = null,
     validation,
     scriptingPhase = null,
+    partOutputs = null,
   }) {
     fs.mkdirSync(epDir, { recursive: true });
     writeJsonAtomic(scriptPath, scriptJson);
@@ -452,11 +607,18 @@ export function createAiBroker(deps) {
       writeTextAtomic(notesPath, String(notesMd));
     }
 
+    const resolvedCourseDir = courseDir || path.join(WORKSPACE_ROOT, course);
     const now = new Date().toISOString();
     const state = mutateEpisodeStateForJob(
       course,
       episodeId,
       (epState, artifacts) => {
+        if (partOutputs && Object.keys(partOutputs).length > 0) {
+          syncGeneratedPartsIntoEpisodeState(resolvedCourseDir, episodeId, epState, artifacts, {
+            partOutputs,
+            pausedAt: null,
+          });
+        }
         epState.scripting = epState.scripting || {};
         epState.scripting.status = "completed";
         if (scriptingPhase) {
@@ -497,6 +659,7 @@ export function createAiBroker(deps) {
     if (!job || job.status === "cancelled" || job.status === "completed") return;
 
     runningBuiltinJobs.add(jobId);
+    const episodesAwaitingMerge = new Set();
     try {
       const nowStart = new Date().toISOString();
       job.status = "running";
@@ -504,6 +667,8 @@ export function createAiBroker(deps) {
       job.pause_reason = null;
       job.failed_episode = null;
       job.error = null;
+      job.paused_at = null;
+      job.paused_part_id = null;
       job.claimed_by = `builtin:${job.provider_id}`;
       job.claimed_model = job.model;
       job.started_at = job.started_at || nowStart;
@@ -526,7 +691,10 @@ export function createAiBroker(deps) {
         job.current_episode = epId;
         job.step = "in_progress";
         job.updated_at = stepNow;
-        appendAiJobLog(job, `Generating ${epId} via ${job.provider_id}/${job.model}...`);
+        appendAiJobLog(
+          job,
+          `Generating ${epId}${job.part_id ? ` [${job.part_id}]` : ""} via ${job.provider_id}/${job.model}...`
+        );
 
         const ownerLabel = `${job.provider_id}:${job.model}`;
         try {
@@ -559,6 +727,11 @@ export function createAiBroker(deps) {
             job,
             engineDir: ENGINE_DIR,
           });
+          const resolvedReviewerRole = resolveRoleProvider("content_reviewer", {
+            overrides: job.role_routing,
+            job,
+            engineDir: ENGINE_DIR,
+          });
           const resolvedDirectorRole = resolveRoleProvider("visual_director", {
             overrides: job.role_routing,
             job,
@@ -571,20 +744,24 @@ export function createAiBroker(deps) {
           });
           const resolvedRoleRouting = {
             brief_scriptwriter: resolvedBriefRole,
+            content_reviewer: resolvedReviewerRole,
             visual_director: resolvedDirectorRole,
             repair: resolvedRepairRole,
           };
 
-          const saveStageArtifacts = ({ brief_json, dialogue_json, notes_md }) => {
+          const fmtRole = (r) => `${r.provider_id || job.provider_id}/${r.model || job.model || "default"}(${r.source})`;
+          appendAiJobLog(
+            job,
+            `[${epId}] Role routing: writer=${fmtRole(resolvedBriefRole)}, reviewer=${fmtRole(resolvedReviewerRole)}, director=${fmtRole(resolvedDirectorRole)}, repair=${fmtRole(resolvedRepairRole)}`
+          );
+
+          const saveRootBrief = ({ brief_json, brief_review_md }) => {
             fs.mkdirSync(ctx.epDir, { recursive: true });
             if (brief_json && ctx.briefPath) {
               writeJsonAtomic(ctx.briefPath, brief_json);
             }
-            if (dialogue_json && ctx.dialoguePath) {
-              writeJsonAtomic(ctx.dialoguePath, dialogue_json);
-            }
-            if (notes_md !== undefined && notes_md !== null && String(notes_md).trim() && ctx.notesPath) {
-              writeTextAtomic(ctx.notesPath, String(notes_md));
+            if (brief_review_md && String(brief_review_md).trim() && ctx.briefReviewPath) {
+              writeTextAtomic(ctx.briefReviewPath, String(brief_review_md));
             }
           };
 
@@ -594,14 +771,18 @@ export function createAiBroker(deps) {
             compiler_provider_id: resolvedDirectorRole.provider_id || job.compiler_provider_id || null,
             compiler_model: resolvedDirectorRole.model || job.compiler_model || null,
             role_routing: resolvedRoleRouting,
-            mode: job.mode || "auto",
+            mode: normalizeIncomingGenerationMode(job.mode) || "deep_course",
             pause_after: job.pause_after || "none",
             start_from: job.start_from || null,
+            part_id: job.part_id || null,
+            max_part_duration_sec: job.max_part_duration_sec ?? null,
             courseJson: ctx.courseJson,
             curriculumMd: ctx.curriculumMd,
             episodeMeta: ctx.epMeta,
             existingBrief: ctx.existingBrief,
+            existingBriefReviewMd: ctx.existingBriefReviewMd,
             existingDialogue: ctx.existingDialogue,
+            existingParts: ctx.existingParts,
             audioSpine: ctx.audioSpine,
             availableSvgs: ctx.availableSvgs,
             existingScript: ctx.existingScript,
@@ -610,39 +791,69 @@ export function createAiBroker(deps) {
             customInstructions: job.custom_instructions,
             rewriteNote: epRewriteNote,
             validateScriptFn: validateWithSvgs,
-            onBeforeVisualStage:
-              job.mode === "three_stage"
-                ? async ({ brief_json, dialogue_json, notes_md }) => {
-                    saveStageArtifacts({ brief_json, dialogue_json, notes_md });
-                    if (job.lock_audio_spine && typeof runAudioSpineProcess === "function" && ctx.dialoguePath) {
-                      appendAiJobLog(job, `[${epId}] Locking Audio-Spine TTS durations before Visual Director...`);
-                      try {
-                        const spineRes = await runAudioSpineProcess({
-                          courseJsonPath: ctx.courseJsonPath,
-                          epDir: ctx.epDir,
-                          dialoguePath: ctx.dialoguePath,
-                        });
-                        if (spineRes?.ok && spineRes.audio_spine) {
-                          appendAiJobLog(
-                            job,
-                            `[${epId}] Audio-Spine locked (${spineRes.audio_spine.beats?.length || 0} beats, ${spineRes.audio_spine.total_duration_ms || 0}ms).`
-                          );
-                          return spineRes.audio_spine;
-                        }
-                        appendAiJobLog(
-                          job,
-                          `[${epId}] Audio-Spine warning (continuing without lock): ${spineRes?.error || "TTS failed"}`
-                        );
-                      } catch (spineErr) {
-                        appendAiJobLog(
-                          job,
-                          `[${epId}] Audio-Spine warning (continuing without lock): ${spineErr?.message || spineErr}`
-                        );
-                      }
+            onBeforeVisualStage: async ({
+              part_id: activePartId,
+              brief_json,
+              dialogue_json,
+              review_md,
+              notes_md,
+            }) => {
+              saveRootBrief({ brief_json });
+              const resolvedPartId = activePartId || job.part_id || "part_01";
+              const partDir = path.join(ctx.epDir, "parts", resolvedPartId);
+              persistPartArtifacts({
+                epDir: ctx.epDir,
+                partId: resolvedPartId,
+                partData: { dialogue_json, review_md, notes_md },
+              });
+              const briefPartCount = Array.isArray(brief_json?.parts) ? brief_json.parts.length : 1;
+              const isSinglePartRoot =
+                !job.part_id && briefPartCount <= 1 && Object.keys(ctx.existingParts || {}).length <= 1;
+              if (isSinglePartRoot) {
+                if (dialogue_json && ctx.dialoguePath) writeJsonAtomic(ctx.dialoguePath, dialogue_json);
+                if (notes_md !== undefined && notes_md !== null && String(notes_md).trim() && ctx.notesPath) {
+                  writeTextAtomic(ctx.notesPath, String(notes_md));
+                }
+              }
+              const targetSpineEpDir = isSinglePartRoot ? ctx.epDir : partDir;
+              const targetDialoguePath = isSinglePartRoot
+                ? ctx.dialoguePath
+                : path.join(partDir, "dialogue.json");
+
+              if (job.lock_audio_spine && typeof runAudioSpineProcess === "function" && targetDialoguePath) {
+                appendAiJobLog(
+                  job,
+                  `[${epId}/${resolvedPartId}] Locking Audio-Spine TTS durations before Visual Director...`
+                );
+                try {
+                  const spineRes = await runAudioSpineProcess({
+                    courseJsonPath: ctx.courseJsonPath,
+                    epDir: targetSpineEpDir,
+                    dialoguePath: targetDialoguePath,
+                  });
+                  if (spineRes?.ok && spineRes.audio_spine) {
+                    if (!isSinglePartRoot && ctx.existingParts?.[resolvedPartId]) {
+                      ctx.existingParts[resolvedPartId].audio_spine = spineRes.audio_spine;
                     }
-                    return ctx.audioSpine || null;
+                    appendAiJobLog(
+                      job,
+                      `[${epId}/${resolvedPartId}] Audio-Spine locked (${spineRes.audio_spine.beats?.length || 0} beats, ${spineRes.audio_spine.total_duration_ms || 0}ms).`
+                    );
+                    return spineRes.audio_spine;
                   }
-                : null,
+                  appendAiJobLog(
+                    job,
+                    `[${epId}/${resolvedPartId}] Audio-Spine warning (continuing without lock): ${spineRes?.error || "TTS failed"}`
+                  );
+                } catch (spineErr) {
+                  appendAiJobLog(
+                    job,
+                    `[${epId}/${resolvedPartId}] Audio-Spine warning (continuing without lock): ${spineErr?.message || spineErr}`
+                  );
+                }
+              }
+              return (!isSinglePartRoot ? ctx.existingParts?.[resolvedPartId]?.audio_spine : null) || ctx.audioSpine || null;
+            },
             onProgress: ({ phase, message }) => {
               if (phase) job.step = String(phase);
               if (message) appendAiJobLog(job, `[${epId}] ${message}`);
@@ -658,67 +869,73 @@ export function createAiBroker(deps) {
             return;
           }
 
-          if (generated.mode === "storyboard_only") {
-            fs.mkdirSync(ctx.epDir, { recursive: true });
-            const storyboardPath = path.join(ctx.epDir, "storyboard.json");
-            writeJsonAtomic(storyboardPath, {
-              course_id: job.course,
-              episode_id: epId,
-              generated_at: new Date().toISOString(),
-              provider_id: job.provider_id,
-              model: job.model,
-              storyboard: generated.storyboard,
-            });
-            if (generated.notes_md) {
-              writeTextAtomic(ctx.notesPath, String(generated.notes_md));
+          saveRootBrief({
+            brief_json: generated.brief_json,
+            brief_review_md: generated.brief_review_md,
+          });
+          for (const [partId, partData] of Object.entries(generated.parts || {})) {
+            persistPartArtifacts({ epDir: ctx.epDir, partId, partData });
+          }
+
+          const briefPartCount = Array.isArray(generated.brief_json?.parts)
+            ? generated.brief_json.parts.length
+            : 0;
+          const genPartKeys = Object.keys(generated.parts || {});
+          const isMultiPart =
+            Boolean(job.part_id) ||
+            briefPartCount > 1 ||
+            genPartKeys.length > 1 ||
+            Object.keys(ctx.existingParts || {}).length > 1;
+
+          if (
+            generated.paused_at === "brief" ||
+            generated.paused_at === "dialogue" ||
+            generated.paused_at === "part_review"
+          ) {
+            episodesAwaitingMerge.add(epId);
+            if (!isMultiPart && generated.paused_at !== "brief") {
+              if (generated.dialogue_json && ctx.dialoguePath) {
+                writeJsonAtomic(ctx.dialoguePath, generated.dialogue_json);
+              }
+              if (generated.notes_md !== undefined && generated.notes_md !== null && String(generated.notes_md).trim() && ctx.notesPath) {
+                writeTextAtomic(ctx.notesPath, String(generated.notes_md));
+              }
             }
-            try {
-              mutateEpisodeStateForJob(
-                job.course,
-                epId,
-                (epState, artifacts) => {
-                  epState.scripting = epState.scripting || {};
-                  epState.scripting.status = artifacts.script ? "completed" : "planning";
-                  epState.scripting.phase = "storyboard_only";
-                  epState.scripting.owner = ownerLabel;
-                  epState.scripting.notes = `Storyboard Pass 1 saved (${generated.storyboard?.scenes?.length || 0} scenes)`;
-                  epState.last_error = null;
-                },
-                {
-                  type: "ai_storyboard_saved",
-                  job_id: job.id,
-                  owner: ownerLabel,
-                  message: `Đã lưu storyboard.json (${generated.storyboard?.scenes?.length || 0} scenes) cho ${epId}`,
-                }
-              );
-            } catch {
-              // ignore if state file missing
-            }
-          } else if (generated.paused_at === "brief" || generated.paused_at === "dialogue") {
-            saveStageArtifacts({
-              brief_json: generated.brief_json,
-              dialogue_json: generated.dialogue_json,
-              notes_md: generated.notes_md,
-            });
             job.paused_at = generated.paused_at;
-            const targetPhase = generated.paused_at === "brief" ? "brief_ready" : "dialogue_ready";
-            const stageHuman = generated.paused_at === "brief" ? "Content Brief (Tầng 1)" : "Lời thoại & Beats (Tầng 2)";
+            job.paused_part_id = generated.paused_part_id || null;
+            const targetPhase =
+              generated.paused_at === "brief"
+                ? "brief_ready"
+                : generated.paused_at === "dialogue"
+                  ? "dialogue_ready"
+                  : "part_review";
+            const stageHuman =
+              generated.paused_at === "brief"
+                ? "Content Brief (Tầng 1)"
+                : generated.paused_at === "dialogue"
+                  ? "Lời thoại & Beats (Tầng 2)"
+                  : "Content Review (Tầng 2.5)";
             try {
               mutateEpisodeStateForJob(
                 job.course,
                 epId,
                 (epState, artifacts) => {
+                  syncGeneratedPartsIntoEpisodeState(ctx.courseDir, epId, epState, artifacts, {
+                    partOutputs: generated.parts,
+                    pausedAt: generated.paused_at,
+                  });
                   epState.scripting = epState.scripting || {};
                   epState.scripting.status = artifacts.script ? "completed" : "reviewing";
                   epState.scripting.phase = targetPhase;
                   epState.scripting.owner = ownerLabel;
-                  epState.scripting.notes = `Đang chờ duyệt ${stageHuman}`;
+                  epState.scripting.notes = `Đang chờ duyệt ${stageHuman}${job.paused_part_id ? ` (${job.paused_part_id})` : ""}`;
                   epState.last_error = null;
                 },
                 {
                   type: "ai_stage_paused",
                   job_id: job.id,
                   paused_at: generated.paused_at,
+                  paused_part_id: job.paused_part_id,
                   owner: ownerLabel,
                   message: `Đã hoàn tất ${stageHuman} cho ${epId} — chờ duyệt trước khi tiếp tục.`,
                 }
@@ -726,20 +943,20 @@ export function createAiBroker(deps) {
             } catch {
               // ignore if state file missing
             }
-          } else {
-            if (generated.brief_json || generated.dialogue_json) {
-              saveStageArtifacts({
-                brief_json: generated.brief_json,
-                dialogue_json: generated.dialogue_json,
-                notes_md: null,
-              });
+          } else if (!isMultiPart) {
+            if (generated.dialogue_json && ctx.dialoguePath) {
+              writeJsonAtomic(ctx.dialoguePath, generated.dialogue_json);
+            }
+            if (generated.audio_spine && ctx.audioSpinePath) {
+              writeJsonAtomic(ctx.audioSpinePath, generated.audio_spine);
             }
             const summaryNote = epRewriteNote
               ? `Viết lại KB bởi ${ownerLabel}: ${epRewriteNote.slice(0, 120)}`
-              : `Script biên soạn bởi ${ownerLabel} (${generated.attempts} lần gọi${generated.mode_used === "three_stage" ? ", 3-stage" : generated.mode_used === "two_pass" ? ", 2-pass" : ""})`;
+              : `Script deep_course biên soạn bởi ${ownerLabel} (${generated.attempts} lần gọi)`;
 
             saveEpisodeArtifactsAndState({
               course: job.course,
+              courseDir: ctx.courseDir,
               episodeId: epId,
               epDir: ctx.epDir,
               scriptPath: ctx.scriptPath,
@@ -750,8 +967,42 @@ export function createAiBroker(deps) {
               summaryNote,
               jobId: job.id,
               validation: generated.validation,
-              scriptingPhase: generated.mode_used === "three_stage" ? "visual_compiled" : null,
+              scriptingPhase: "visual_compiled",
+              partOutputs: generated.parts,
             });
+          } else {
+            // Multi-part episode (or targeted part_id): persist parts/* and wait for per-part approval + merge-parts
+            episodesAwaitingMerge.add(epId);
+            const partSummaryLabel = job.part_id
+              ? `Biên soạn part ${job.part_id} bởi ${ownerLabel} (${generated.attempts} lần gọi) — chờ duyệt & merge-parts`
+              : `Biên soạn ${genPartKeys.length} part(s) bởi ${ownerLabel} (${generated.attempts} lần gọi) — chờ duyệt từng part & merge-parts`;
+            try {
+              mutateEpisodeStateForJob(
+                job.course,
+                epId,
+                (epState, artifacts) => {
+                  syncGeneratedPartsIntoEpisodeState(ctx.courseDir, epId, epState, artifacts, {
+                    partOutputs: generated.parts,
+                    pausedAt: null,
+                  });
+                  epState.scripting = epState.scripting || {};
+                  epState.scripting.status = artifacts.script ? "completed" : "reviewing";
+                  epState.scripting.phase = "parts_ready";
+                  epState.scripting.owner = ownerLabel;
+                  epState.scripting.notes = partSummaryLabel;
+                  epState.last_error = null;
+                },
+                {
+                  type: "ai_parts_compiled",
+                  job_id: job.id,
+                  part_ids: genPartKeys,
+                  owner: ownerLabel,
+                  message: `Đã biên soạn ${genPartKeys.join(", ")} cho ${epId} — chờ duyệt & merge-parts.`,
+                }
+              );
+            } catch {
+              // ignore if state file missing
+            }
           }
 
           if (!job.completed_episodes.includes(epId)) {
@@ -831,11 +1082,18 @@ export function createAiBroker(deps) {
       const spawned = [];
       if (
         job.auto_produce &&
-        job.mode !== "storyboard_only" &&
         !job.paused_at &&
-        (!job.pause_after || job.pause_after === "none")
+        (!job.pause_after || job.pause_after === "none") &&
+        !job.part_id
       ) {
         for (const epId of job.episode_ids) {
+          if (episodesAwaitingMerge.has(epId)) {
+            appendAiJobLog(
+              job,
+              `Auto-produce skipped for ${epId}: multi-part episode awaits part approval & merge-parts.`
+            );
+            continue;
+          }
           const prodRes = enqueueProductionJob({
             course: job.course,
             episode: epId,
@@ -881,6 +1139,155 @@ export function createAiBroker(deps) {
       if (shared && !out._shared) out._shared = shared;
     }
     return out;
+  }
+
+  /**
+   * Parse and validate shared pipeline control options for job creation and resume.
+   */
+  function parsePipelineOptionsFromBody(body = {}, existing = null) {
+    const isCreate = !existing;
+    let mode = existing ? existing.mode : "deep_course";
+    if (isCreate || (body.mode !== undefined && body.mode !== null && String(body.mode).trim() !== "")) {
+      const parsedMode = normalizeIncomingGenerationMode(body.mode);
+      if (!parsedMode) {
+        return {
+          ok: false,
+          code: "INVALID_MODE",
+          error: `Invalid generation mode "${String(body.mode)}". Allowed: ${Array.from(VALID_AI_GENERATION_MODES).join(", ")}.`,
+        };
+      }
+      mode = parsedMode;
+    }
+
+    let pause_after = existing ? existing.pause_after || "none" : "none";
+    if (isCreate || (body.pause_after !== undefined && body.pause_after !== null && String(body.pause_after).trim() !== "")) {
+      const pa =
+        body.pause_after !== undefined && body.pause_after !== null && String(body.pause_after).trim() !== ""
+          ? String(body.pause_after).trim().toLowerCase()
+          : "none";
+      if (!VALID_PAUSE_AFTER.has(pa)) {
+        return {
+          ok: false,
+          code: "INVALID_PAUSE_AFTER",
+          error: `Invalid pause_after "${pa}". Allowed: ${Array.from(VALID_PAUSE_AFTER).join(", ")}.`,
+        };
+      }
+      pause_after = pa;
+    }
+
+    let start_from = existing ? existing.start_from ?? null : null;
+    if (isCreate || body.start_from !== undefined) {
+      const sf =
+        body.start_from !== undefined && body.start_from !== null && String(body.start_from).trim() !== ""
+          ? String(body.start_from).trim().toLowerCase()
+          : null;
+      if (sf && !VALID_START_FROM.has(sf)) {
+        return {
+          ok: false,
+          code: "INVALID_START_FROM",
+          error: `Invalid start_from "${sf}". Allowed: ${Array.from(VALID_START_FROM).join(", ")}.`,
+        };
+      }
+      start_from = sf;
+    }
+
+    let part_id = existing ? existing.part_id ?? null : null;
+    if (isCreate || body.part_id !== undefined || body.partId !== undefined) {
+      const rawPartId = body.part_id ?? body.partId ?? null;
+      const pid =
+        rawPartId !== undefined && rawPartId !== null && String(rawPartId).trim() !== ""
+          ? String(rawPartId).trim()
+          : null;
+      if (pid && !PART_ID_RE.test(pid)) {
+        return { ok: false, code: "INVALID_PART_ID", error: `Invalid part_id "${pid}".` };
+      }
+      part_id = pid;
+    }
+
+    let max_part_duration_sec = existing ? existing.max_part_duration_sec ?? null : null;
+    if (isCreate || body.max_part_duration_sec !== undefined || body.maxPartDurationSec !== undefined) {
+      const rawMax = body.max_part_duration_sec ?? body.maxPartDurationSec ?? null;
+      if (rawMax === undefined || rawMax === null || String(rawMax).trim() === "") {
+        max_part_duration_sec = null;
+      } else {
+        const parsedMax = Number(rawMax);
+        if (!Number.isFinite(parsedMax) || parsedMax < 60 || parsedMax > 600) {
+          return {
+            ok: false,
+            code: "INVALID_MAX_PART_DURATION",
+            error: "max_part_duration_sec must be a number between 60 and 600 seconds.",
+          };
+        }
+        max_part_duration_sec = Math.round(parsedMax);
+      }
+    }
+
+    const lock_audio_spine =
+      body.lock_audio_spine !== undefined
+        ? Boolean(body.lock_audio_spine)
+        : Boolean(existing?.lock_audio_spine);
+
+    let role_routing = existing ? existing.role_routing ?? null : null;
+    if (body.role_routing !== undefined) {
+      if (body.role_routing && typeof body.role_routing === "object" && !Array.isArray(body.role_routing)) {
+        const parsedRouting = {};
+        for (const [rKey, rVal] of Object.entries(body.role_routing)) {
+          if (!VALID_PIPELINE_ROLES.includes(rKey) || !rVal || typeof rVal !== "object") continue;
+          const rPid = rVal.provider_id ? String(rVal.provider_id).trim() : null;
+          if (rPid && !getBrandSpec(rPid)) {
+            return {
+              ok: false,
+              code: "INVALID_PROVIDER",
+              error: `Role "${rKey}" provider "${rPid}" is unknown.`,
+            };
+          }
+          parsedRouting[rKey] = {
+            provider_id: rPid,
+            model: rVal.model ? String(rVal.model).trim().slice(0, 160) : null,
+          };
+        }
+        role_routing = Object.keys(parsedRouting).length > 0 ? parsedRouting : null;
+      } else {
+        role_routing = null;
+      }
+    }
+
+    let compiler_provider_id = existing ? existing.compiler_provider_id ?? null : null;
+    if (isCreate || body.compiler_provider_id !== undefined) {
+      const cp = body.compiler_provider_id
+        ? String(body.compiler_provider_id).trim().slice(0, 80)
+        : null;
+      if (cp && !isBuiltinProviderId(cp)) {
+        return {
+          ok: false,
+          code: "INVALID_PROVIDER",
+          error: `Compiler provider "${cp}" must be a builtin provider.`,
+        };
+      }
+      compiler_provider_id = cp;
+    }
+
+    const compiler_model =
+      isCreate || body.compiler_model !== undefined
+        ? body.compiler_model
+          ? String(body.compiler_model).trim().slice(0, 160)
+          : null
+        : existing?.compiler_model ?? null;
+
+    return {
+      ok: true,
+      options: {
+        mode,
+        pause_after,
+        start_from,
+        part_id,
+        max_part_duration_sec,
+        lock_audio_spine,
+        role_routing,
+        compiler_provider_id,
+        compiler_model,
+      },
+    };
   }
 
   // --- HTTP Handlers ---
@@ -1186,81 +1593,32 @@ export function createAiBroker(deps) {
       episode_titles[epId] = courseEps.get(epId)?.title || epId;
     }
 
-    const requestedMode =
-      body.mode !== undefined && body.mode !== null && String(body.mode).trim() !== ""
-        ? String(body.mode).trim().toLowerCase()
-        : "auto";
-    if (!VALID_AI_GENERATION_MODES.has(requestedMode)) {
+    const optsParsed = parsePipelineOptionsFromBody(body);
+    if (!optsParsed.ok) {
       return sendJson(res, 400, {
         ok: false,
-        code: "INVALID_MODE",
-        error: `Invalid generation mode "${requestedMode}". Allowed: ${Array.from(VALID_AI_GENERATION_MODES).join(", ")}.`,
+        code: optsParsed.code,
+        error: optsParsed.error,
       });
     }
-    const pause_after =
-      body.pause_after !== undefined && body.pause_after !== null && String(body.pause_after).trim() !== ""
-        ? String(body.pause_after).trim().toLowerCase()
-        : "none";
-    if (!VALID_PAUSE_AFTER.has(pause_after)) {
-      return sendJson(res, 400, {
-        ok: false,
-        code: "INVALID_PAUSE_AFTER",
-        error: `Invalid pause_after "${pause_after}". Allowed: ${Array.from(VALID_PAUSE_AFTER).join(", ")}.`,
-      });
-    }
-    const start_from =
-      body.start_from !== undefined && body.start_from !== null && String(body.start_from).trim() !== ""
-        ? String(body.start_from).trim().toLowerCase()
-        : null;
-    if (start_from && !VALID_START_FROM.has(start_from)) {
-      return sendJson(res, 400, {
-        ok: false,
-        code: "INVALID_START_FROM",
-        error: `Invalid start_from "${start_from}". Allowed: ${Array.from(VALID_START_FROM).join(", ")}.`,
-      });
-    }
-    const lock_audio_spine = Boolean(body.lock_audio_spine);
-    let role_routing = null;
-    if (body.role_routing && typeof body.role_routing === "object" && !Array.isArray(body.role_routing)) {
-      role_routing = {};
-      for (const [rKey, rVal] of Object.entries(body.role_routing)) {
-        if (!VALID_PIPELINE_ROLES.includes(rKey) || !rVal || typeof rVal !== "object") continue;
-        const rPid = rVal.provider_id ? String(rVal.provider_id).trim() : null;
-        if (rPid && !getBrandSpec(rPid)) {
-          return sendJson(res, 400, {
-            ok: false,
-            code: "INVALID_PROVIDER",
-            error: `Role "${rKey}" provider "${rPid}" is unknown.`,
-          });
-        }
-        role_routing[rKey] = {
-          provider_id: rPid,
-          model: rVal.model ? String(rVal.model).trim().slice(0, 160) : null,
-        };
-      }
-      if (Object.keys(role_routing).length === 0) role_routing = null;
-    }
-
-    const compiler_provider_id = body.compiler_provider_id
-      ? String(body.compiler_provider_id).trim().slice(0, 80)
-      : null;
-    if (compiler_provider_id && !isBuiltinProviderId(compiler_provider_id)) {
-      return sendJson(res, 400, {
-        ok: false,
-        code: "INVALID_PROVIDER",
-        error: `Compiler provider "${compiler_provider_id}" must be a builtin provider.`,
-      });
-    }
-    const compiler_model = body.compiler_model
-      ? String(body.compiler_model).trim().slice(0, 160)
-      : null;
+    const {
+      mode: requestedMode,
+      pause_after,
+      start_from,
+      part_id,
+      max_part_duration_sec,
+      lock_audio_spine,
+      role_routing,
+      compiler_provider_id,
+      compiler_model,
+    } = optsParsed.options;
 
     const custom_instructions = String(body.custom_instructions || "")
       .trim()
       .slice(0, MAX_AI_CUSTOM_INSTRUCTIONS_LEN);
     const rewrite_notes = normalizeRewriteNotes(body);
     const auto_produce =
-      requestedMode === "three_stage" && pause_after !== "none" ? false : Boolean(body.auto_produce);
+      pause_after !== "none" || Boolean(part_id) ? false : Boolean(body.auto_produce);
     let render_prefs = null;
     if (auto_produce) {
       const rawPrefs = body.render_prefs && typeof body.render_prefs === "object" ? body.render_prefs : {};
@@ -1288,9 +1646,12 @@ export function createAiBroker(deps) {
       mode: requestedMode,
       pause_after,
       start_from,
+      part_id,
+      max_part_duration_sec,
       lock_audio_spine,
       role_routing,
       paused_at: null,
+      paused_part_id: null,
       compiler_provider_id,
       compiler_model,
       episode_ids,
@@ -1319,7 +1680,7 @@ export function createAiBroker(deps) {
     };
     appendAiJobLog(
       aiJob,
-      `Queued ${type} [${execution_mode}:${provider_id}${resolvedModel ? `/${resolvedModel}` : ""}; mode=${requestedMode}${compiler_model ? `; compiler=${compiler_provider_id || provider_id}/${compiler_model}` : ""}] for ${course} (${episode_ids.length} ep; auto_produce=${auto_produce})`
+      `Queued ${type} [${execution_mode}:${provider_id}${resolvedModel ? `/${resolvedModel}` : ""}; mode=${requestedMode}${part_id ? `; part=${part_id}` : ""}${compiler_model ? `; compiler=${compiler_provider_id || provider_id}/${compiler_model}` : ""}] for ${course} (${episode_ids.length} ep; auto_produce=${auto_produce})`
     );
 
     aiJobs.set(aiJob.id, aiJob);
@@ -1473,35 +1834,24 @@ export function createAiBroker(deps) {
       };
     }
 
-    if (body.mode !== undefined && body.mode !== null && String(body.mode).trim() !== "") {
-      const resumedMode = String(body.mode).trim().toLowerCase();
-      if (!VALID_AI_GENERATION_MODES.has(resumedMode)) {
-        return sendJson(res, 400, {
-          ok: false,
-          code: "INVALID_MODE",
-          error: `Invalid generation mode "${resumedMode}". Allowed: ${Array.from(VALID_AI_GENERATION_MODES).join(", ")}.`,
-        });
-      }
-      job.mode = resumedMode;
+    const resumeOpts = parsePipelineOptionsFromBody(body, job);
+    if (!resumeOpts.ok) {
+      return sendJson(res, 400, {
+        ok: false,
+        code: resumeOpts.code,
+        error: resumeOpts.error,
+      });
     }
-    if (body.compiler_provider_id !== undefined) {
-      const cp = body.compiler_provider_id ? String(body.compiler_provider_id).trim().slice(0, 80) : null;
-      if (cp && !isBuiltinProviderId(cp)) {
-        return sendJson(res, 400, {
-          ok: false,
-          code: "INVALID_PROVIDER",
-          error: `Compiler provider "${cp}" must be a builtin provider.`,
-        });
-      }
-      job.compiler_provider_id = cp;
-    }
-    if (body.compiler_model !== undefined) {
-      job.compiler_model = body.compiler_model ? String(body.compiler_model).trim().slice(0, 160) : null;
+    Object.assign(job, resumeOpts.options);
+    if (job.pause_after !== "none" || job.part_id) {
+      job.auto_produce = false;
     }
 
     job.execution_mode = execution_mode;
     job.provider_id = isBuiltin ? targetProvider : "antigravity";
     job.model = targetModel;
+    job.paused_at = null;
+    job.paused_part_id = null;
     job.pause_reason = null;
     job.failed_episode = null;
     job.error = null;
@@ -1624,17 +1974,29 @@ export function createAiBroker(deps) {
       return sendJson(res, 400, { ok: false, error: "Invalid course or episode_id" });
     }
 
+    const rawPartId = body.part_id ?? body.partId ?? null;
+    const partId = rawPartId && String(rawPartId).trim() ? String(rawPartId).trim() : null;
+    if (partId && !PART_ID_RE.test(partId)) {
+      return sendJson(res, 400, { ok: false, error: `Invalid part_id "${partId}"` });
+    }
+
     try {
       const ctx = loadEpisodeContextForRunner(course, epId);
+      const partCtx = partId && ctx.existingParts?.[partId] ? ctx.existingParts[partId] : null;
       const rewriteNotes = normalizeRewriteNotes(body);
       const rewriteNote = rewriteNotes[epId] || rewriteNotes._shared || "";
       const pack = buildManualPromptPack({
         courseJson: ctx.courseJson,
         curriculumMd: ctx.curriculumMd,
         episodeMeta: ctx.epMeta,
-        existingScript: ctx.existingScript,
-        existingNotes: ctx.existingNotes,
+        existingBrief: ctx.existingBrief,
+        existingDialogue: partCtx?.dialogue_json || ctx.existingDialogue,
+        existingScript: partCtx?.script_json || ctx.existingScript,
+        existingNotes: partCtx?.notes_md || ctx.existingNotes,
         openRevisions: ctx.openRevisions,
+        availableSvgs: ctx.availableSvgs,
+        partId,
+        maxPartDurationSec: body.max_part_duration_sec ? Number(body.max_part_duration_sec) : null,
         customInstructions: String(body.custom_instructions || "").trim(),
         rewriteNote,
       });
@@ -1643,6 +2005,7 @@ export function createAiBroker(deps) {
         ok: true,
         course,
         episode_id: epId,
+        ...(partId ? { part_id: partId } : {}),
         ...pack,
       });
     } catch (err) {
