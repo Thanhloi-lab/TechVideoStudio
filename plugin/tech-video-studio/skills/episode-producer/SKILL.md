@@ -184,31 +184,29 @@ Preserve the locked spoken wording verbatim (`scene.narration` = joined `display
    - `cards`: `[{ id?, label, value?, numeric_target?, prefix?, suffix?, decimals?, delta_text?, delta_tone?, tone?, sparkline?: number[], progress_start, cue_sentence?, cue_text? }]`, `chart?`: `{ title?, type: "bar", show_at_progress, unit?, series: [{ label, value, highlight? }], cue_sentence?, cue_text? }`, `alert_stamp?`: `{ text, tone?: "danger"|"success", show_at_progress, cue_sentence?, cue_text? }`.
 
 8. **`"sequence_diagram"` (`SequenceDiagram` — protocol, RPC, auth & event-loop traces)**:
-   - `badge?`, `title?`, `subtitle?`
-   - `participants`: `2..6` lifelines `[{ id, label, sublabel?, tone?, icon? }]`
-   - `messages`: `[{ id?, from, to, label, detail?, kind?: "sync"|"async"|"reply"|"error"|"self", tone?, progress_start, progress_end, cue_sentence?, cue_text? }]`
-   - `highlights?`: `[{ label?, text, target_participants?: string[], tone?, show_at_progress, cue_sentence?, cue_text? }]`
-   - `takeaway?`: `{ label?, text, show_at_progress }`
+   - `badge?`, `subtitle?`
+   - `actors`: `2..5` lifelines `[{ id, label, sublabel?, icon?, tone? }]`
+   - `messages`: `1..10` `[{ id?, from, to, label, detail?, style?: "solid"|"dashed"|"danger"|"async", badge?, progress_start, progress_end, cue_sentence?, cue_text? }]`
+   - `highlights?`: `<= 4` `[{ label, from_msg?, to_msg?, tone?: "danger"|"warn"|"info"|"success", show_at_progress, cue_sentence?, cue_text? }]`
 
-9. **`"memory_layout"` (`MemoryLayout` — stack/heap, buffer/cache slots, B-tree pages, registers)**:
-   - `badge?`, `title?`, `subtitle?`, `layout_mode?: "stack_heap" | "segments" | "byte_blocks" | "cache_lines"`
-   - `regions`: `[{ id, label, sublabel?, address_range?, tone?, slots: [{ id, label, value?, size_label?, status?: "free"|"allocated"|"pinned"|"dirty"|"evicted"|"danger" }] }]`
-   - `pointers?`: `[{ id?, label, target_region?, target_slot?, tone? }]`
-   - `steps`: `[{ step_number?, title?, caption?, active_regions?: string[], active_slots?: string[], mutated_values?: object, pointers?: [], alert_text?, progress_start, progress_end, cue_sentence?, cue_text? }]`
+9. **`"memory_layout"` (`MemoryLayout` — stack/heap, buffer/cache slots, B-tree pages, hash tables)**:
+   - `badge?`, `subtitle?`, `complexity_badge?`
+   - `lanes`: `1..4` `[{ id, label, sublabel?, tone?, cells: [{ id, label, value?, subtext?, state?: "idle"|"active"|"match"|"write"|"danger" }] (1..8) }]`
+   - `steps`: `1..8` `[{ label, callout?, complexity?, highlight_cells?: [{ lane_id, cell_id, state }], pointers?: [{ from_lane, from_cell, to_lane, to_cell, label?, tone? }], progress_start, progress_end, cue_sentence?, cue_text? }]`
 
 10. **`"code_diff"` (`CodeDiff` — before-vs-after refactor, bug fix, policy hardening with Shiki)**:
-    - `badge?`, `title?`, `language?`, `view_mode?: "split" | "unified"`, `before_title?`, `after_title?`
-    - `before_lines`: `string[]` (<= 18 lines), `after_lines`: `string[]` (<= 18 lines)
-    - `removed_lines?`: `number[]` (1-based in `before_lines`), `added_lines?`: `number[]` (1-based in `after_lines`)
-    - `focus_steps`: `[{ title?, callout, before_lines?: number[], after_lines?: number[], status?: "danger"|"fix"|"perf"|"info", progress_start, progress_end, cue_sentence?, cue_text? }]`
+    - `badge?`, `subtitle?`, `language?`
+    - `left_title?`, `left_badge?`, `left_lines`: `string[]` (`1..16` lines)
+    - `right_title?`, `right_badge?`, `right_lines`: `string[]` (`1..16` lines)
+    - `focus_steps`: `1..6` `[{ left_lines?: number[], right_lines?: number[], callout, consequence?, fix_reason?, tone?: "danger"|"success"|"info", progress_start, progress_end, cue_sentence?, cue_text? }]`
 
-11. **`"concept_breakdown"` (`ConceptBreakdown` — mental models, pillars, taxomony, failure modes)**:
-    - `badge?`, `title?`, `subtitle?`, `layout?: "tree" | "pillars" | "radial"`
-    - `root`: `{ title, subtitle?, icon?, tone? }`
-    - `branches`: `2..6` `[{ id?, title, summary?, details?: string[], metric_or_tag?, icon?, tone?, highlight?, progress_start, progress_end, cue_sentence?, cue_text? }]`
+11. **`"concept_breakdown"` (`ConceptBreakdown` — mental models, anatomy, decision trees, chapter openers)**:
+    - `badge?`, `subtitle?`, `mode?: "anatomy" | "decision" | "chapter"`
+    - `core`: `{ label, sublabel?, badge?, code_snippet?, tone? }`
+    - `branches`: `2..6` `[{ id, label, role_badge?, detail, example?, tone?, progress_start, progress_end, cue_sentence?, cue_text? }]`
     - `takeaway?`: `{ label?, text, show_at_progress }`
 
-*(Run `node "{{WORKSPACE_ROOT}}/engine/state_cli.mjs" validate-diagrams --course <COURSE_CODE> --ep <ep-slug>` or inspect `engine/src/template_schema.mjs` / MCP `studio://templates/schema` for exact layout budgets.)*
+*(Run `node "{{WORKSPACE_ROOT}}/engine/state_cli.mjs" validate-diagrams --course <COURSE_CODE> --ep <ep-slug>` or inspect [`VISUAL_COMPONENTS.md`]({{WORKSPACE_ROOT_FILE_URI}}/engine/VISUAL_COMPONENTS.md) / `engine/src/template_schema.mjs` for exact layout budgets.)*
 
 ---
 

@@ -49,10 +49,10 @@ Hỗ trợ **9 kênh AI** ngay trong Web Studio (`BrandHealthGrid`) thông qua `
 Giao diện trình chiếu (`engine/src/components/` + `engine/src/motion/kernel.mjs` + HyperFrames DOM/GSAP) hỗ trợ **11 mẫu cảnh đối xứng** tỷ lệ 16:9 (xem [`engine/VISUAL_COMPONENTS.md`](engine/VISUAL_COMPONENTS.md) & `engine/src/template_schema.mjs`):
 - **7 mẫu nền tảng:** `architecture` (`zones[]` tối đa 2 cấp, kho SVG `engine/assets/svg/`, `layout_mode: "auto"`, `camera_focus`), `console_setup`, `code_cli` (Shiki Magic Move `code_override` + `laser_scan`), `exam_tips`, `comparison_matrix`, `timeline_flow`, `kpi_metrics`.
 - **4 mẫu chuyên sâu mới (Deep-Dive):**
-  - **`sequence_diagram`**: Trục thời gian gọi hàm / giao thức / RPC / auth giữa `participants[]`, `messages[]`, `highlights[]`.
-  - **`memory_layout`**: Trực quan hóa bộ nhớ, stack/heap, buffer, B-tree page, thanh ghi với `regions[]`, `pointers[]`, `steps[]`.
-  - **`code_diff`**: So sánh code trước/sau (Shiki syntax highlighting, `before_lines`, `after_lines`, `focus_steps[]`).
-  - **`concept_breakdown`**: Phân rã cây khái niệm / trụ cột / failure modes (`root`, `branches[]`, `takeaway`).
+  - **`sequence_diagram`**: Trục thời gian gọi hàm / giao thức / RPC / auth giữa `actors[]`, `messages[]`, `highlights[]`.
+  - **`memory_layout`**: Trực quan hóa bộ nhớ, stack/heap, buffer, B-tree page với `lanes[]` (`cells[]`) & `steps[]` (`highlight_cells`, `pointers`).
+  - **`code_diff`**: So sánh code trước/sau (Shiki syntax highlighting, `left_lines[]`, `right_lines[]`, `focus_steps[]`).
+  - **`concept_breakdown`**: Phân rã giải phẫu khái niệm / cây quyết định / chuyển chương (`core`, `branches[]`, `takeaway`). — Xem chi tiết tại [`engine/VISUAL_COMPONENTS.md`](engine/VISUAL_COMPONENTS.md).
 - **Visual Variety Guard:** `diagram_validator.mjs` kiểm tra không lặp `visual_type` ở 2 cảnh liền kề, khuyến khích `>= 3` template/part và luân phiên `world_theme` (`"dark" | "light"`), `causal_mechanic`, `sfx_cues`, `bgm_file`.
 
 ### 1.4. Tổng hợp giọng đọc TTS đa track (Multi-Voice A/B), Audio-Spine Reuse & Khớp nhịp 2 lớp (`engine/tts_pipeline.py`)
