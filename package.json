@@ -1,0 +1,50 @@
+{
+  "name": "tech-video-studio",
+  "version": "2.0.0",
+  "description": "Zero-dependency deep-dive technical course video studio: multi-part scripting, independent AI reviewers, 11 animated templates, Vietnamese/English TTS, and offline HyperFrames rendering.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "bin": {
+    "tech-video-studio": "./bin/cli.mjs",
+    "tvs": "./bin/cli.mjs"
+  },
+  "files": [
+    "bin/",
+    "engine/",
+    "!engine/.ai_*.json",
+    "!engine/.voice_cache/**",
+    "!engine/.voice_preview_cache/**",
+    "!engine/__pycache__/**",
+    "!**/__pycache__/**",
+    "!**/*.pyc",
+    "plugin/",
+    "AGENTS.md",
+    "CHANGELOG.md",
+    "GUIDE.md",
+    "README.md",
+    "setup.mjs"
+  ],
+  "scripts": {
+    "setup": "node bin/cli.mjs setup",
+    "check": "node bin/cli.mjs check",
+    "studio": "node engine/server.mjs",
+    "test": "node engine/test_phase1_three_stage.mjs && node engine/test_ai_bridge_and_templates.mjs"
+  },
+  "keywords": [
+    "video-studio",
+    "tutorial-video",
+    "hyperframes",
+    "antigravity",
+    "mcp",
+    "ai-agent",
+    "tts",
+    "course-creator"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Thanhloi-lab/TechVideoStudio.git"
+  }
+}

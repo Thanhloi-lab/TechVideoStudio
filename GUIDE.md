@@ -54,7 +54,16 @@ Khi người dùng yêu cầu làm theo `GUIDE.md`, Agent thực hiện tuần t
 
 ## Cách 2: Người dùng tự chạy 1 lệnh (Không cần qua Agent)
 
-Mở terminal tại thư mục gốc của repo vừa clone và chạy:
+- **Cài đặt nhanh trên máy mới qua `npx` (tự quét AI Agent đang có trên máy + hỗ trợ cài Python/Chrome):**
+  ```powershell
+  npx github:Thanhloi-lab/TechVideoStudio
+  # hoặc chỉ kiểm tra không ghi file:
+  npx github:Thanhloi-lab/TechVideoStudio check
+  # hoặc tự cài thiếu Python/Chrome qua winget/brew/apt:
+  npx github:Thanhloi-lab/TechVideoStudio setup --install-deps
+  ```
+
+Hoặc mở terminal tại thư mục gốc của repo vừa clone và chạy:
 
 - **Cài đặt đồng bộ cho Antigravity (workspace + global):**
   ```powershell

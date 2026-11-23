@@ -86,9 +86,28 @@ Khởi chạy qua `engine/server.mjs` và đồng bộ real-time bằng Server-S
 
 ---
 
-## 3. Cài đặt (Setup) sau khi Clone / Pull
+## 3. Cài đặt (Setup) sau khi Clone / Pull hoặc qua `npx`
 
-### Bước 1: Clone repository về máy
+### Cách nhanh nhất trên máy mới (Không cần `git clone`) — `npx`
+
+```powershell
+# Chạy trực tiếp từ GitHub (hoặc `npx tech-video-studio` nếu đã publish npm)
+npx github:Thanhloi-lab/TechVideoStudio
+
+# Chỉ kiểm tra dependencies & danh sách AI Agent hiện có trên máy
+npx github:Thanhloi-lab/TechVideoStudio check
+
+# Tự động cài thêm Python / Chrome nếu máy chưa có và chọn toàn bộ Agent phát hiện được
+npx github:Thanhloi-lab/TechVideoStudio setup --install-deps --yes
+
+# Mở Web Studio UI tùy chọn (cổng 3030 — không bắt buộc khi tạo lộ trình/kịch bản/render video)
+npx github:Thanhloi-lab/TechVideoStudio studio
+```
+
+- CLI tự động quét các AI Agent phổ biến trên máy (cả bản **App/IDE** lẫn **CLI**: Antigravity App, Antigravity CLI `agy`, Claude Desktop, Claude Code CLI, Codex App/CLI, Gemini CLI, Cursor, Windsurf, VS Code + Copilot, OpenCode CLI) và **chỉ hiển thị đúng những Agent đang tồn tại trên máy** để bạn chọn cài đặt.
+- Khi chạy qua `npx`, runtime `engine/` + `plugin/` sẽ được đồng bộ bền vững vào `~/.tech-video-studio` (hoặc `--install-dir <dir>`), đồng thời kiểm tra & hỗ trợ cài tự động **Python `>= 3.10`** và **Google Chrome** qua `winget` / `brew` / `apt` / `dnf`.
+
+### Bước 1: Clone repository về máy (nếu muốn phát triển trực tiếp)
 
 ```powershell
 git clone git@github.com:Thanhloi-lab/TechVideoStudio.git

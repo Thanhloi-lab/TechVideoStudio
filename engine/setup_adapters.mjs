@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -100,13 +101,17 @@ export function walkFiles(dirPath, baseDir = dirPath) {
   return results;
 }
 
-export function buildMcpServerEntry(repoRoot) {
+export function buildMcpServerEntry(repoRoot, { workspaceRoot } = {}) {
+  const env = {
+    VIDEO_MAKER_PORT: "3030",
+  };
+  if (workspaceRoot && path.resolve(workspaceRoot) !== path.resolve(repoRoot)) {
+    env.VIDEO_MAKER_WORKSPACE_ROOT = path.resolve(workspaceRoot);
+  }
   return {
     command: "node",
     args: [path.join(repoRoot, "engine", "mcp_server.mjs")],
-    env: {
-      VIDEO_MAKER_PORT: "3030",
-    },
+    env,
   };
 }
 
@@ -224,7 +229,7 @@ export function installSkillAdapter({ targetSkillsDir, repoRoot, pythonBin = "py
   };
 }
 
-function mergeMcpJsonFile(filePath, repoRoot, { createBackup = false } = {}) {
+function mergeMcpJsonFile(filePath, repoRoot, { createBackup = false, serversKey = "mcpServers", workspaceRoot } = {}) {
   let baseConfig = {};
   let backupPath = null;
 
@@ -249,23 +254,23 @@ function mergeMcpJsonFile(filePath, repoRoot, { createBackup = false } = {}) {
   }
 
   const existingServers =
-    baseConfig.mcpServers && typeof baseConfig.mcpServers === "object" && !Array.isArray(baseConfig.mcpServers)
-      ? { ...baseConfig.mcpServers }
+    baseConfig[serversKey] && typeof baseConfig[serversKey] === "object" && !Array.isArray(baseConfig[serversKey])
+      ? { ...baseConfig[serversKey] }
       : {};
   const preservedServers = Object.keys(existingServers).filter((k) => k !== "tech-video-studio");
 
   const nextConfig = {
     ...baseConfig,
-    mcpServers: {
+    [serversKey]: {
       ...existingServers,
-      "tech-video-studio": buildMcpServerEntry(repoRoot),
+      "tech-video-studio": buildMcpServerEntry(repoRoot, { workspaceRoot }),
     },
   };
 
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${JSON.stringify(nextConfig, null, 2)}\n`, "utf-8");
 
-  const mcpServerPath = nextConfig.mcpServers["tech-video-studio"].args[0];
+  const mcpServerPath = nextConfig[serversKey]["tech-video-studio"].args[0];
   return {
     path: filePath,
     ok: fs.existsSync(mcpServerPath),
@@ -366,4 +371,197 @@ export function normalizeAgentList(agentsArg) {
     return ["antigravity", "claude", "codex"];
   }
   return Array.from(new Set(rawList));
+}
+
+export function getVsCodeUserMcpPath(platform = process.platform, env = process.env, home = os.homedir()) {
+  if (platform === "win32") {
+    const appData = env.APPDATA || path.join(home, "AppData", "Roaming");
+    return path.join(appData, "Code", "User", "mcp.json");
+  }
+  if (platform === "darwin") {
+    return path.join(home, "Library", "Application Support", "Code", "User", "mcp.json");
+  }
+  const configHome = env.XDG_CONFIG_HOME || path.join(home, ".config");
+  return path.join(configHome, "Code", "User", "mcp.json");
+}
+
+/**
+ * Install plugin / skills / MCP config for a specific detected AI agent ID.
+ * Preserves existing user configs and writes `.bak` backups on shared global config files.
+ */
+export function installDetectedAgent(
+  agentId,
+  {
+    repoRoot,
+    workspaceRoot = repoRoot,
+    pythonBin = "python",
+    includeWorkspace = true,
+    home = os.homedir(),
+    platform = process.platform,
+    env = process.env,
+  } = {}
+) {
+  const results = [];
+  const ctx = { repoRoot, pythonBin };
+  const xdgConfig = env.XDG_CONFIG_HOME || path.join(home, ".config");
+
+  switch (agentId) {
+    case "antigravity-app": {
+      const globalPluginDir = path.join(home, ".gemini", "config", "plugins", "tech-video-studio");
+      results.push({
+        target: "antigravity-global-plugin",
+        ...installPluginToDir(globalPluginDir, ctx),
+      });
+      if (includeWorkspace && workspaceRoot) {
+        const wsPluginDir = path.join(workspaceRoot, ".agents", "plugins", "tech-video-studio");
+        results.push({
+          target: "antigravity-workspace-plugin",
+          ...installPluginToDir(wsPluginDir, ctx),
+        });
+      }
+      break;
+    }
+
+    case "antigravity-cli": {
+      const stageDir = fs.mkdtempSync(path.join(os.tmpdir(), "tvs-plugin-"));
+      try {
+        installPluginToDir(stageDir, ctx);
+        const agyRes = spawnSync("agy", ["plugin", "install", stageDir], {
+          encoding: "utf-8",
+          windowsHide: true,
+        });
+        if (agyRes.error || agyRes.status !== 0) {
+          throw new Error(
+            `agy plugin install failed (${agyRes.status ?? "err"}): ${agyRes.stderr || agyRes.stdout || agyRes.error?.message}`
+          );
+        }
+        const globalPluginDir = path.join(home, ".gemini", "config", "plugins", "tech-video-studio");
+        results.push({
+          target: "antigravity-cli-plugin",
+          ...verifyInstalledDir(globalPluginDir),
+        });
+      } finally {
+        fs.rmSync(stageDir, { recursive: true, force: true });
+      }
+      break;
+    }
+
+    case "claude-desktop": {
+      const configPath = getClaudeDesktopConfigPath(platform, env);
+      results.push({
+        target: "claude-desktop-mcp",
+        ...mergeMcpJsonFile(configPath, repoRoot, { createBackup: true, workspaceRoot }),
+      });
+      break;
+    }
+
+    case "claude-code": {
+      results.push({
+        target: "claude-global-skills",
+        ...installSkillAdapter({ targetSkillsDir: path.join(home, ".claude", "skills"), ...ctx }),
+      });
+      if (includeWorkspace && workspaceRoot) {
+        results.push({
+          target: "claude-workspace-skills",
+          ...installSkillAdapter({ targetSkillsDir: path.join(workspaceRoot, ".claude", "skills"), ...ctx }),
+        });
+        results.push({
+          target: "claude-workspace-mcp",
+          ...mergeMcpJsonFile(path.join(workspaceRoot, ".mcp.json"), repoRoot, { createBackup: false, workspaceRoot }),
+        });
+      }
+      break;
+    }
+
+    case "codex-cli":
+    case "codex-app": {
+      results.push({
+        target: `${agentId}-codex-skills`,
+        ...installSkillAdapter({ targetSkillsDir: path.join(home, ".codex", "skills"), ...ctx }),
+      });
+      results.push({
+        target: `${agentId}-agents-skills`,
+        ...installSkillAdapter({ targetSkillsDir: path.join(home, ".agents", "skills"), ...ctx }),
+      });
+      if (includeWorkspace && workspaceRoot) {
+        results.push({
+          target: `${agentId}-workspace-skills`,
+          ...installSkillAdapter({ targetSkillsDir: path.join(workspaceRoot, ".agents", "skills"), ...ctx }),
+        });
+      }
+      break;
+    }
+
+    case "gemini-cli": {
+      results.push({
+        target: "gemini-cli-skills",
+        ...installSkillAdapter({ targetSkillsDir: path.join(home, ".gemini", "skills"), ...ctx }),
+      });
+      results.push({
+        target: "gemini-cli-mcp",
+        ...mergeMcpJsonFile(path.join(home, ".gemini", "settings.json"), repoRoot, { createBackup: true, workspaceRoot }),
+      });
+      break;
+    }
+
+    case "cursor-app": {
+      results.push({
+        target: "cursor-skills",
+        ...installSkillAdapter({ targetSkillsDir: path.join(home, ".cursor", "skills"), ...ctx }),
+      });
+      results.push({
+        target: "cursor-mcp",
+        ...mergeMcpJsonFile(path.join(home, ".cursor", "mcp.json"), repoRoot, { createBackup: true, workspaceRoot }),
+      });
+      break;
+    }
+
+    case "windsurf-app": {
+      results.push({
+        target: "windsurf-skills",
+        ...installSkillAdapter({ targetSkillsDir: path.join(home, ".codeium", "windsurf", "skills"), ...ctx }),
+      });
+      results.push({
+        target: "windsurf-mcp",
+        ...mergeMcpJsonFile(path.join(home, ".codeium", "windsurf", "mcp_config.json"), repoRoot, {
+          createBackup: true,
+          workspaceRoot,
+        }),
+      });
+      break;
+    }
+
+    case "vscode-copilot": {
+      results.push({
+        target: "vscode-copilot-skills",
+        ...installSkillAdapter({ targetSkillsDir: path.join(home, ".copilot", "skills"), ...ctx }),
+      });
+      results.push({
+        target: "vscode-mcp",
+        ...mergeMcpJsonFile(getVsCodeUserMcpPath(platform, env, home), repoRoot, {
+          createBackup: true,
+          serversKey: "servers",
+          workspaceRoot,
+        }),
+      });
+      break;
+    }
+
+    case "opencode-cli": {
+      results.push({
+        target: "opencode-skills",
+        ...installSkillAdapter({ targetSkillsDir: path.join(xdgConfig, "opencode", "skills"), ...ctx }),
+      });
+      break;
+    }
+
+    default:
+      throw new Error(`Unsupported AI agent ID: ${agentId}`);
+  }
+
+  return {
+    agentId,
+    ok: results.length > 0 && results.every((r) => r.ok),
+    results,
+  };
 }

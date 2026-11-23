@@ -17,6 +17,7 @@ ref/
 /*/state/
 /*/course.json
 /*/curriculum.md
+/*/curriculum_review.md
 /*/hyperframes/
 /*/hyperframes-snapshots/
 /*/hyperframes-verify/
@@ -45,5 +46,6 @@ node_modules/
 *.tmp
 *.bak
 *.log
+*.tgz
 .DS_Store
 Thumbs.db

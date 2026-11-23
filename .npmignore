@@ -1,0 +1,27 @@
+# Local secrets, caches, courses, and transient artifacts
+.env
+.env.*
+.agents/
+.claude/
+.mcp.json
+engine/.ai_credentials.json
+engine/.ai_preferences.json
+engine/.ai_queue.json
+engine/.voice_cache/
+engine/.voice_preview_cache/
+engine/__pycache__/
+**/__pycache__/
+*.pyc
+*.mp4
+*.webm
+*.mp3
+*.wav
+!engine/assets/sfx/*.wav
+*.srt
+ref/
+AWS/
+K8S/
+REDIS/
+snapshots/
+snapshots-p2/
+setup.bat
