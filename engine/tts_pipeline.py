@@ -97,12 +97,10 @@ def load_voices_config(voices_path: Path | None = None) -> dict[str, Any]:
 
 
 def _auto_detect_course_path(script_path: Path) -> Path | None:
-    """Check ../../course.json relative to script.json (and ../course.json fallback)."""
-    candidates = [
-        (script_path.parent / ".." / ".." / "course.json").resolve(),
-        (script_path.parent / ".." / "course.json").resolve(),
-    ]
-    for candidate in candidates:
+    """Check parent directories up to 4 levels for course.json (supports ep/ and ep/parts/part_k/)."""
+    base = script_path.parent
+    for rel in ("../..", "..", "../../..", "../../../.."):
+        candidate = (base / rel / "course.json").resolve()
         if candidate.exists() and candidate.is_file():
             return candidate
     return None
@@ -1638,14 +1636,18 @@ def extract_scene_timings(scene: dict[str, Any]) -> dict[str, Any]:
     _extract_contiguous_list("highlight_phases", 0.0, 1.0)
     _extract_contiguous_list("steps", 0.0, 1.0)
     _extract_contiguous_list("milestones", 0.06, 0.86)
+    _extract_contiguous_list("messages", 0.05, 0.90)
+    _extract_contiguous_list("focus_steps", 0.0, 1.0)
+    _extract_contiguous_list("branches", 0.05, 0.80 if isinstance(vdata.get("takeaway"), dict) else 0.90)
 
-    # Event-based lists across code_cli, comparison_matrix, exam_tips, kpi_metrics
+    # Event-based lists across code_cli, comparison_matrix, exam_tips, kpi_metrics, sequence_diagram
     _extract_event_list("terminal_commands", 0.25, 0.60)
     _extract_event_list("rows", 0.08, 0.62)
     _extract_event_list("comparisons", 0.0, 0.65)
     _extract_event_list("cards", 0.06, 0.36)
     _extract_event_list("metrics", 0.06, 0.36)
     _extract_event_list("bars", 0.40, 0.35)
+    _extract_event_list("highlights", 0.18, 0.72)
 
     # Single reveal objects
     for obj_key, default_at in (
@@ -1687,6 +1689,10 @@ def apply_scene_timings(scene: dict[str, Any], timings: dict[str, Any] | None) -
         "highlight_phases",
         "steps",
         "milestones",
+        "messages",
+        "highlights",
+        "focus_steps",
+        "branches",
         "terminal_commands",
         "rows",
         "comparisons",
@@ -1703,12 +1709,14 @@ def apply_scene_timings(scene: dict[str, Any], timings: dict[str, Any] | None) -
             v_item = v_arr[idx]
             if not isinstance(t_item, dict) or not isinstance(v_item, dict):
                 continue
-            if "progress_start" in t_item or "progress_at" in t_item:
+            if (list_key != "highlights" or "progress_start" in v_item) and (
+                "progress_start" in t_item or "progress_at" in t_item
+            ):
                 p_start = _round_p(_clamp01(t_item.get("progress_start", t_item.get("progress_at")), 0.0))
                 v_item["progress_start"] = p_start
                 if "progress_at" in v_item or "progress_at" in t_item:
                     v_item["progress_at"] = _round_p(_clamp01(t_item.get("progress_at"), p_start))
-            if "progress_end" in t_item:
+            if (list_key != "highlights" or "progress_end" in v_item) and "progress_end" in t_item:
                 v_item["progress_end"] = _round_p(_clamp01(t_item.get("progress_end"), 1.0))
             if "show_at_progress" in t_item:
                 v_item["show_at_progress"] = _round_p(_clamp01(t_item.get("show_at_progress"), 0.5))
@@ -1739,6 +1747,14 @@ def _extract_item_cues(item: dict[str, Any], list_key: str) -> list[tuple[str, f
     for field in (
         "description",
         "explanation",
+        "summary",
+        "text",
+        "caption",
+        "note",
+        "payload",
+        "annotation",
+        "reason",
+        "example",
         "action",
         "tip",
         "wrong",
@@ -1761,6 +1777,31 @@ def _extract_item_cues(item: dict[str, Any], list_key: str) -> list[tuple[str, f
             _add(fld.get("label"), w)
             _add(fld.get("selected"), w)
             _add(fld.get("value"), w * 0.8)
+
+    # Memory layout regions/blocks/cells inside steps
+    if list_key == "steps":
+        for sub_key in ("regions", "blocks", "cells"):
+            sub_arr = item.get(sub_key)
+            if isinstance(sub_arr, list):
+                for sub_it in sub_arr:
+                    if isinstance(sub_it, dict):
+                        _add(sub_it.get("label"), 0.8)
+                        _add(sub_it.get("title"), 0.8)
+                        _add(sub_it.get("value"), 0.7)
+                        _add(sub_it.get("note"), 0.7)
+
+    # Concept breakdown branch items/points
+    if list_key == "branches":
+        for sub_key in ("items", "points"):
+            sub_arr = item.get(sub_key)
+            if isinstance(sub_arr, list):
+                for sub_it in sub_arr:
+                    if isinstance(sub_it, str):
+                        _add(sub_it, 0.8)
+                    elif isinstance(sub_it, dict):
+                        _add(sub_it.get("label"), 0.8)
+                        _add(sub_it.get("title"), 0.8)
+                        _add(sub_it.get("text"), 0.8)
 
     # Comparison matrix row cell values
     if list_key == "rows" and isinstance(item.get("values"), dict):
@@ -2084,13 +2125,19 @@ def align_scene_timings(
 
     new_timings: dict[str, Any] = {}
 
-    # 1. Contiguous step templates: flow_steps, highlight_phases, steps, milestones
-    for key, pin_zero in (
-        ("flow_steps", True),
-        ("highlight_phases", True),
-        ("steps", True),
-        ("milestones", False),
-    ):
+    # 1. Contiguous step templates: flow_steps, highlight_phases, steps, milestones, messages, focus_steps, branches
+    vtype = str(scene.get("visual_type") or "")
+    has_highlights = isinstance(vdata.get("highlights"), list) and len(vdata.get("highlights")) > 0
+    contiguous_configs = [
+        ("flow_steps", True, 0.94),
+        ("highlight_phases", True, 0.94),
+        ("steps", vtype != "memory_layout", 0.94),
+        ("milestones", False, 0.88 if isinstance(vdata.get("callout"), dict) else 0.94),
+        ("messages", False, 0.88 if has_highlights else 0.94),
+        ("focus_steps", False, 0.94),
+        ("branches", False, 0.86 if isinstance(vdata.get("takeaway"), dict) else 0.94),
+    ]
+    for key, pin_zero, max_last_start in contiguous_configs:
         arr = vdata.get(key)
         if not isinstance(arr, list) or not arr:
             continue
@@ -2100,11 +2147,12 @@ def align_scene_timings(
             if idx < len(base_arr) else (idx / max(1, len(arr)))
             for idx in range(len(arr))
         ]
-        # Pin milestones[0] to 0.0 only if _base_timings started at ~0.0
-        effective_pin = pin_zero or (bool(base_starts) and base_starts[0] <= 0.015)
         cues = [_extract_item_cues(item if isinstance(item, dict) else {}, key) for item in arr]
         explicit_starts = [_resolve_cue_sentence_progress(item, sub_entries) for item in arr]
-        max_last_start = 0.88 if (key == "milestones" and isinstance(vdata.get("callout"), dict)) else 0.94
+        # Respect explicit cue_sentence on item 0; otherwise pin if required by template or _base_timings started at ~0.0
+        effective_pin = (explicit_starts[0] is None) and (
+            pin_zero or (bool(base_starts) and base_starts[0] <= 0.015)
+        )
         starts = _align_sequence_starts(
             items_cues=cues,
             base_starts=base_starts,
@@ -2128,7 +2176,7 @@ def align_scene_timings(
             t_list.append(entry)
         new_timings[key] = t_list
 
-    # 2. Event-based lists: terminal_commands, rows, comparisons, cards, metrics, bars
+    # 2. Event-based lists: terminal_commands, rows, comparisons, cards, metrics, bars, highlights
     event_configs = [
         ("terminal_commands", 0.94),
         ("rows", 0.84 if isinstance(vdata.get("takeaway"), dict) else 0.92),
@@ -2136,6 +2184,7 @@ def align_scene_timings(
         ("cards", 0.65 if isinstance(vdata.get("chart"), dict) else 0.88),
         ("metrics", 0.88),
         ("bars", 0.90),
+        ("highlights", 0.92),
     ]
     for key, max_end in event_configs:
         arr = vdata.get(key)
@@ -2143,7 +2192,7 @@ def align_scene_timings(
             continue
         base_arr = base_timings.get(key) or []
         base_starts = [
-            float(base_arr[idx].get("progress_start", idx / max(1, len(arr)) * max_end))
+            float(base_arr[idx].get("progress_start", base_arr[idx].get("show_at_progress", idx / max(1, len(arr)) * max_end)))
             if idx < len(base_arr) else (idx / max(1, len(arr)) * max_end)
             for idx in range(len(arr))
         ]
@@ -2168,7 +2217,7 @@ def align_scene_timings(
             if "progress_end" in orig_item or "progress_end" in b_item:
                 next_p = starts[idx + 1] if idx + 1 < len(starts) else 1.0
                 entry["progress_end"] = _round_p(max(p_start + 0.04, next_p))
-            if "show_at_progress" in orig_item or "show_at_progress" in b_item:
+            if key == "highlights" or "show_at_progress" in orig_item or "show_at_progress" in b_item:
                 entry["show_at_progress"] = _round_p(p_start)
             t_list.append(entry)
         new_timings[key] = t_list
@@ -2220,7 +2269,7 @@ def align_scene_timings(
         _align_single_reveal("callout", min(0.90, floor_c), 0.80)
 
     if isinstance(vdata.get("takeaway"), dict):
-        rows_list = new_timings.get("rows") or []
+        rows_list = new_timings.get("rows") or new_timings.get("branches") or []
         floor_tk = (rows_list[-1]["progress_start"] + 0.04) if rows_list else 0.65
         _align_single_reveal("takeaway", min(0.90, floor_tk), 0.78)
 
@@ -2379,6 +2428,183 @@ def migrate_legacy_voice_track(script: dict[str, Any], ep_dir: Path) -> str | No
     return legacy_id
 
 
+def _load_matching_audio_spine(
+    ep_dir: Path,
+    safe_profile_id: str,
+    config: dict[str, Any],
+) -> tuple[dict[str, dict[str, Any]], dict[str, Any] | None]:
+    """Load <ep_dir>/audio_spine.json if it exists and matches the active TTS profile."""
+    spine_path = ep_dir / "audio_spine.json"
+    if not spine_path.exists() or not spine_path.is_file():
+        return {}, None
+    try:
+        spine_data = json.loads(spine_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}, None
+    if not isinstance(spine_data, dict):
+        return {}, None
+
+    spine_raw_profile = spine_data.get("profile_id") or spine_data.get("tts_profile")
+    if not spine_raw_profile:
+        return {}, None
+    spine_safe_profile = sanitize_profile_id(
+        str(spine_raw_profile),
+        fallback_voice=spine_data.get("tts_voice"),
+        fallback_provider=spine_data.get("tts_provider"),
+    )
+    resolved_pid = config.get("resolved_profile_id")
+    if spine_safe_profile != safe_profile_id and str(spine_raw_profile).strip() != str(resolved_pid or "").strip():
+        return {}, None
+
+    spine_voice = str(spine_data.get("tts_voice") or "").strip()
+    active_voice = str(config.get("voice_id") or "").strip()
+    if spine_voice and active_voice and spine_voice != active_voice:
+        return {}, None
+
+    beats = spine_data.get("beats")
+    if not isinstance(beats, list) or not beats:
+        return {}, None
+
+    spine_by_beat_id: dict[str, dict[str, Any]] = {}
+    for b in beats:
+        if isinstance(b, dict) and b.get("beat_id"):
+            spine_by_beat_id[str(b["beat_id"]).strip()] = b
+    return spine_by_beat_id, spine_data
+
+
+def _resolve_beat_audio_path(
+    ep_dir: Path,
+    safe_profile_id: str,
+    beat_id: str,
+    beat: dict[str, Any],
+    spine_beat: dict[str, Any],
+) -> Path | None:
+    """Resolve an existing per-beat audio file inside ep_dir."""
+    ep_resolved = ep_dir.resolve()
+    safe_beat_id = re.sub(r"[^A-Za-z0-9._-]+", "_", beat_id) or beat_id
+    rel_candidates = [
+        spine_beat.get("audio_file"),
+        beat.get("audio_file"),
+        f"audio/{safe_profile_id}/beats/{safe_beat_id}.wav",
+        f"audio/{safe_profile_id}/beats/{safe_beat_id}.mp3",
+    ]
+    for rel in rel_candidates:
+        if not rel or not isinstance(rel, str):
+            continue
+        cand = (ep_dir / rel).resolve()
+        try:
+            cand.relative_to(ep_resolved)
+        except ValueError:
+            continue
+        if cand.exists() and cand.is_file():
+            return cand
+    return None
+
+
+def _try_reuse_audio_spine_for_scene(
+    scene: dict[str, Any],
+    ep_dir: Path,
+    safe_profile_id: str,
+    spine_by_beat_id: dict[str, dict[str, Any]],
+) -> tuple[bytes, str, float, list[dict[str, Any]]] | None:
+    """Assemble scene audio directly from matching audio_spine.json beats without re-synthesizing."""
+    if not spine_by_beat_id:
+        return None
+    tts_beats = scene.get("tts_beats")
+    if not isinstance(tts_beats, list) or not tts_beats:
+        return None
+
+    parsed_beats: list[tuple[str, str, bytes, tuple[int, int, int] | None, float]] = []
+    expected_ext: str | None = None
+    expected_wav_params: tuple[int, int, int] | None = None
+
+    for beat in tts_beats:
+        if not isinstance(beat, dict):
+            return None
+        beat_id = str(beat.get("beat_id") or "").strip()
+        if not beat_id or beat_id not in spine_by_beat_id:
+            return None
+        spine_beat = spine_by_beat_id[beat_id]
+
+        disp_raw = re.sub(r"\s+", " ", str(beat.get("display_text") or "")).strip()
+        tts_raw = re.sub(r"\s+", " ", str(beat.get("tts_text") or "")).strip()
+        scene_spoken = tts_raw or normalize_vietnamese_tts_text(disp_raw)
+        spine_spoken = re.sub(r"\s+", " ", str(spine_beat.get("tts_text") or "")).strip()
+        if not scene_spoken or not spine_spoken:
+            return None
+
+        text_matches = (scene_spoken == spine_spoken) or (
+            tts_raw == disp_raw and normalize_vietnamese_tts_text(disp_raw) == spine_spoken
+        )
+        if not text_matches:
+            return None
+
+        audio_path = _resolve_beat_audio_path(ep_dir, safe_profile_id, beat_id, beat, spine_beat)
+        if audio_path is None:
+            return None
+        raw_bytes = audio_path.read_bytes()
+        if not raw_bytes:
+            return None
+
+        hint_ext = audio_path.suffix.lstrip(".").lower() or None
+        ext, payload, params, beat_dur = measure_audio_chunk(raw_bytes, hint=hint_ext)
+        if not payload or beat_dur <= 0.0:
+            return None
+
+        if expected_ext is None:
+            expected_ext = ext
+        elif ext != expected_ext:
+            return None
+
+        if ext == "wav":
+            if params is None:
+                return None
+            if expected_wav_params is None:
+                expected_wav_params = params
+            elif params != expected_wav_params:
+                return None
+
+        disp_final = disp_raw or re.sub(r"\s+", " ", str(spine_beat.get("display_text") or "")).strip() or scene_spoken
+        parsed_beats.append((disp_final, ext, payload, params, beat_dur))
+
+    if not parsed_beats:
+        return None
+
+    mp3_buf = bytearray()
+    wav_pcm_buf = bytearray()
+    subtitles: list[dict[str, Any]] = []
+    scene_cursor = 0.0
+
+    for idx_b, (disp_final, ext, payload, _params, beat_dur) in enumerate(parsed_beats):
+        unit_start = round(scene_cursor, 3)
+        if ext == "wav":
+            wav_pcm_buf.extend(payload)
+            scene_cursor += beat_dur
+            if idx_b + 1 < len(parsed_beats) and expected_wav_params is not None:
+                nch, sw, sr = expected_wav_params
+                gap_frames = int(round(sr * 0.08))
+                wav_pcm_buf.extend(b"\x00" * (gap_frames * nch * sw))
+                scene_cursor += gap_frames / float(max(1, sr))
+        else:
+            mp3_buf.extend(payload)
+            scene_cursor += beat_dur
+
+        subtitles.append({
+            "text": disp_final,
+            "sentence_idx": idx_b + 1,
+            "start_sec": unit_start,
+            "end_sec": round(unit_start + beat_dur, 3),
+        })
+
+    if expected_ext == "wav" and expected_wav_params is not None:
+        final_bytes = build_wav_bytes(expected_wav_params, bytes(wav_pcm_buf))
+        nch, sw, sr = expected_wav_params
+        scene_duration = round(len(wav_pcm_buf) / float(max(1, nch * sw * sr)), 3)
+        return final_bytes, "wav", scene_duration, subtitles
+
+    return bytes(mp3_buf), "mp3", round(scene_cursor, 3), subtitles
+
+
 def process_episode(
     script_path: Path,
     voices_cfg: dict[str, Any],
@@ -2427,6 +2653,8 @@ def process_episode(
     track_audio_dir = audio_dir / safe_profile_id
     track_audio_dir.mkdir(parents=True, exist_ok=True)
 
+    spine_by_beat_id, spine_data = _load_matching_audio_spine(ep_dir, safe_profile_id, config)
+
     hint_fmt = config.get("response_format") or "mp3"
     srt_entries: list[str] = []
     srt_idx = 1
@@ -2436,78 +2664,99 @@ def process_episode(
     fallback_reasons: list[str] = []
     fallback_chunk_count = 0
     total_chunk_count = 0
+    reused_scenes = 0
     track_scene_data: dict[str, Any] = {}
 
     for scene in script.get("scenes", []):
         scene_id = scene["id"]
         ensure_base_timings(scene)
-        units = _build_scene_tts_units(scene)
 
-        mp3_buf = bytearray()
-        wav_pcm_buf = bytearray()
-        wav_params: tuple[int, int, int] | None = None
-        scene_ext = "mp3"
-        subtitles: list[dict[str, Any]] = []
-        scene_cursor = 0.0
-
-        for idx_u, (spoken_chunks, disp_text, sent_idx) in enumerate(units):
-            unit_start = round(scene_cursor, 3)
-            unit_dur = 0.0
-            for idx_c, chunk in enumerate(spoken_chunks):
-                chunk_diag: dict[str, Any] = {}
-                raw_audio, used = synthesize_chunk(chunk, config, diagnostics=chunk_diag)
-                providers_used.add(used)
-                total_chunk_count += 1
-                if chunk_diag.get("fallback_reason"):
-                    fallback_chunk_count += 1
-                    if chunk_diag["fallback_reason"] not in fallback_reasons:
-                        fallback_reasons.append(chunk_diag["fallback_reason"])
-                ext, payload, params, chunk_dur = measure_audio_chunk(raw_audio, hint=hint_fmt)
-
-                if ext == "wav":
-                    scene_ext = "wav"
-                    if wav_params is None:
-                        wav_params = params
-                    wav_pcm_buf.extend(payload)
-                else:
-                    mp3_buf.extend(payload)
-
-                unit_dur += chunk_dur
-                scene_cursor += chunk_dur
-                has_more = (idx_c + 1 < len(spoken_chunks)) or (idx_u + 1 < len(units))
-                if ext == "wav" and wav_params is not None and has_more:
-                    nch, sw, sr = wav_params
-                    gap_frames = int(round(sr * 0.08))
-                    gap_bytes = b"\x00" * (gap_frames * nch * sw)
-                    wav_pcm_buf.extend(gap_bytes)
-                    scene_cursor += gap_frames / float(max(1, sr))
-                time.sleep(0.05)
-
-            start_sec = unit_start
-            end_sec = round(unit_start + unit_dur, 3)
-            subtitles.append({
-                "text": disp_text,
-                "sentence_idx": sent_idx,
-                "start_sec": start_sec,
-                "end_sec": end_sec,
-            })
-
-            srt_entries.append(
-                f"{srt_idx}\n"
-                f"{format_srt_time(episode_cursor + start_sec)} --> "
-                f"{format_srt_time(episode_cursor + end_sec)}\n"
-                f"{disp_text}\n"
-            )
-            srt_idx += 1
-
-        if scene_ext == "wav" and wav_params is not None:
-            final_bytes = build_wav_bytes(wav_params, bytes(wav_pcm_buf))
-            nch, sw, sr = wav_params
-            scene_duration = round(len(wav_pcm_buf) / float(max(1, nch * sw * sr)), 3)
+        reused = _try_reuse_audio_spine_for_scene(scene, ep_dir, safe_profile_id, spine_by_beat_id)
+        if reused is not None:
+            final_bytes, scene_ext, scene_duration, subtitles = reused
+            reused_scenes += 1
+            unit_count = len(subtitles)
+            if isinstance(spine_data, dict):
+                for p_used in spine_data.get("tts_provider_used") or []:
+                    if p_used:
+                        providers_used.add(str(p_used))
+            for sub in subtitles:
+                srt_entries.append(
+                    f"{srt_idx}\n"
+                    f"{format_srt_time(episode_cursor + float(sub['start_sec']))} --> "
+                    f"{format_srt_time(episode_cursor + float(sub['end_sec']))}\n"
+                    f"{sub['text']}\n"
+                )
+                srt_idx += 1
         else:
+            units = _build_scene_tts_units(scene)
+            unit_count = len(units)
+
+            mp3_buf = bytearray()
+            wav_pcm_buf = bytearray()
+            wav_params: tuple[int, int, int] | None = None
             scene_ext = "mp3"
-            final_bytes = bytes(mp3_buf)
-            scene_duration = round(scene_cursor, 3)
+            subtitles = []
+            scene_cursor = 0.0
+
+            for idx_u, (spoken_chunks, disp_text, sent_idx) in enumerate(units):
+                unit_start = round(scene_cursor, 3)
+                unit_dur = 0.0
+                for idx_c, chunk in enumerate(spoken_chunks):
+                    chunk_diag: dict[str, Any] = {}
+                    raw_audio, used = synthesize_chunk(chunk, config, diagnostics=chunk_diag)
+                    providers_used.add(used)
+                    total_chunk_count += 1
+                    if chunk_diag.get("fallback_reason"):
+                        fallback_chunk_count += 1
+                        if chunk_diag["fallback_reason"] not in fallback_reasons:
+                            fallback_reasons.append(chunk_diag["fallback_reason"])
+                    ext, payload, params, chunk_dur = measure_audio_chunk(raw_audio, hint=hint_fmt)
+
+                    if ext == "wav":
+                        scene_ext = "wav"
+                        if wav_params is None:
+                            wav_params = params
+                        wav_pcm_buf.extend(payload)
+                    else:
+                        mp3_buf.extend(payload)
+
+                    unit_dur += chunk_dur
+                    scene_cursor += chunk_dur
+                    has_more = (idx_c + 1 < len(spoken_chunks)) or (idx_u + 1 < len(units))
+                    if ext == "wav" and wav_params is not None and has_more:
+                        nch, sw, sr = wav_params
+                        gap_frames = int(round(sr * 0.08))
+                        gap_bytes = b"\x00" * (gap_frames * nch * sw)
+                        wav_pcm_buf.extend(gap_bytes)
+                        scene_cursor += gap_frames / float(max(1, sr))
+                    time.sleep(0.05)
+
+                start_sec = unit_start
+                end_sec = round(unit_start + unit_dur, 3)
+                subtitles.append({
+                    "text": disp_text,
+                    "sentence_idx": sent_idx,
+                    "start_sec": start_sec,
+                    "end_sec": end_sec,
+                })
+
+                srt_entries.append(
+                    f"{srt_idx}\n"
+                    f"{format_srt_time(episode_cursor + start_sec)} --> "
+                    f"{format_srt_time(episode_cursor + end_sec)}\n"
+                    f"{disp_text}\n"
+                )
+                srt_idx += 1
+
+            if scene_ext == "wav" and wav_params is not None:
+                final_bytes = build_wav_bytes(wav_params, bytes(wav_pcm_buf))
+                nch, sw, sr = wav_params
+                scene_duration = round(len(wav_pcm_buf) / float(max(1, nch * sw * sr)), 3)
+            else:
+                scene_ext = "mp3"
+                final_bytes = bytes(mp3_buf)
+                scene_duration = round(scene_cursor, 3)
 
         audio_rel = f"audio/{safe_profile_id}/{scene_id}.{scene_ext}"
         audio_path = ep_dir / audio_rel
@@ -2530,9 +2779,10 @@ def process_episode(
         episode_cursor += scene_duration
         total_duration += scene_duration
         if not quiet:
+            reuse_tag = " [reused audio_spine]" if reused is not None else ""
             print(
-                f"[OK] {scene_id}: {len(units)} unit(s) | {scene_duration:.2f}s | "
-                f"{audio_rel} ({audio_path.stat().st_size} bytes)"
+                f"[OK] {scene_id}: {unit_count} unit(s) | {scene_duration:.2f}s | "
+                f"{audio_rel} ({audio_path.stat().st_size} bytes){reuse_tag}"
             )
 
     srt_content = "\n".join(srt_entries)
@@ -2544,6 +2794,8 @@ def process_episode(
     root_srt_path.write_text(srt_content, encoding="utf-8")
 
     effective_profile = config.get("resolved_profile_id") or safe_profile_id
+    if not providers_used and config.get("provider"):
+        providers_used.add(str(config.get("provider")))
     used_list = sorted(providers_used)
     provider_label = used_list[0] if len(used_list) == 1 else (config.get("provider") or "edge")
     fallback_reason_str: str | None = "; ".join(fallback_reasons) if fallback_reasons else None
@@ -2586,7 +2838,10 @@ def process_episode(
         )
 
     if not quiet:
-        print(f"\nEpisode total duration: {total_duration:.2f}s | Track: {safe_profile_id} | SRT: {root_srt_path}")
+        print(
+            f"\nEpisode total duration: {total_duration:.2f}s | Track: {safe_profile_id} | "
+            f"Reused scenes: {reused_scenes} | SRT: {root_srt_path}"
+        )
 
     return {
         "ok": True,
@@ -2599,6 +2854,7 @@ def process_episode(
         "tts_fallback_reason": fallback_reason_str,
         "total_duration_sec": script["total_duration_sec"],
         "scenes_count": len(script.get("scenes", [])),
+        "reused_scenes": reused_scenes,
         "srt_path": str(root_srt_path),
         "track_srt_path": str(track_srt_path),
     }
