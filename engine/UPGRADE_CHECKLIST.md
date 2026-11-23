@@ -81,8 +81,47 @@
 
 ---
 
+## v2 — Deep-Dive Multi-Part Course Factory, Independent Reviewers, 11 Components & Level-1 Cleanup
+
+### Wave 1 — Core Foundation & Level-1 Cleanup
+- [x] **v2-1.1 Level-1 Legacy Cleanup & Render Upgrade (`cleanup-render`):**
+  - [x] Extract 7 shared encode/mux helpers from `exporter.mjs` into `engine/src/video_encode_utils.mjs` and rewire `engine/src/hf_encoder.mjs`.
+  - [x] Delete legacy Canvas 2D renderer (`engine/src/exporter.mjs`, `engine/src/canvas_templates/*`) and Canvas-only bokeh/sparkle FX in `engine/src/motion/kernel.mjs` (preserving `ParticleStage.mjs` overlay).
+  - [x] Remove `--engine legacy` from `engine/render_video.mjs`, default FPS to `30`, add `--part <part_id>` preview rendering, scale timeout for long episodes, and wire `partId` in `engine/hyperframes/{render,studio_server}.mjs`.
+- [x] **v2-1.2 Multi-Part State CLI & TTS Audio-Spine Reuse (`state-tts`):**
+  - [x] Extend `inspectEpisodeArtifacts` & `state/<epId>.json` schema (`parts[]`, `merged_at`) in `engine/state_cli.mjs`.
+  - [x] Implement `parts`, `set-part`, and `merge-parts` (deterministic script/audio remap/SRT offset/notes TOC merge) + export `getEpisodeParts`, `setPartState`, `mergeEpisodeParts`.
+  - [x] Fix `engine/tts_pipeline.py` to reuse matching `audio_spine.json` beats in `process_episode()` (zero duplicate TTS calls) and align `cue_sentence` for the 4 new templates (`messages`, `steps`, `focus_steps`, `branches`).
+- [x] **v2-1.3 Independent Reviewer Skills & SSOT Sync (`skills-ssot`):**
+  - [x] Author `plugin/tech-video-studio/skills/curriculum-reviewer/SKILL.md` and `content-reviewer/SKILL.md` (mandatory independent review rubrics).
+  - [x] Upgrade `curriculum-architect`, `episode-producer`, `video-renderer`, `studio-worker`, `AGENTS.md`, `plugin/tech-video-studio/rules/AGENTS.md`, `README.md`, `GUIDE.md`, and `setup_adapters.mjs` for Deep-Dive Multi-Part (`<= 5m` parts) & 11 templates.
+  - [x] Delete duplicate `.claude/skills/`, `.agents/skills/`, `CLAUDE.md`, `README.en.md` and resync via `node setup.mjs --workspace --global` (`OK`, 11 files each).
+
+### Wave 2 — AI Engine, 4 New Visual Components & Studio Web UI
+- [ ] **v2-2.1 Deep-Course Multi-Part AI Pipeline (`ai-pipeline`):**
+  - [ ] Add 5th role `"content_reviewer"` to `VALID_PIPELINE_ROLES` in `engine/ai/providers.mjs`.
+  - [ ] Unify `engine/ai/runner.mjs` on `deep_course` (remove `single_pass`/`two_pass`/`auto`/`storyboard_only`), add `episode_canon` + `parts[] (<= 5m)`, per-part Stage 2 + handoff, Stage 2.5 independent `content_reviewer` loop (max 2 rounds), and per-part Stage 3 Visual Compile (11-template diversity).
+  - [ ] Update `engine/ai/queue_broker.mjs` to route `content_reviewer`, support optional `part_id` & `pause_after: "brief" | "part_review" | "dialogue" | "none"`, and persist `parts/<part_id>/*` + `brief_review.md`.
+- [ ] **v2-2.2 Expand Visual Library 7 -> 11 Components (`visual-components`):**
+  - [ ] Register `"sequence_diagram"`, `"memory_layout"`, `"code_diff"`, `"concept_breakdown"` in `template_schema.mjs` & `diagram_validator.mjs` (+ Visual Variety Guard warnings).
+  - [ ] Build 4 deterministic HyperFrames scenes + CSS (`engine/hyperframes/runtime/scenes/*.mjs`, `tvs-hf-main.mjs`, `tvs-hf.css`, `compiler.mjs` with `code_diff` Shiki + `partId`).
+  - [ ] Build 4 matching pure-ESM React components (`SequenceDiagram.mjs`, `MemoryLayout.mjs`, `CodeDiff.mjs`, `ConceptBreakdown.mjs`) and document all 11 components in `engine/VISUAL_COMPONENTS.md`.
+- [ ] **v2-2.3 Studio Web UI & Server Multi-Part Workflow (`studio-web-ui`):**
+  - [ ] Remove `legacy` render engine option (`server.mjs`, `studio.mjs`), default export FPS to `30`, expose `parts[]` in `/api/courses`, add `GET /api/episodes/part`, `POST /api/episodes/part/approve`, `POST /api/episodes/merge-parts`, and `part_id` support in `routes/media.mjs` & `/api/render`.
+  - [ ] Add 5th role in `RoleRoutingPanel.mjs`; streamline `AiScriptModal.mjs` for `deep_course`; upgrade `ScriptingStageModal.mjs` (part selector, `review.md` tab, Approve Part, Merge Parts); add Part Switcher + 4 new React templates in `studio.mjs` & `styles.css`.
+
+### Wave 3 — Verification & Documentation
+- [ ] **v2-3.1 Test Suite Cleanup & End-to-End Verification (`verifier`):**
+  - [ ] Clean dead legacy/`two_pass` tests and add 11-template + Visual Variety Guard checks in `engine/test_ai_bridge_and_templates.mjs`.
+  - [ ] Upgrade `engine/test_phase1_three_stage.mjs` (5-role routing, `REVISE -> APPROVED` review loop, `set-part`/`merge-parts`, TTS Audio-Spine reuse).
+  - [ ] Upgrade `engine/test_hyperframes.mjs` (all 11 templates determinism + Layout QC `errors=0`, `--part part_01` & merged episode render).
+  - [ ] Pass `REDIS` backward-compatibility checks, `setup.mjs --check --json`, live UI smoke check, and finalize `engine/UPGRADE_CHECKLIST.md` + `CHANGELOG.md`.
+
+---
+
 ## Handover Snapshot (Updated After Each Phase)
-- **Current Phase:** **Phase 3 COMPLETED (2026-11-20)** — All 3 Upgrade Phases Implemented & Independently Verified
+- **Current Phase:** **v2 Wave 1 COMPLETED** (`937c2e9`, `20dd309`, `098a64f`) — Starting **Wave 2** (`ai-pipeline`, `visual-components`, `studio-web-ui`)
+- **Prior Baseline (v1 Completed 2026-11-20):** Phases 1–3 passed (`test_phase1_three_stage` 5/5, `test_hyperframes` 9/9, `test_ai_bridge_and_templates` 17/17, `REDIS` valid).
 - **Phase 3 Files Created:**
   - `engine/src/components/ai/RoleRoutingPanel.mjs` (collapsible `🧭 Định tuyến AI theo vai trò` UI for `outliner`, `brief_scriptwriter`, `visual_director`, `repair` via `POST /api/ai/preferences/routing`, dynamic `builtin` provider/model discovery, custom model input, zero hardcoded models)
   - `engine/hyperframes/layout_qc.mjs` (`DEFAULT_QC_CHECKPOINTS = [0.1, 0.5, 0.9]`, `buildLayoutQcExpression`, `runCompositionLayoutQc`, `formatLayoutQcSummary`, 6 DOM layout/safe-zone checks + `--hfForceTimelineRebind`)
