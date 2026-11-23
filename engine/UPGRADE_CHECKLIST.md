@@ -111,42 +111,35 @@
   - [x] Add 5th role in `RoleRoutingPanel.mjs`; streamline `AiScriptModal.mjs` for `deep_course`; upgrade `ScriptingStageModal.mjs` (part selector, `review.md` tab, Approve Part, Merge Parts); add Part Switcher + 4 new React templates in `studio.mjs` & `styles.css`.
 
 ### Wave 3 — Verification & Documentation
-- [ ] **v2-3.1 Test Suite Cleanup & End-to-End Verification (`verifier`):**
-  - [ ] Clean dead legacy/`two_pass` tests and add 11-template + Visual Variety Guard checks in `engine/test_ai_bridge_and_templates.mjs`.
-  - [ ] Upgrade `engine/test_phase1_three_stage.mjs` (5-role routing, `REVISE -> APPROVED` review loop, `set-part`/`merge-parts`, TTS Audio-Spine reuse).
-  - [ ] Upgrade `engine/test_hyperframes.mjs` (all 11 templates determinism + Layout QC `errors=0`, `--part part_01` & merged episode render).
-  - [ ] Pass `REDIS` backward-compatibility checks, `setup.mjs --check --json`, live UI smoke check, and finalize `engine/UPGRADE_CHECKLIST.md` + `CHANGELOG.md`.
+- [x] **v2-3.1 Test Suite Cleanup & End-to-End Verification (`verifier`):**
+  - [x] Clean dead legacy/`two_pass` tests and add 11-template + Visual Variety Guard checks in `engine/test_ai_bridge_and_templates.mjs`.
+  - [x] Upgrade `engine/test_phase1_three_stage.mjs` (5-role routing, `REVISE -> APPROVED` review loop, `set-part`/`merge-parts`, TTS Audio-Spine reuse).
+  - [x] Upgrade `engine/test_hyperframes.mjs` (all 11 templates determinism + Layout QC `errors=0`, `--part part_01` & merged episode render).
+  - [x] Pass `REDIS` backward-compatibility checks, `setup.mjs --check --json`, live UI smoke check, and finalize `engine/UPGRADE_CHECKLIST.md` + `CHANGELOG.md`.
 
 ---
 
 ## Handover Snapshot (Updated After Each Phase)
-- **Current Phase:** **v2 Wave 2 COMPLETED** (`ca07d3a`, `e71ec8e`, `31628f4`) — Starting **Wave 3** (`verifier`)
-- **Prior Baseline (v1 Completed 2026-11-20):** Phases 1–3 passed (`test_phase1_three_stage` 5/5, `test_hyperframes` 9/9, `test_ai_bridge_and_templates` 17/17, `REDIS` valid).
-- **Phase 3 Files Created:**
-  - `engine/src/components/ai/RoleRoutingPanel.mjs` (collapsible `🧭 Định tuyến AI theo vai trò` UI for `outliner`, `brief_scriptwriter`, `visual_director`, `repair` via `POST /api/ai/preferences/routing`, dynamic `builtin` provider/model discovery, custom model input, zero hardcoded models)
-  - `engine/hyperframes/layout_qc.mjs` (`DEFAULT_QC_CHECKPOINTS = [0.1, 0.5, 0.9]`, `buildLayoutQcExpression`, `runCompositionLayoutQc`, `formatLayoutQcSummary`, 6 DOM layout/safe-zone checks + `--hfForceTimelineRebind`)
-- **Phase 3 Files Modified:**
-  - *Phase 3.1:* `engine/src/components/ai/BrandHealthGrid.mjs`, `engine/src/components/AiScriptModal.mjs`, `engine/public/styles.css`, `engine/test_phase1_three_stage.mjs`
-  - *Phase 3.2:* `engine/hyperframes/snapshot.mjs`, `engine/hyperframes/verify_video.mjs`, `engine/hyperframes/render.mjs`, `engine/render_video.mjs`, `engine/test_hyperframes.mjs`
-  - *Phase 3.3:* `AGENTS.md`, `plugin/tech-video-studio/rules/AGENTS.md`, `plugin/tech-video-studio/skills/{episode-producer,studio-worker,video-renderer}/SKILL.md`, `plugin/tech-video-studio/README.md`, `README.md`, `README.en.md`, `engine/UPGRADE_CHECKLIST.md`, `CHANGELOG.md` *(plus regenerated gitignored adapters `.agents/` and `.claude/` via `node setup.mjs --agents all`)*
-- **Git Staging Note:** Root `.gitignore` line 20 (`/*/hyperframes/`) ignores untracked files inside `*/hyperframes/`, so **`git add -f engine/hyperframes/layout_qc.mjs`** is required when staging `layout_qc.mjs`.
-- **Phase 3 Verification Results (Independent Verifier, Exit Code 0, Isolated Temp Runs):**
-  - `node engine/test_phase1_three_stage.mjs` → **PASS (`5/5` sections, exit 0)** (includes Phase 3.1 headless Chrome `RoleRoutingPanel` verification in Roadmap + `AiScriptModal`, `0` console/page errors).
-  - `node engine/test_hyperframes.mjs` (full run, no `--skip-render`) → **PASS (`9/9` checks, exit 0)**:
-    - BS.1770 DSP: `-28.64 → -16 LUFS`; `ep03-qc-broken` mix: `-19.24 → -16 LUFS` (`peak 0.4691`).
-    - `HFTEST/ep01-demo`: determinism (7 frames) + strict Layout QC PASS (`scenes=7, frames=21, checkpoints=[0.1,0.5,0.9], errors=0, warnings=0`).
-    - `HFTEST/ep02-phase2`: Light/Dark + `SharpTag` + BGM determinism + strict Layout QC PASS (`scenes=4, frames=12, checkpoints=[0.1,0.5,0.9], errors=0, warnings=0`).
-    - `HFTEST/ep03-qc-broken`: strict Layout QC FAIL (`scenes=2, frames=6, errors=223, warnings=3`, plus direct `topbar_collision` probe) and triggers `qcStrict` failures in both `snapshot.mjs` and `render.mjs`.
-    - `render_video.mjs` + `verifyEpisodeVideo({ checkLayout: true })` on `hf-e2e.mp4`: `1280x720`, `17.51s`, `audio rms 0.122`, **`-16.02 LUFS`**, `qc scenes=7 errors=0`.
-  - `node engine/test_ai_bridge_and_templates.mjs` → **PASS (`17/17` sections, exit 0)**.
-  - `node engine/state_cli.mjs summary --course REDIS` → `Total: 10 | planned: 7 | scripting: 1 | script_ready: 1 | completed: 1`.
-  - `node engine/state_cli.mjs validate-diagrams --course REDIS` → `ep01`, `ep02`, `ep03` all **`0 errors, 0 warnings`**.
-  - Real-Episode DOM Layout QC (`node engine/hyperframes/snapshot.mjs --course REDIS --episode ep01-redis-in-memory-architecture --check-layout`) → **PASS (`scenes=5, frames=15, checkpoints=[0.1,0.5,0.9], errors=0, warnings=0`, `0` console/page errors)**.
-  - `node setup.mjs --check --json` → `engine.ok: true`, `workspace.ok: true` (`fileCount: 9`), `global.ok: true`, `adapters.antigravityPlugin.ok: true`, `agentSkills.ok: true`, `claudeSkills.ok: true`, `claudeMcp.ok: true` (`claudeDesktop.ok: false` — not installed/requested).
-  - Live Studio UI Headless Chrome Smoke Check (`?view=projects`, `?course=REDIS&view=roadmap` w/ `RoleRoutingPanel` save `1/4 tùy chỉnh` + reset `Mặc định chung` & `AiScriptModal` `three_stage` compact panel, `?course=REDIS&ep=ep01-redis-in-memory-architecture&view=player`) → **`0` console/page/log errors across all 3 views**.
-- **Phase 1 & 2 Baseline Artifacts:**
-  - *Phase 2 Created:* `engine/scripts/generate_sfx_assets.mjs`, `engine/assets/sfx/{whoosh_short,pop,click,typing_fast,impact,chime}.wav`, `engine/src/audio_dsp.mjs`
-  - *Minor Pre-Existing Note:* `engine/worker_wait.mjs:29` defaults `args.model || "Gemini 4 Argon"` when `--model` is omitted (`studio-worker/SKILL.md` passes `--model` explicitly).
-- **Next Resume Action (Ready for Release / Commit):**
-  1. Stage modified/new files (using `git add -f engine/hyperframes/layout_qc.mjs` so root `.gitignore`'s `/*/hyperframes/` rule does not skip it).
-  2. Proceed with course production or future feature sprints following `AGENTS.md` and `README.md`.
+- **Current Phase:** **v2 COMPLETED (Waves 1, 2 & 3 Verified)**
+- **Wave Commits on `main` (since `5ec798f`):**
+  - *Wave 1:* `937c2e9` (`cleanup-render`), `20dd309` (`state-tts`), `098a64f` (`skills-ssot`), `fa856e4` (Wave 1 checklist)
+  - *Wave 2:* `ca07d3a` (`ai-pipeline`), `e71ec8e` (`visual-components`), `31628f4` (`studio-web-ui`), `9bd64f6` (SSOT field alignment & Wave 2 complete)
+  - *Wave 3:* `verifier` test suite upgrade (`test_ai_bridge_and_templates.mjs`, `test_phase1_three_stage.mjs`, `test_hyperframes.mjs`, plus `--part` support in `snapshot.mjs` & `verify_video.mjs`) and release documentation (`engine/UPGRADE_CHECKLIST.md`, `CHANGELOG.md`)
+- **v2 Net Diff Stats (`5ec798f..HEAD`):** `62 files changed, 14460 insertions(+), 7624 deletions(-)` (`9` legacy files deleted including `engine/src/exporter.mjs`, `engine/src/canvas_templates/*`, `CLAUDE.md`, `README.en.md`; `12` new files created including `engine/src/video_encode_utils.mjs`, `engine/VISUAL_COMPONENTS.md`, 2 independent reviewer skills `curriculum-reviewer` & `content-reviewer`, 4 HyperFrames scene modules, and 4 React components `SequenceDiagram`, `MemoryLayout`, `CodeDiff`, `ConceptBreakdown`).
+- **v2 Wave 3 Verification Results (All Exit Code 0):**
+  - `node "setup.mjs" --workspace --global` & `node "setup.mjs" --check --json` → **PASS (exit 0)** (`node 22.10.0`, `python 3.13.5`, `chrome.exe` found, `engine.ok: true`, `workspace.ok: true` with `fileCount: 11`, `global.ok: true` with `fileCount: 11`).
+  - `python -m py_compile "engine/tts_pipeline.py"` → **PASS (exit 0)**.
+  - `node "engine/state_cli.mjs" summary --course REDIS` → **PASS (exit 0)** (`Total: 10 | planned: 4 | scripting: 1 | completed: 5`).
+  - `node "engine/state_cli.mjs" validate-diagrams --course REDIS` → **PASS (exit 0)** (`ep01`..`ep06` all `0 errors, 0 warnings`, zero regression on single-script episodes).
+  - `node "engine/test_hyperframes.mjs"` (full run, no `--skip-render`) → **PASS (`12/12` checks, exit 0)**:
+    - Vendor manifest (`14` ESM modules, `3` pinned raw files), `audio_probe`, `computeTimeline`, and BS.1770-4 DSP (`-28.64 → -16 LUFS`).
+    - Core 7 templates (`HFTEST/ep01-demo`, 21 frames), Phase 2 Light/Dark + BGM (`ep02-phase2`, 12 frames), and all 4 new engineering templates (`sequence_diagram`, `memory_layout`, `code_diff`, `concept_breakdown`) in BOTH Dark & Light themes (`ep04-new-templates`, 8 scenes, 24 frames): determinism + strict Layout QC **PASS (`errors=0, warnings=0`)**.
+    - Synthetic broken fixture (`ep03-qc-broken`): triggers all 6 layout QC checks (`errors=223, warnings=3`, plus direct `topbar_collision`) and fails `qcStrict`.
+    - Full E2E renders + `verifyEpisodeVideo({ checkLayout: true })`: `hf-e2e.mp4` (`1280x720`, `17.51s`, `-16.02 LUFS`, `qc scenes=7 errors=0`), single-part preview `--part part_01` (`part_01.mp4`, `4.42s`, `-16.02 LUFS`, `qc scenes=2 errors=0 warnings=0`), and post-merge full episode `ep05-merged.mp4` reading remapped `parts/part_k/audio/*` (`8.81s`, `-16.02 LUFS`, `qc scenes=4 errors=0 warnings=0`).
+  - `node "engine/test_phase1_three_stage.mjs"` → **PASS (`6/6` sections, exit 0)**:
+    - 5-role dynamic routing (`outliner`, `brief_scriptwriter`, `content_reviewer`, `visual_director`, `repair`), `pause_after` gates (`brief`, `dialogue`, `part_review`, `none`), `auto_produce` guardrail, `audio_spine.json` beat reuse (`reused_scenes === 2`, `0` duplicate TTS calls), multi-part `deep_course` with fresh-context `content_reviewer` (`REVISE` round 1 with `rewrite_instructions` → `APPROVED` round 2 writing `review.md`), `part_02` handoff, 4-new-template cue alignment, `state_cli.mjs` `parts` / `set-part --approved true` / `merge-parts`, and headless Chrome UI verification of 5-role `RoleRoutingPanel` (`2/5 tùy chỉnh`, `1/5 tùy chỉnh`) + `ScriptingStageModal` (`4. 🛡️ AI Review` tab & Part Switcher, `0` console/page errors).
+  - `node "engine/test_ai_bridge_and_templates.mjs"` → **PASS (`18/18` sections, exit 0)**:
+    - Kernel state, validator unit checks, MCP stdio + HTTP `/mcp` (`9` tools, `11` supported visual types), worker wakeup, Chrome UI preview, HyperFrames WebM export + `--engine legacy` removal rejection, `auto_produce` & TTL expiry, 9-provider zero-key-leakage handshakes, 7-episode `deep_course` batch 429 pause & DeepSeek resume (`5` episodes × `5` stages = `25` requests), universal setup adapters (`6` skills), multi-voice A/B & 2-layer alignment, video management, 11-template SSOT schema (`buildTemplatesSchemaDoc`), Zero-LLM DAG auto-layout, unified `deep_course` runner + targeted scene-level `repairInvalidScenes`, `/courses/*` whitelist & atomic `/api/save-video`, and all **11 visual templates** + **Visual Variety Guard** (`duplicate-adjacent-visual-type`, `code_cli` setup continuation exception, `low-visual-variety`).
+  - Live Studio UI Headless Chrome Smoke Check (`view=projects`, `view=roadmap` w/ `course=REDIS` + 5-role `RoleRoutingPanel` + `AiScriptModal` `deep_course` controls, `view=player` on single-script `REDIS/ep02` and multi-part fixture exercising Part Switcher + `SequenceDiagram`, `MemoryLayout`, `CodeDiff`, `ConceptBreakdown` + `ScriptingStageModal` `4. 🛡️ AI Review` tab) → **PASS (`0` console errors, `0` page errors, `0` broken imports)**.
+- **Next Resume Action:**
+  - v2 upgrade is complete and committed on `main`. Proceed with deep-dive multi-part course authoring and video production following `AGENTS.md`, `GUIDE.md`, and `engine/VISUAL_COMPONENTS.md`.

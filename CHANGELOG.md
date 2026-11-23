@@ -4,6 +4,55 @@ Ghi chép các thay đổi đã hoàn thiện và kiểm thử trong `TechVideoS
 
 ---
 
+## [v2.0 / 2026-11-23] — Deep-Dive Multi-Part Course Factory, Independent Reviewers (`curriculum-reviewer` & `content_reviewer`), 11 Visual Components & Level-1 Cleanup
+
+### 1. Kiến trúc Khóa học Chuyên sâu Đa Phần (`deep_course`, Không Giới Hạn 3–5 Phút/Tập)
+- **Mở khóa thời lượng bài học theo chiều sâu kỹ thuật (`course_depth: "deep_dive"`):**
+  - Thời lượng tổng mỗi tập do `curriculum-architect` quyết định theo độ phức tạp kiến thức (thường **10–25 phút/tập**), tự động chia thành các phần độc lập **`parts/part_01..part_N` (`<= 5 phút` / `max_part_duration_sec: 300`, ~600–850 từ tiếng Việt đọc)** để người học và tác giả dễ kiểm duyệt từng phần trước khi gộp.
+  - Bổ sung `episode_canon` (`shared_glossary`, `running_example`, `target_audience_assumptions`) trong `brief.json` cùng `entry_bridge` / `exit_bridge` và cơ chế truyền `previousPartHandoff` giữa các phần để `part_02+` nối mạch tự nhiên, không lặp lại phần chào mở đầu hay kết bài.
+- **Quản lý Trạng thái & Gộp Đa Phần Tất Định (`engine/state_cli.mjs`):**
+  - Bổ sung 3 lệnh CLI mới: `parts --course <C> --ep <E> [--json]`, `set-part --course <C> --ep <E> --part <P> [--status ...] [--ai-verdict APPROVED|REVISE] [--approved true|false]`, và `merge-parts --course <C> --ep <E> [--force]`.
+  - `merge-parts` kiểm tra toàn bộ các phần đã được duyệt (`approved === true`), tự động gắn tiền tố `<part_id>_` cho `scene.id`, ánh xạ lại đường dẫn âm thanh `parts/<part_id>/audio/<profile>/*` và `voice_tracks` (không nhân bản file âm thanh trên đĩa), cộng dồn mốc thời gian `subtitles.srt` liên tục qua các phần, tổng hợp mục lục `notes.md`, chạy `validateScriptDiagrams`, và bật `production.tts_done = true` khi tất cả các phần đã có audio.
+
+### 2. Hai Cổng Phản Biện Độc Lập (`curriculum-reviewer` & `content_reviewer`) + Định Tuyến 5 Vai Trò
+- **Bộ 6 Kỹ năng Antigravity (`plugin/tech-video-studio/skills/`):**
+  - Thêm **`curriculum-reviewer`** (`plugin/tech-video-studio/skills/curriculum-reviewer/SKILL.md`): subagent ngữ cảnh sạch kiểm định `course.json` + `curriculum.md` theo 5 tiêu chí và xuất `<COURSE>/curriculum_review.md` (`APPROVED` / `REVISE`) tối đa 2 vòng trước khi chạy `state_cli.mjs init`.
+  - Thêm **`content-reviewer`** (`plugin/tech-video-studio/skills/content-reviewer/SKILL.md`): subagent ngữ cảnh sạch kiểm định `brief.json` (`brief_review.md`) và từng `parts/<part_id>/dialogue.json` + `notes.md` (`parts/<part_id>/review.md`) theo 5 tiêu chí (*Coverage & Fidelity*, *Technical Depth & Proof*, *Pedagogical Clarity & Dual-Text TTS*, *Part Pacing <= 300s & Continuity*, *Notes Completeness*).
+- **Vòng lặp Phản biện Ngữ cảnh Sạch & Định tuyến 5 Vai trò (`engine/ai/providers.mjs`, `engine/ai/runner.mjs`, `engine/ai/queue_broker.mjs`):**
+  - Mở rộng `VALID_PIPELINE_ROLES` lên **5 vai trò**: `outliner`, `brief_scriptwriter`, `content_reviewer`, `visual_director`, `repair`.
+  - Thống nhất chế độ sinh kịch bản về **`deep_course`** (tương thích ngược các bí danh cũ): Stage 1 (`brief.json`) → Stage 1.5 (`brief_review.md`) → theo từng phần Stage 2 (`dialogue.json` + `notes.md`) → Stage 2.5 (`content_reviewer` chạy trong ngữ cảnh sạch `messages.length === 2`, tự động truyền `rewrite_instructions` để viết lại tối đa 2 vòng khi `REVISE`) → Stage 3 (biên dịch sang 11 visual templates + `repairInvalidScenes`).
+  - Hỗ trợ cổng dừng `pause_after: "none" | "brief" | "part_review" | "dialogue"` và `start_from: "brief" | "dialogue" | "visual"` (+ `part_id`), luôn cưỡng bức `auto_produce = false` khi dừng ở cổng trung gian.
+
+### 3. Mở Rộng Thư Viện Trực Quan 7 → 11 Templates & Visual Variety Guard
+- **4 Template Kỹ thuật Chuyên sâu Mới (`engine/src/template_schema.mjs`, `engine/src/diagram_validator.mjs`, `engine/VISUAL_COMPONENTS.md`):**
+  - **`sequence_diagram`**: Sơ đồ chuỗi thời gian đa tác nhân (`actors[]`, `messages[]` đồng bộ/bất đồng bộ/trả về/tự gọi, `highlights[]`).
+  - **`memory_layout`**: Cấu trúc bộ nhớ, thanh ghi, slab/ring buffer, page table (`lanes[].cells[]` với trạng thái `idle|active|match|write|danger`, `steps[]` với `highlight_cells[]` và con trỏ `pointers[]` `from_lane`/`from_cell` → `to_lane`/`to_cell`).
+  - **`code_diff`**: So sánh mã nguồn và cấu hình Trước vs. Sau song song (`left_lines[]`, `right_lines[]`, `focus_steps[]` tô sáng dòng 1-based kèm Shiki syntax tokens).
+  - **`concept_breakdown`**: Phân rã kiến trúc trung tâm và các nhánh nguyên lý (`core`, `branches[]` kèm `progress_start..progress_end` và metric badge, `takeaway`).
+- **Đối xứng HyperFrames Runtime & Studio React Player (Dark & Light Themes):**
+  - Thêm 4 module HyperFrames DOM + GSAP (`engine/hyperframes/runtime/scenes/{sequence_diagram,memory_layout,code_diff,concept_breakdown}.mjs`) và 4 component React thuần ESM (`engine/src/components/{SequenceDiagram,MemoryLayout,CodeDiff,ConceptBreakdown}.mjs`).
+  - **Visual Variety Guard (`diagram_validator.mjs`):** Cảnh báo khi lặp lại cùng một `visual_type` ở hai scene liên tiếp (`duplicate-adjacent-visual-type`, có ngoại lệ cho chuỗi lab `code_cli`) hoặc khi tập/phần có từ 4 scenes trở lên nhưng dùng dưới 3 loại template (`low-visual-variety`), đồng thời căn chỉnh phụ đề Layer 1 trong `engine/tts_pipeline.py` cho cả 11 templates.
+
+### 4. Tái Sử Dụng Audio-Spine (`reused_scenes`), Dọn Dẹp Level-1 & Render `--part` @ 30fps
+- **Tái sử dụng Beat Audio-Spine Không Gọi Lại TTS (`engine/tts_pipeline.py`):**
+  - Khi `audio_spine.json` đã được khóa trước Stage 3, `process_episode()` tự động ghép nối lại các file âm thanh beat khớp `beat_id` và `tts_text` đã chuẩn hóa (`reused_scenes`), tiết kiệm 100% lượt gọi TTS trùng lặp.
+- **Dọn dẹp Level-1 & Chuẩn hóa HyperFrames Duy Nhất (`engine/render_video.mjs`, `engine/src/video_encode_utils.mjs`):**
+  - Xóa bỏ hoàn toàn trình xuất Canvas 2D cũ (`engine/src/exporter.mjs`, `engine/src/canvas_templates/*` — 7 file) và các tài liệu trùng lặp ở thư mục gốc (`CLAUDE.md`, `README.en.md`), trích xuất các tiện ích mã hóa dùng chung sang `engine/src/video_encode_utils.mjs`.
+  - Đặt tốc độ khung hình mặc định là **`30` fps** trên toàn hệ thống (`render_video.mjs`, `server.mjs`, `studio.mjs`) và bổ sung cờ **`--part <part_id>`** trên `render_video.mjs`, `render.mjs`, `compiler.mjs`, `studio_server.mjs`, `snapshot.mjs`, `verify_video.mjs`, `hf_encoder.mjs`, và `routes/media.mjs` để xuất/kiểm định nhanh video preview cho từng phần (`episodes/<ep>/parts/<part_id>/<part_id>.mp4`) cũng như video tổng sau khi chạy `merge-parts`.
+- **Nâng cấp Giao diện Web Studio (`engine/src/studio.mjs`, `AiScriptModal.mjs`, `ScriptingStageModal.mjs`, `RoleRoutingPanel.mjs`):**
+  - Cập nhật `RoleRoutingPanel` hỗ trợ 5 vai trò (`N/5 tùy chỉnh`), tinh gọn `AiScriptModal` cho luồng `deep_course`, bổ sung thanh chọn Phần (`stage-parts-selector`), tab **`4. 🛡️ AI Review`** (`review.md`), nút **Duyệt Part** & **Gộp Parts** trong `ScriptingStageModal`, và thanh **Part Switcher** (`.player-part-switcher`) ngay trên Studio Player.
+
+### 5. Kết Quả Kiểm Thử Đầu-Cuối (Wave 3 Verified, Exit Code 0)
+- **Thống kê Git (`5ec798f..HEAD`):** `62 files changed, 14460 insertions(+), 7624 deletions(-)` (xóa 9 file legacy, thêm 12 file mới).
+- **`node setup.mjs --workspace --global` & `node setup.mjs --check --json`:** PASS (`fileCount: 11` bao gồm 6 skills đồng bộ tại workspace & global).
+- **`python -m py_compile engine/tts_pipeline.py` & `node engine/state_cli.mjs validate-diagrams --course REDIS`:** PASS (`ep01`..`ep06` đạt `0 errors, 0 warnings`).
+- **`node engine/test_hyperframes.mjs` (full render, không `--skip-render`):** **PASS (`12/12` checks, exit 0)** — toàn bộ 11 templates (bao gồm 4 templates mới ở cả hai giao diện Dark & Light) vượt qua kiểm định tính tất định và strict Layout QC (`errors=0, warnings=0`), render preview `--part part_01` (`4.42s`, `-16.02 LUFS`, `0` lỗi QC) và render tập gộp `merge-parts` (`8.81s`, `-16.02 LUFS`, `0` lỗi QC).
+- **`node engine/test_phase1_three_stage.mjs`:** **PASS (`6/6` sections, exit 0)** — kiểm chứng định tuyến 5 vai trò, luồng đa phần `deep_course`, vòng lặp `content_reviewer` ngữ cảnh sạch (`REVISE` vòng 1 → `APPROVED` vòng 2), handoff sang `part_02`, tái sử dụng `audio_spine.json` (`reused_scenes=2`, `0` lượt gọi TTS dư thừa), `state_cli.mjs parts / set-part / merge-parts`, và giao diện Chrome UI 5 vai trò + tab `4. 🛡️ AI Review`.
+- **`node engine/test_ai_bridge_and_templates.mjs`:** **PASS (`18/18` sections, exit 0)** — kiểm chứng toàn bộ 11 templates, Visual Variety Guard (`duplicate-adjacent-visual-type`, ngoại lệ nối tiếp `code_cli`, `low-visual-variety`), từ chối `--engine legacy`, batch 7 tập `deep_course` tạm dừng 429 & tiếp tục qua DeepSeek, và đồng bộ 6 skills.
+- **Live Studio UI Headless Chrome Smoke Check:** **PASS (`0` console errors, `0` page errors, `0` broken imports)** trên `view=projects`, `view=roadmap` (`course=REDIS`), và `view=player` (`REDIS/ep02` + tập đa phần với Part Switcher, 4 React components mới và `ScriptingStageModal`).
+
+---
+
 ## [Unreleased / 2026-11-20] — Phase 3: Per-Role Routing UI, Automated DOM Safe-Zone QC Gate & Plugin/Skills Sync
 
 ### 1. Per-Role AI Provider Routing UI (Phase 3.1)

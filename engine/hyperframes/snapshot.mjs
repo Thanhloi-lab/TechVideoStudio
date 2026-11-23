@@ -68,6 +68,7 @@ function parseArgs(argv) {
   const o = {
     course: "",
     episode: "",
+    part: "",
     times: [],
     scene: null,
     at: [],
@@ -84,6 +85,7 @@ function parseArgs(argv) {
     const next = () => argv[++i] ?? "";
     if (a === "--course") o.course = next();
     else if (a === "--episode" || a === "--ep") o.episode = next();
+    else if (a === "--part" || a === "--part-id") o.part = next();
     else if (a === "--times") o.times = next().split(",").map(Number).filter(Number.isFinite);
     else if (a === "--scene") o.scene = next();
     else if (a === "--at") o.at = next().split(",").map(Number).filter(Number.isFinite);
@@ -109,11 +111,13 @@ export async function captureSnapshots(opts) {
   const server = await ensureStudioServer(opts.port, { workspaceRoot: WORKSPACE_ROOT });
   let chrome = null;
   try {
-    const episode = await fetchEpisodePayload(opts.port, opts.course, opts.episode);
+    const partId = String(opts.partId || opts.part || "").trim();
+    const episode = await fetchEpisodePayload(opts.port, opts.course, opts.episode, partId);
     const { manifest, projectDir } = await compileEpisodeProject({
       workspaceRoot: WORKSPACE_ROOT,
       courseId: opts.course,
       episode,
+      partId,
       speed: opts.speed,
     });
 
@@ -150,7 +154,7 @@ export async function captureSnapshots(opts) {
       { sessionId }
     );
     await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: buildRenderBridgeScript({ fps: 60 }) }, { sessionId });
-    await navigate(cdp, sessionId, projectUrl(opts.port, opts.course, opts.episode));
+    await navigate(cdp, sessionId, projectUrl(opts.port, opts.course, opts.episode, "index.html", partId));
 
     const ready = await waitForComposition((expr) => evaluate(cdp, sessionId, expr), { sleepFn: sleep });
     for (const e of ready.buildErrors || []) errors.push(`[build] ${e}`);

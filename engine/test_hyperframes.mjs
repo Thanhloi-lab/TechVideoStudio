@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // HyperFrames engine test suite (zero deps): audio probe, compiler contract, runtime determinism
-// across all 7 templates, and a real MP4 render verified for duration / frame size / audio.
+// across all 11 templates (Light & Dark), single-part preview (--part) & merged multi-part MP4 render
+// verified for duration / frame size / -16 LUFS audio / strict Layout QC.
 //
 // Usage: node engine/test_hyperframes.mjs [--keep] [--skip-render]
 //   --keep         keep the temporary workspace for inspection
@@ -201,7 +202,8 @@ async function main() {
     assert.equal(snap.layoutQc.scenes_checked, 7);
     assert.equal(snap.layoutQc.frames_checked, 21);
     assert.equal(snap.layoutQc.error_count, 0, `expected 0 layout QC errors, got: ${JSON.stringify(snap.layoutQc.findings)}`);
-    pass("HyperFrames runtime builds all 7 templates with 0 errors; determinism + strict Layout QC pass (21 frames)");
+    assert.equal(snap.layoutQc.warning_count, 0, `expected 0 layout QC warnings, got: ${JSON.stringify(snap.layoutQc.findings)}`);
+    pass("HyperFrames runtime builds all 7 core templates with 0 errors/warnings; determinism + strict Layout QC pass (21 frames)");
 
     // 5b. Mixed Light/Dark world_theme, causal_mechanic rotation, SharpTag & BGM determinism -----
     const ep2Id = "ep02-phase2";
@@ -542,6 +544,180 @@ async function main() {
       await qcProbeChrome.close();
     }
     pass("ep03-qc-broken triggers all 6 layout QC checks + topbar_title_truncated warning & fails qcStrict in snapshot/render");
+
+    // 5d. All 4 new Deep-Dive engineering templates in BOTH Dark & Light themes ----------------
+    const ep4Id = "ep04-new-templates";
+    const ep4Dir = path.join(tmpWorkspace, "HFTEST", "episodes", ep4Id);
+    const ep4AudioDir = path.join(ep4Dir, "audio", "demo-tone");
+    fs.mkdirSync(ep4AudioDir, { recursive: true });
+    const ntSceneSec = 2.2;
+
+    const makeNewTemplateFour = (theme, prefix, freqBase) => [
+      {
+        id: `${prefix}_seq`,
+        part: "architecture",
+        part_label: `Sequence · ${theme}`,
+        title: `Handshake Sequence (${theme})`,
+        narration: `Trace handshake qua sequence diagram trên nền ${theme}.`,
+        visual_type: "sequence_diagram",
+        visual_job: "Mechanism",
+        world_theme: theme,
+        causal_mechanic: "wire-draw",
+        visual_data: {
+          actors: [
+            { id: "cli", label: "Client" },
+            { id: "gw", label: "Gateway" },
+            { id: "db", label: "Redis" },
+          ],
+          messages: [
+            { id: "m1", from: "cli", to: "gw", label: "SET key val", kind: "sync", progress_start: 0.05, progress_end: 0.35 },
+            { id: "m2", from: "gw", to: "db", label: "APPEND AOF", kind: "async", progress_start: 0.35, progress_end: 0.65 },
+            { id: "m3", from: "gw", to: "cli", label: "OK", kind: "return", progress_start: 0.65, progress_end: 0.95 },
+          ],
+          highlights: [{ label: "AOF Persist", message_ids: ["m2"], show_at_progress: 0.4, tone: "info" }],
+        },
+      },
+      {
+        id: `${prefix}_mem`,
+        part: "architecture",
+        part_label: `Memory · ${theme}`,
+        title: `Copy-on-Write Pages (${theme})`,
+        narration: `Phân bổ page RAM theo offset trên nền ${theme}.`,
+        visual_type: "memory_layout",
+        visual_job: "Proof",
+        world_theme: theme,
+        causal_mechanic: "arc-emission",
+        visual_data: {
+          lanes: [
+            {
+              id: "ram",
+              label: "Arena 4KB",
+              cells: [
+                { id: "c0", label: "0x00 Clean", state: "idle" },
+                { id: "c1", label: "0x10 Dirty", state: "active" },
+                { id: "c2", label: "0x20 Copy", state: "write" },
+              ],
+            },
+          ],
+          steps: [
+            {
+              label: "Mutate page 0x10 -> copy 0x20",
+              progress_start: 0.05,
+              progress_end: 0.95,
+              highlight_cells: [
+                { lane_id: "ram", cell_id: "c1", state: "active" },
+                { lane_id: "ram", cell_id: "c2", state: "write" },
+              ],
+              pointers: [{ label: "COW", from_lane: "ram", from_cell: "c1", to_lane: "ram", to_cell: "c2", color: "#38BDF8" }],
+            },
+          ],
+        },
+      },
+      {
+        id: `${prefix}_diff`,
+        part: "setup",
+        part_label: `Diff · ${theme}`,
+        title: `Fix Blocking Fsync (${theme})`,
+        narration: `So sánh cấu hình trước và sau trên nền ${theme}.`,
+        visual_type: "code_diff",
+        visual_job: "Action",
+        world_theme: theme,
+        causal_mechanic: "width-push",
+        visual_data: {
+          language: "ini",
+          left_title: "Before (Stall)",
+          right_title: "After (Safe)",
+          left_lines: ["appendfsync everysec", "no-appendfsync-on-rewrite no"],
+          right_lines: ["appendfsync everysec", "no-appendfsync-on-rewrite yes"],
+          focus_steps: [
+            {
+              callout: "Avoid blocking parent during rewrite",
+              left_lines: [2],
+              right_lines: [2],
+              progress_start: 0.08,
+              progress_end: 0.92,
+              tone: "success",
+            },
+          ],
+        },
+      },
+      {
+        id: `${prefix}_bd`,
+        part: "exam_tips",
+        part_label: `Summary · ${theme}`,
+        title: `Persistence Guardrails (${theme})`,
+        narration: `Tổng hợp nguyên tắc vận hành trên nền ${theme}.`,
+        visual_type: "concept_breakdown",
+        visual_job: "Transition",
+        world_theme: theme,
+        causal_mechanic: "squash-drop",
+        visual_data: {
+          core: { label: "Zero OOM", sublabel: "2 Invariants" },
+          branches: [
+            { id: "b1", label: "Headroom", detail: "Keep >= 50% free RAM", metric: ">=50%", progress_start: 0.1, progress_end: 0.5 },
+            { id: "b2", label: "CoW Metric", detail: "Track rdb_last_cow_size", metric: "INFO", progress_start: 0.5, progress_end: 0.9 },
+          ],
+          takeaway: { text: "Monitor CoW size after every BGSAVE", show_at_progress: 0.72 },
+        },
+      },
+    ].map((sc, i) => {
+      const file = `audio/demo-tone/${sc.id}.wav`;
+      fs.writeFileSync(path.join(ep4Dir, ...file.split("/")), createToneWav(ntSceneSec, { freq: freqBase + i * 30, seed: freqBase + i }));
+      return { ...sc, audio_file: file, duration_sec: ntSceneSec };
+    });
+
+    const ep4Scenes = [
+      ...makeNewTemplateFour("dark", "nt_d", 220),
+      ...makeNewTemplateFour("light", "nt_l", 340),
+    ];
+    const ep4Script = {
+      course_id: "HFTEST",
+      episode_id: ep4Id,
+      episode_number: 4,
+      title: "4 New Templates (Dark + Light)",
+      aspect_ratio: "16:9",
+      tts_profile: "demo-tone",
+      total_duration_sec: ep4Scenes.length * ntSceneSec,
+      scenes: ep4Scenes,
+    };
+    fs.writeFileSync(path.join(ep4Dir, "script.json"), JSON.stringify(ep4Script, null, 2) + "\n", "utf-8");
+    const cJson4 = JSON.parse(fs.readFileSync(courseJsonPath, "utf-8"));
+    cJson4.stages[0].episodes.push({ id: ep4Id, number: 4, title: ep4Script.title, duration_target: "1 phút" });
+    fs.writeFileSync(courseJsonPath, JSON.stringify(cJson4, null, 2) + "\n", "utf-8");
+
+    const ep4Payload = await fetchEpisodePayload(port, "HFTEST", ep4Id);
+    const compiled4 = await compileEpisodeProject({
+      workspaceRoot: tmpWorkspace,
+      courseId: "HFTEST",
+      episode: ep4Payload,
+      speed: 1,
+    });
+    for (const nt of ["sequence_diagram", "memory_layout", "code_diff", "concept_breakdown"]) {
+      assert.ok(fs.existsSync(path.join(compiled4.projectDir, "lib", "scenes", `${nt}.mjs`)), `missing new scene module ${nt}`);
+    }
+    const times4 = compiled4.manifest.scenes.map((s) => Math.round((s.start + s.duration * 0.58) * 1000) / 1000);
+    const snap4 = await captureSnapshots({
+      course: "HFTEST",
+      episode: ep4Id,
+      port,
+      times: times4,
+      scene: null,
+      at: [],
+      out: path.join(tmpWorkspace, "snapshots-new4"),
+      speed: 1,
+      scale: 0.5,
+      checkDeterminism: true,
+      checkLayout: true,
+      qcStrict: true,
+    });
+    assert.deepEqual(snap4.errors, [], `4 new templates errors:\n${snap4.errors.join("\n")}`);
+    assert.equal(snap4.files.length, 8);
+    assert.ok(snap4.layoutQc, "ep04-new-templates must return layoutQc");
+    assert.equal(snap4.layoutQc.scenes_checked, 8);
+    assert.equal(snap4.layoutQc.frames_checked, 24);
+    assert.equal(snap4.layoutQc.error_count, 0, `4 new templates layout QC errors: ${JSON.stringify(snap4.layoutQc.findings)}`);
+    assert.equal(snap4.layoutQc.warning_count, 0, `4 new templates layout QC warnings: ${JSON.stringify(snap4.layoutQc.findings)}`);
+    pass("All 4 new templates (sequence_diagram, memory_layout, code_diff, concept_breakdown) in Dark & Light pass compile, determinism & strict Layout QC (0 errors, 0 warnings; all 11 templates verified)");
   } finally {
     await server.stop();
   }
@@ -598,6 +774,245 @@ async function main() {
     assert.equal(info.layout_qc.frames_checked, 21);
     assert.equal(info.layout_qc.error_count, 0, `verify_video layout_qc errors: ${JSON.stringify(info.layout_qc.findings)}`);
     pass(`render_video.mjs (HyperFrames) + verifyEpisodeVideo Layout QC → hf-e2e.mp4 ${info.width}x${info.height}, ${info.duration.toFixed(2)}s, audio rms ${info.audio.rms.toFixed(3)}, ${info.audio.lufs} LUFS, qc scenes=7 errors=0`);
+
+    // 6b. Multi-part Single-Part Preview (--part part_01) & Post-Merge Full Episode Render -------
+    const ep5Id = "ep05-multipart";
+    const ep5Dir = path.join(tmpWorkspace, "HFTEST", "episodes", ep5Id);
+    const mpSceneSec = 2.2;
+    const p1Scenes = [
+      {
+        id: "p1_seq",
+        part: "architecture",
+        title: "Part 1 Sequence",
+        narration: "Handshake ở Part 1.",
+        visual_type: "sequence_diagram",
+        world_theme: "dark",
+        visual_data: {
+          actors: [{ id: "a", label: "Client" }, { id: "b", label: "Server" }],
+          messages: [{ id: "m1", from: "a", to: "b", label: "CALL", kind: "sync", progress_start: 0.1, progress_end: 0.9 }],
+        },
+      },
+      {
+        id: "p1_mem",
+        part: "architecture",
+        title: "Part 1 Memory",
+        narration: "Cấp phát RAM ở Part 1.",
+        visual_type: "memory_layout",
+        world_theme: "light",
+        visual_data: {
+          lanes: [{ id: "l1", label: "RAM", cells: [{ id: "c1", label: "0x00", state: "active" }] }],
+          steps: [{ label: "Alloc", progress_start: 0.1, progress_end: 0.9, highlight_cells: [{ lane_id: "l1", cell_id: "c1", state: "active" }], pointers: [] }],
+        },
+      },
+    ];
+    const p2Scenes = [
+      {
+        id: "p2_diff",
+        part: "setup",
+        title: "Part 2 Diff",
+        narration: "Sửa cấu hình ở Part 2.",
+        visual_type: "code_diff",
+        world_theme: "dark",
+        visual_data: {
+          language: "ini",
+          left_title: "Old",
+          right_title: "New",
+          left_lines: ["fsync no"],
+          right_lines: ["fsync yes"],
+          focus_steps: [{ callout: "Enable fsync", left_lines: [1], right_lines: [1], progress_start: 0.1, progress_end: 0.9, tone: "success" }],
+        },
+      },
+      {
+        id: "p2_bd",
+        part: "exam_tips",
+        title: "Part 2 Breakdown",
+        narration: "Tổng kết Part 2.",
+        visual_type: "concept_breakdown",
+        world_theme: "light",
+        visual_data: {
+          core: { label: "Safe Deploy", sublabel: "2 Checks" },
+          branches: [
+            { id: "b1", label: "Canary", detail: "Check p99 latency", metric: "< 5ms", progress_start: 0.15, progress_end: 0.5 },
+            { id: "b2", label: "Rollback", detail: "Auto revert on spike", metric: "< 30s", progress_start: 0.5, progress_end: 0.9 },
+          ],
+        },
+      },
+    ];
+
+    const writePartFixture = (partId, partTitle, partScenes, freqOffset) => {
+      const partDir = path.join(ep5Dir, "parts", partId);
+      const audioDir = path.join(partDir, "audio", "demo-tone");
+      fs.mkdirSync(audioDir, { recursive: true });
+      const prepared = partScenes.map((sc, i) => {
+        const rel = `audio/demo-tone/${sc.id}.wav`;
+        fs.writeFileSync(path.join(partDir, ...rel.split("/")), createToneWav(mpSceneSec, { freq: freqOffset + i * 40, seed: freqOffset + i }));
+        return { ...sc, audio_file: rel, duration_sec: mpSceneSec };
+      });
+      fs.writeFileSync(
+        path.join(partDir, "script.json"),
+        JSON.stringify(
+          {
+            course_id: "HFTEST",
+            episode_id: ep5Id,
+            part_id: partId,
+            title: partTitle,
+            aspect_ratio: "16:9",
+            tts_profile: "demo-tone",
+            total_duration_sec: prepared.length * mpSceneSec,
+            scenes: prepared,
+          },
+          null,
+          2
+        ) + "\n",
+        "utf-8"
+      );
+      fs.writeFileSync(
+        path.join(partDir, "subtitles.srt"),
+        `1\n00:00:00,000 --> 00:00:02,000\n${partTitle} line 1\n\n`,
+        "utf-8"
+      );
+      fs.writeFileSync(path.join(partDir, "notes.md"), `# ${partTitle}\n- Notes\n`, "utf-8");
+    };
+
+    writePartFixture("part_01", "Part 1: Sequence & Memory", p1Scenes, 260);
+    writePartFixture("part_02", "Part 2: Diff & Breakdown", p2Scenes, 360);
+
+    const cJson5Path = path.join(tmpWorkspace, "HFTEST", "course.json");
+    const cJson5 = JSON.parse(fs.readFileSync(cJson5Path, "utf-8"));
+    cJson5.stages[0].episodes.push({ id: ep5Id, number: 5, title: "Multi-Part Preview & Merge", duration_target: "1 phút" });
+    fs.writeFileSync(cJson5Path, JSON.stringify(cJson5, null, 2) + "\n", "utf-8");
+
+    const syncEp5 = spawnSync(process.execPath, [path.join(ENGINE_DIR, "state_cli.mjs"), "sync", "--workspace", tmpWorkspace, "--course", "HFTEST"], {
+      cwd: ENGINE_DIR,
+      encoding: "utf-8",
+    });
+    assert.equal(syncEp5.status, 0, syncEp5.stderr);
+
+    for (const pid of ["part_01", "part_02"]) {
+      const sp = spawnSync(
+        process.execPath,
+        [
+          path.join(ENGINE_DIR, "state_cli.mjs"),
+          "set-part",
+          "--workspace",
+          tmpWorkspace,
+          "--course",
+          "HFTEST",
+          "--ep",
+          ep5Id,
+          "--part",
+          pid,
+          "--status",
+          "completed",
+          "--ai-verdict",
+          "APPROVED",
+          "--approved",
+          "true",
+        ],
+        { cwd: ENGINE_DIR, encoding: "utf-8" }
+      );
+      assert.equal(sp.status, 0, sp.stderr);
+    }
+
+    // 6b-i. Single-part preview render (--part part_01)
+    const partRenderPort = await getFreePort();
+    const partRenderRes = spawnSync(
+      process.execPath,
+      [
+        path.join(ENGINE_DIR, "render_video.mjs"),
+        "--course",
+        "HFTEST",
+        "--episode",
+        ep5Id,
+        "--part",
+        "part_01",
+        "--port",
+        String(partRenderPort),
+        "--resolution",
+        "720p",
+        "--fps",
+        "30",
+        "--workers",
+        "2",
+      ],
+      { cwd: ENGINE_DIR, env: { ...process.env }, encoding: "utf-8", timeout: 600_000 }
+    );
+    assert.equal(partRenderRes.status, 0, `part_01 render failed:\n${partRenderRes.stdout}\n${partRenderRes.stderr}`);
+    assert.match(partRenderRes.stdout, /qc_errors=0/);
+    const partOutPath = path.join(ep5Dir, "parts", "part_01", "part_01.mp4");
+    assert.ok(fs.existsSync(partOutPath) && fs.statSync(partOutPath).size > 50_000, "part_01.mp4 must exist");
+    const partVerifyPort = await getFreePort();
+    const partInfo = await verifyEpisodeVideo({
+      port: partVerifyPort,
+      course: "HFTEST",
+      episode: ep5Id,
+      partId: "part_01",
+      file: "part_01.mp4",
+      checkLayout: true,
+    });
+    assert.equal(partInfo.width, 1280);
+    assert.equal(partInfo.height, 720);
+    assert.ok(Math.abs(partInfo.duration - p1Scenes.length * mpSceneSec) < 0.15, `part_01 duration ${partInfo.duration}`);
+    assert.ok(partInfo.audio.lufs >= -18.5 && partInfo.audio.lufs <= -13.5, `part_01 LUFS out of range: ${partInfo.audio.lufs}`);
+    assert.equal(partInfo.layout_qc.scenes_checked, 2);
+    assert.equal(partInfo.layout_qc.error_count, 0, JSON.stringify(partInfo.layout_qc.findings));
+    assert.equal(partInfo.layout_qc.warning_count, 0, JSON.stringify(partInfo.layout_qc.findings));
+    pass(`--part part_01 preview render + verifyEpisodeVideo (${partInfo.duration.toFixed(2)}s, ${partInfo.audio.lufs} LUFS, 0 QC errors/warnings)`);
+
+    // 6b-ii. merge-parts -> Post-Merge Full Episode Render (remapped parts/part_k/audio/* paths!)
+    const mergeRes = spawnSync(
+      process.execPath,
+      [path.join(ENGINE_DIR, "state_cli.mjs"), "merge-parts", "--workspace", tmpWorkspace, "--course", "HFTEST", "--ep", ep5Id, "--json"],
+      { cwd: ENGINE_DIR, encoding: "utf-8" }
+    );
+    assert.equal(mergeRes.status, 0, mergeRes.stderr || mergeRes.stdout);
+    const mergedEp5 = JSON.parse(fs.readFileSync(path.join(ep5Dir, "script.json"), "utf-8"));
+    assert.equal(mergedEp5.scenes.length, 4);
+    assert.ok(mergedEp5.scenes[0].audio_file.startsWith("parts/part_01/audio/"));
+    assert.ok(mergedEp5.scenes[2].audio_file.startsWith("parts/part_02/audio/"));
+
+    const fullRenderPort = await getFreePort();
+    const fullRenderRes = spawnSync(
+      process.execPath,
+      [
+        path.join(ENGINE_DIR, "render_video.mjs"),
+        "--course",
+        "HFTEST",
+        "--episode",
+        ep5Id,
+        "--port",
+        String(fullRenderPort),
+        "--resolution",
+        "720p",
+        "--fps",
+        "30",
+        "--workers",
+        "2",
+        "--output",
+        "ep05-merged",
+      ],
+      { cwd: ENGINE_DIR, env: { ...process.env }, encoding: "utf-8", timeout: 600_000 }
+    );
+    assert.equal(fullRenderRes.status, 0, `ep05-merged render failed:\n${fullRenderRes.stdout}\n${fullRenderRes.stderr}`);
+    assert.match(fullRenderRes.stdout, /qc_errors=0/);
+    const fullOutPath = path.join(ep5Dir, "ep05-merged.mp4");
+    assert.ok(fs.existsSync(fullOutPath) && fs.statSync(fullOutPath).size > 50_000, "ep05-merged.mp4 must exist");
+    const fullVerifyPort = await getFreePort();
+    const fullInfo = await verifyEpisodeVideo({
+      port: fullVerifyPort,
+      course: "HFTEST",
+      episode: ep5Id,
+      file: "ep05-merged.mp4",
+      checkLayout: true,
+    });
+    assert.equal(fullInfo.width, 1280);
+    assert.equal(fullInfo.height, 720);
+    assert.ok(Math.abs(fullInfo.duration - 4 * mpSceneSec) < 0.15, `merged duration ${fullInfo.duration}`);
+    assert.ok(fullInfo.audio.lufs >= -18.5 && fullInfo.audio.lufs <= -13.5, `merged LUFS out of range: ${fullInfo.audio.lufs}`);
+    assert.equal(fullInfo.layout_qc.scenes_checked, 4);
+    assert.equal(fullInfo.layout_qc.error_count, 0, JSON.stringify(fullInfo.layout_qc.findings));
+    assert.equal(fullInfo.layout_qc.warning_count, 0, JSON.stringify(fullInfo.layout_qc.findings));
+    pass(`merge-parts + full episode render (${fullInfo.duration.toFixed(2)}s, ${fullInfo.audio.lufs} LUFS, remapped audio, 0 QC errors/warnings)`);
   }
 
   console.log(`\n[test_hyperframes] ${passed} checks passed.`);

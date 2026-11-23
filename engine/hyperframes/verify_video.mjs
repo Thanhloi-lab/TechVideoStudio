@@ -27,11 +27,14 @@ export async function verifyEpisodeVideo(opts = {}) {
     port = 3030,
     course,
     episode,
+    part = "",
+    partId: rawPartId = "",
     file,
     frames = [],
     outDir = "",
     qcCheckpoints = DEFAULT_QC_CHECKPOINTS,
   } = opts;
+  const partId = String(rawPartId || part || "").trim();
   const qcStrict = Boolean(opts.qcStrict);
   const checkLayout = opts.checkLayout !== undefined ? Boolean(opts.checkLayout) : qcStrict;
   const server = await ensureStudioServer(port, { workspaceRoot: WORKSPACE_ROOT, log: () => {} });
@@ -45,7 +48,9 @@ export async function verifyEpisodeVideo(opts = {}) {
       if (await evaluate(cdp, sessionId, "Boolean(window.__TVS_AUDIO_DSP__)")) break;
       await sleep(100);
     }
-    const url = `/courses/${encodeURIComponent(course)}/episodes/${encodeURIComponent(episode)}/${encodeURIComponent(file)}`;
+    const url = partId
+      ? `/courses/${encodeURIComponent(course)}/episodes/${encodeURIComponent(episode)}/parts/${encodeURIComponent(partId)}/${encodeURIComponent(file)}`
+      : `/courses/${encodeURIComponent(course)}/episodes/${encodeURIComponent(episode)}/${encodeURIComponent(file)}`;
     const info = await evaluate(
       cdp,
       sessionId,
@@ -101,18 +106,21 @@ export async function verifyEpisodeVideo(opts = {}) {
 
     let layoutQc = null;
     if (checkLayout) {
-      const projectDir = path.join(WORKSPACE_ROOT, course, "episodes", episode, "hyperframes");
+      const projectDir = partId
+        ? path.join(WORKSPACE_ROOT, course, "episodes", episode, "parts", partId, "hyperframes")
+        : path.join(WORKSPACE_ROOT, course, "episodes", episode, "hyperframes");
       const manifestPath = path.join(projectDir, "composition.json");
       const indexPath = path.join(projectDir, "index.html");
       let manifest;
       if (fs.existsSync(manifestPath) && fs.existsSync(indexPath)) {
         manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
       } else {
-        const epPayload = await fetchEpisodePayload(port, course, episode);
+        const epPayload = await fetchEpisodePayload(port, course, episode, partId);
         ({ manifest } = await compileEpisodeProject({
           workspaceRoot: WORKSPACE_ROOT,
           courseId: course,
           episode: epPayload,
+          partId,
           speed: 1,
         }));
       }
@@ -127,7 +135,7 @@ export async function verifyEpisodeVideo(opts = {}) {
         { sessionId: qcSid }
       );
       await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: buildRenderBridgeScript({ fps: 60 }) }, { sessionId: qcSid });
-      await navigate(cdp, qcSid, projectUrl(port, course, episode), 60_000);
+      await navigate(cdp, qcSid, projectUrl(port, course, episode, "index.html", partId), 60_000);
       const ready = await waitForComposition((expr) => evaluate(cdp, qcSid, expr), { sleepFn: sleep });
       if (ready.buildErrors?.length) {
         throw new Error(`Composition build errors:\n${ready.buildErrors.join("\n")}`);
