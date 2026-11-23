@@ -15,12 +15,17 @@ import {
   createEpisodeStateFromMeta,
   deleteRevisionTicket,
   flattenCourseEpisodes,
+  getEpisodeParts,
   inspectEpisodeArtifacts,
   listRevisions,
   loadCourseJson,
+  mergeEpisodeParts,
+  parseReviewVerdict,
   readEpisodeState,
   readEvents,
+  reconcileEpisodeParts,
   recomputeState,
+  setPartState,
   updateRevisionTicket,
   writeJsonAtomic,
 } from "./state_cli.mjs";
@@ -246,6 +251,65 @@ function mapEpisodeVideoFiles(courseName, epId, artifacts) {
   }));
 }
 
+function buildMergedPartsPayload(courseName, epId, state, artifacts) {
+  const encodedCourse = encodeURIComponent(courseName);
+  const encodedEp = encodeURIComponent(epId);
+  const artPartMap = new Map((artifacts?.parts || []).map((p) => [p.part_id, p]));
+  const statePartsList = Array.isArray(state?.parts) ? state.parts : [];
+  const seen = new Set();
+  const merged = [];
+
+  for (const sp of statePartsList) {
+    if (!sp?.part_id || seen.has(sp.part_id)) continue;
+    seen.add(sp.part_id);
+    const ap = artPartMap.get(sp.part_id) || {};
+    const videoFile = ap.video_file || sp.video_file || null;
+    merged.push({
+      ...ap,
+      ...sp,
+      part_id: sp.part_id,
+      has_dialogue: Boolean(ap.has_dialogue),
+      has_review: Boolean(ap.has_review),
+      review_verdict: sp.ai_review_verdict || ap.review_verdict || null,
+      ai_review_verdict: sp.ai_review_verdict || ap.review_verdict || null,
+      has_audio_spine: Boolean(ap.has_audio_spine),
+      has_script: Boolean(ap.has_script),
+      has_notes: Boolean(ap.has_notes),
+      audio_count: Number(ap.audio_count) || 0,
+      subtitles: Boolean(ap.subtitles),
+      video_file: videoFile,
+      video_url: videoFile
+        ? `/courses/${encodedCourse}/episodes/${encodedEp}/parts/${encodeURIComponent(sp.part_id)}/${encodeURIComponent(videoFile)}`
+        : null,
+      artifacts: ap.part_id ? ap : null,
+    });
+  }
+
+  for (const ap of artifacts?.parts || []) {
+    if (!ap?.part_id || seen.has(ap.part_id)) continue;
+    seen.add(ap.part_id);
+    const videoFile = ap.video_file || null;
+    merged.push({
+      ...ap,
+      title: ap.part_id,
+      target_duration_sec: null,
+      status: ap.has_script ? "completed" : ap.has_dialogue ? "in_progress" : "pending",
+      ai_review_verdict: ap.review_verdict || null,
+      approved: false,
+      approved_at: null,
+      tts_done: Boolean(ap.audio_count > 0 && ap.subtitles),
+      video_file: videoFile,
+      video_url: videoFile
+        ? `/courses/${encodedCourse}/episodes/${encodedEp}/parts/${encodeURIComponent(ap.part_id)}/${encodeURIComponent(videoFile)}`
+        : null,
+      notes: "",
+      artifacts: ap,
+    });
+  }
+
+  return merged;
+}
+
 function buildEpisodePayload(courseName, courseDir, stateDir, epMeta, courseMeta = {}) {
   const epId = epMeta.id;
   const epPath = path.join(courseDir, "episodes", epId);
@@ -264,7 +328,7 @@ function buildEpisodePayload(courseName, courseDir, stateDir, epMeta, courseMeta
   const notes = fs.existsSync(notesPath) ? fs.readFileSync(notesPath, "utf-8") : "";
   const artifacts = inspectEpisodeArtifacts(courseDir, epId);
   const audioCount =
-    artifacts.audio_count > 0 ? artifacts.audio_count : countEpisodeAudioFiles(epPath);
+    artifacts.audio_count > 0 ? artifacts.audio_count : countEpisodeAudioFiles(epPath, script);
   if (artifacts.audio_count === 0 && audioCount > 0) {
     artifacts.audio_count = audioCount;
   }
@@ -272,9 +336,10 @@ function buildEpisodePayload(courseName, courseDir, stateDir, epMeta, courseMeta
   let state = readEpisodeState(stateDir, epId);
   if (state) {
     state.artifacts = artifacts;
+    reconcileEpisodeParts(courseDir, epId, state, artifacts);
     recomputeState(state);
   } else {
-    state = createEpisodeStateFromMeta(epMeta, artifacts, { seedReady: true });
+    state = createEpisodeStateFromMeta(epMeta, artifacts, { seedReady: true, courseDir });
   }
 
   if (script) {
@@ -285,6 +350,7 @@ function buildEpisodePayload(courseName, courseDir, stateDir, epMeta, courseMeta
   const encodedEp = encodeURIComponent(epId);
   const videoFile = artifacts.video_file || null;
   const videoFiles = mapEpisodeVideoFiles(courseName, epId, artifacts);
+  const parts = buildMergedPartsPayload(courseName, epId, state, artifacts);
 
   const activeTrack =
     script?.active_voice_track && script?.voice_tracks?.[script.active_voice_track]
@@ -348,6 +414,8 @@ function buildEpisodePayload(courseName, courseDir, stateDir, epMeta, courseMeta
       ? `/courses/${encodedCourse}/episodes/${encodedEp}/${encodeURIComponent(videoFile)}`
       : null,
     video_files: videoFiles,
+    parts,
+    merged_at: state.merged_at || null,
     base_url: `/courses/${encodedCourse}/episodes/${encodedEp}`,
     script,
     notes,
@@ -1055,6 +1123,38 @@ function extractSceneTimings(scene) {
       return item;
     });
   }
+  if (Array.isArray(vd.messages)) {
+    timings.messages = vd.messages.map((m, idx) => ({
+      progress_start: clamp01(m?.progress_start, idx / Math.max(1, vd.messages.length)),
+      progress_end: clamp01(m?.progress_end, (idx + 1) / Math.max(1, vd.messages.length)),
+    }));
+  }
+  if (Array.isArray(vd.highlights)) {
+    timings.highlights = vd.highlights.map((hl, idx) => {
+      const p = clamp01(
+        hl?.show_at_progress ?? hl?.progress_start ?? hl?.progress_at,
+        0.5 + idx * 0.1
+      );
+      const item = { progress_start: p };
+      if (hl?.show_at_progress !== undefined || (hl?.progress_start === undefined && hl?.progress_at === undefined)) {
+        item.show_at_progress = p;
+      }
+      if (hl?.progress_at !== undefined) item.progress_at = p;
+      return item;
+    });
+  }
+  if (Array.isArray(vd.focus_steps)) {
+    timings.focus_steps = vd.focus_steps.map((s, idx) => ({
+      progress_start: clamp01(s?.progress_start, idx / Math.max(1, vd.focus_steps.length)),
+      progress_end: clamp01(s?.progress_end, (idx + 1) / Math.max(1, vd.focus_steps.length)),
+    }));
+  }
+  if (Array.isArray(vd.branches)) {
+    timings.branches = vd.branches.map((b, idx) => ({
+      progress_start: clamp01(b?.progress_start, idx / Math.max(1, vd.branches.length)),
+      progress_end: clamp01(b?.progress_end, (idx + 1) / Math.max(1, vd.branches.length)),
+    }));
+  }
   if (vd.quiz && typeof vd.quiz === "object") {
     timings.quiz = { show_at_progress: clamp01(vd.quiz.show_at_progress, 0.68) };
   }
@@ -1167,6 +1267,30 @@ function normalizeAndClampTimings(scene, rawTimings) {
   if (Array.isArray(input.bars) && Array.isArray(vd.bars)) {
     result.bars = clampPointSteps(input.bars, vd.bars);
   }
+  if (Array.isArray(input.messages) && Array.isArray(vd.messages)) {
+    result.messages = clampIntervalSteps(input.messages, vd.messages);
+  }
+  if (Array.isArray(input.highlights) && Array.isArray(vd.highlights)) {
+    const normalizedInput = input.highlights.map((hl) => ({
+      ...hl,
+      progress_start: hl?.progress_start ?? hl?.progress_at ?? hl?.show_at_progress,
+    }));
+    const existingNorm = vd.highlights.map((hl) => ({
+      ...hl,
+      progress_start: hl?.progress_start ?? hl?.progress_at ?? hl?.show_at_progress,
+    }));
+    result.highlights = clampPointSteps(normalizedInput, existingNorm).map((pt, idx) => ({
+      ...pt,
+      show_at_progress: pt.progress_start,
+      ...(vd.highlights[idx]?.progress_at !== undefined ? { progress_at: pt.progress_start } : {}),
+    }));
+  }
+  if (Array.isArray(input.focus_steps) && Array.isArray(vd.focus_steps)) {
+    result.focus_steps = clampIntervalSteps(input.focus_steps, vd.focus_steps);
+  }
+  if (Array.isArray(input.branches) && Array.isArray(vd.branches)) {
+    result.branches = clampIntervalSteps(input.branches, vd.branches);
+  }
 
   const quizShow =
     input.quiz && typeof input.quiz === "object"
@@ -1255,6 +1379,25 @@ function applySceneTimings(scene, timings) {
   applyPoints("cards");
   applyPoints("metrics");
   applyPoints("bars");
+  applyInterval("messages");
+  if (Array.isArray(timings.highlights) && Array.isArray(vd.highlights)) {
+    for (let i = 0; i < Math.min(timings.highlights.length, vd.highlights.length); i++) {
+      const t = timings.highlights[i];
+      if (!t || !vd.highlights[i] || typeof vd.highlights[i] !== "object") continue;
+      const p = clamp01(t.show_at_progress ?? t.progress_start ?? t.progress_at);
+      if (vd.highlights[i].show_at_progress !== undefined || (vd.highlights[i].progress_start === undefined && vd.highlights[i].progress_at === undefined)) {
+        vd.highlights[i].show_at_progress = p;
+      }
+      if (vd.highlights[i].progress_start !== undefined || t.progress_start !== undefined) {
+        vd.highlights[i].progress_start = p;
+      }
+      if (vd.highlights[i].progress_at !== undefined || t.progress_at !== undefined) {
+        vd.highlights[i].progress_at = p;
+      }
+    }
+  }
+  applyInterval("focus_steps");
+  applyInterval("branches");
 
   if (timings.quiz && typeof timings.quiz === "object" && vd.quiz && typeof vd.quiz === "object") {
     if (timings.quiz.show_at_progress !== undefined) {
@@ -1750,11 +1893,15 @@ async function handleSceneTimings(req, res) {
 
   const course = String(body.course || "").trim();
   const episode = String(body.episode || "").trim();
+  const partId = String(body.part_id || body.part || "").trim();
   const sceneId = String(body.scene_id || "").trim();
   const action = String(body.action || "save").trim();
 
   if (!/^[A-Za-z0-9_-]+$/.test(course) || !/^[A-Za-z0-9_-]+$/.test(episode)) {
     return sendJson(res, 400, { ok: false, error: "Invalid course or episode identifier" });
+  }
+  if (partId && !/^[A-Za-z0-9_-]+$/.test(partId)) {
+    return sendJson(res, 400, { ok: false, error: "Invalid part_id identifier" });
   }
   if (!sceneId || !/^[A-Za-z0-9_.-]+$/.test(sceneId)) {
     return sendJson(res, 400, { ok: false, error: "Invalid scene_id" });
@@ -1776,9 +1923,13 @@ async function handleSceneTimings(req, res) {
 
   const courseDir = safeResolve(WORKSPACE_ROOT, [course]);
   const epDir = safeResolve(WORKSPACE_ROOT, [course, "episodes", episode]);
-  const scriptPath = safeResolve(WORKSPACE_ROOT, [course, "episodes", episode, "script.json"]);
-  if (!courseDir || !epDir || !scriptPath || !fs.existsSync(scriptPath)) {
-    return sendJson(res, 404, { ok: false, error: `Không tìm thấy script.json cho ${course}/${episode}.` });
+  const targetDir = partId && epDir ? safeResolve(epDir, ["parts", partId]) : epDir;
+  const scriptPath = targetDir ? safeResolve(targetDir, ["script.json"]) : null;
+  if (!courseDir || !epDir || !targetDir || !scriptPath || !fs.existsSync(scriptPath)) {
+    return sendJson(res, 404, {
+      ok: false,
+      error: `Không tìm thấy script.json cho ${course}/${episode}${partId ? `/parts/${partId}` : ""}.`,
+    });
   }
 
   let courseMeta = {};
@@ -1800,7 +1951,7 @@ async function handleSceneTimings(req, res) {
 
   const stateDir = path.join(courseDir, "state");
   const existingState = readEpisodeState(stateDir, episode);
-  let script = normalizeScriptVoiceTracks(rawScript, epDir, courseMeta, existingState);
+  let script = normalizeScriptVoiceTracks(rawScript, targetDir, courseMeta, existingState);
 
   const scenes = Array.isArray(script.scenes) ? script.scenes : [];
   let targetScene = scenes.find((s) => s && s.id === sceneId);
@@ -1840,7 +1991,7 @@ async function handleSceneTimings(req, res) {
 
     try {
       const reloaded = JSON.parse(fs.readFileSync(scriptPath, "utf-8"));
-      script = normalizeScriptVoiceTracks(reloaded, epDir, courseMeta, existingState);
+      script = normalizeScriptVoiceTracks(reloaded, targetDir, courseMeta, existingState);
       targetScene = (Array.isArray(script.scenes) ? script.scenes : []).find((s) => s && s.id === sceneId) || targetScene;
     } catch (err) {
       return sendJson(res, 500, { ok: false, error: `Không thể đọc lại script.json sau khi căn timing: ${err.message}` });
@@ -1882,7 +2033,7 @@ async function handleSceneTimings(req, res) {
     episode,
     (st, artifacts) => {
       st.production = st.production || {};
-      if (st.production.video_done || artifacts.video_file) {
+      if (!partId && (st.production.video_done || artifacts.video_file)) {
         st.production.stale = true;
         st.production.stale_reason =
           action === "auto_align"
@@ -1892,13 +2043,14 @@ async function handleSceneTimings(req, res) {
     },
     {
       type: "scene_timings_updated",
+      part_id: partId || null,
       scene_id: sceneId,
       action,
       profile_id: script.active_voice_track || null,
       message:
         action === "auto_align"
-          ? `Auto-aligned subtitle cues for ${sceneId}`
-          : `Saved manual timings for ${sceneId}`,
+          ? `Auto-aligned subtitle cues for ${partId ? `${partId}/` : ""}${sceneId}`
+          : `Saved manual timings for ${partId ? `${partId}/` : ""}${sceneId}`,
     }
   );
 
@@ -1906,6 +2058,7 @@ async function handleSceneTimings(req, res) {
     ok: true,
     course,
     episode,
+    part_id: partId || null,
     scene_id: sceneId,
     action,
     active_voice_track: script.active_voice_track || null,
@@ -1922,11 +2075,10 @@ const VALID_VIDEO_FORMATS = new Set(["mp4", "webm"]);
 const VALID_VIDEO_CODECS = new Set(["h264", "hevc", "vp9"]);
 const VALID_HARDWARE_MODES = new Set(["auto", "gpu", "cpu"]);
 const VALID_RESOLUTIONS = new Set(["720p", "1080p", "1440p", "2160p"]);
-// Render engines (engine/render_video.mjs --engine): HyperFrames composition (default) or legacy Canvas 2D.
-const VALID_RENDER_ENGINES = new Set(["hyperframes", "legacy"]);
-const DEFAULT_RENDER_ENGINE = VALID_RENDER_ENGINES.has(String(process.env.TVS_RENDER_ENGINE || "").toLowerCase())
-  ? String(process.env.TVS_RENDER_ENGINE).toLowerCase()
-  : "hyperframes";
+// Sole supported render engine: HyperFrames composition + CDP + WebCodecs (engine/hyperframes/).
+const VALID_RENDER_ENGINES = Object.freeze(new Set(["hyperframes"]));
+const DEFAULT_RENDER_ENGINE = "hyperframes";
+const DEFAULT_RENDER_FPS = 30;
 const VALID_FPS = new Set([24, 30, 60]);
 const VALID_SPEEDS = new Set([1, 1.25, 1.5, 2]);
 
@@ -1951,6 +2103,7 @@ function sanitizeJobForApi(job) {
     id: job.id,
     course: job.course,
     episode: job.episode,
+    part_id: job.part_id || null,
     episode_title: job.episode_title || job.episode,
     mode: job.mode,
     profile_id: job.profile_id || null,
@@ -1988,33 +2141,48 @@ function appendJobLog(job, line) {
   }
 }
 
-function countEpisodeAudioFiles(epDir) {
+function countEpisodeAudioFiles(epDir, scriptJson = null) {
   const audioDir = path.join(epDir, "audio");
-  if (!fs.existsSync(audioDir) || !fs.statSync(audioDir).isDirectory()) {
-    return 0;
-  }
   let count = 0;
-  const walk = (dir) => {
-    let entries;
-    try {
-      entries = fs.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        walk(fullPath);
-      } else if (entry.isFile() && /\.(mp3|wav)$/i.test(entry.name)) {
-        try {
-          if (fs.statSync(fullPath).size > 0) count += 1;
-        } catch {
-          // ignore
+  if (fs.existsSync(audioDir) && fs.statSync(audioDir).isDirectory()) {
+    const walk = (dir) => {
+      let entries;
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        return;
+      }
+      for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(fullPath);
+        } else if (entry.isFile() && /\.(mp3|wav)$/i.test(entry.name)) {
+          try {
+            if (fs.statSync(fullPath).size > 0) count += 1;
+          } catch {
+            // ignore
+          }
         }
       }
+    };
+    walk(audioDir);
+  }
+  if (count > 0) return count;
+
+  // Fallback for merged multi-part episodes whose audio lives under parts/<part_id>/audio/...
+  const scenes = Array.isArray(scriptJson?.scenes) ? scriptJson.scenes : [];
+  for (const sc of scenes) {
+    if (!sc?.audio_file) continue;
+    const relParts = String(sc.audio_file).replace(/\\/g, "/").split("/").filter(Boolean);
+    const resolved = safeResolve(epDir, relParts);
+    if (resolved && fs.existsSync(resolved)) {
+      try {
+        if (fs.statSync(resolved).size > 0) count += 1;
+      } catch {
+        // ignore
+      }
     }
-  };
-  walk(audioDir);
+  }
   return count;
 }
 
@@ -2042,13 +2210,18 @@ function resolveEpisodeTitle(courseDir, epId, scriptJson = null) {
   return epId;
 }
 
-function renderTimeoutForJob(job) {
-  // HyperFrames captures every frame through the DOM (seek → screenshot → WebCodecs), which is
-  // several times slower than the legacy Canvas 2D path, so it gets a 4x safety margin.
-  const factor = (job.engine || DEFAULT_RENDER_ENGINE) === "legacy" ? 1 : 4;
-  if (job.resolution === "2160p") return 1_800_000 * factor;
-  if (job.resolution === "1440p") return 1_200_000 * factor;
-  return 900_000 * factor;
+function renderTimeoutForJob(job, durationSec = 0) {
+  const resMul =
+    job.resolution === "2160p" ? 2.0 : job.resolution === "1440p" ? 1.4 : job.resolution === "720p" ? 0.85 : 1.0;
+  const fpsMul = Number(job.fps) >= 60 ? 1.75 : Number(job.fps) <= 24 ? 0.85 : 1.0;
+  const baseFloor = Math.round(3_600_000 * resMul * fpsMul);
+  const dur = Number(durationSec);
+  if (Number.isFinite(dur) && dur > 0) {
+    const effectiveSec = dur / Math.max(0.5, Number(job.speed) || 1);
+    const estFrames = effectiveSec * (Number(job.fps) || DEFAULT_RENDER_FPS);
+    return Math.min(28_800_000, Math.max(baseFloor, Math.round(estFrames * 300 * resMul + 300_000)));
+  }
+  return Math.min(28_800_000, Math.round(7_200_000 * resMul * fpsMul));
 }
 
 function mutateEpisodeStateForJob(course, episode, mutator, eventPayload = null) {
@@ -2136,7 +2309,9 @@ async function executeProductionJob(job) {
   const courseDir = path.join(WORKSPACE_ROOT, job.course);
   const courseJsonPath = path.join(courseDir, "course.json");
   const epDir = path.join(courseDir, "episodes", job.episode);
-  const scriptPath = path.join(epDir, "script.json");
+  const partId = job.part_id ? String(job.part_id).trim() : "";
+  const targetDir = partId ? path.join(epDir, "parts", partId) : epDir;
+  const scriptPath = path.join(targetDir, "script.json");
 
   const rt = { child: null, cancelled: false };
   jobRuntimes.set(job.id, rt);
@@ -2156,7 +2331,7 @@ async function executeProductionJob(job) {
 
     if (job.mode !== "render_only") {
       // Step 1: Optional voice profile assignment
-      if (job.profile_id) {
+      if (job.profile_id && !partId) {
         emitJob(
           { status: "running", step: "assign_voice", progress: 5 },
           `Applying voice profile "${job.profile_id}"...`
@@ -2170,15 +2345,17 @@ async function executeProductionJob(job) {
       mutateState(
         (state) => {
           state.production = state.production || {};
-          state.production.status = "tts_processing";
-          state.production.started_at = state.production.started_at || nowStart;
+          if (!partId) {
+            state.production.status = "tts_processing";
+            state.production.started_at = state.production.started_at || nowStart;
+          }
           state.last_error = null;
         },
-        { type: "job_tts_started", job_id: job.id, mode: job.mode }
+        { type: "job_tts_started", job_id: job.id, mode: job.mode, part_id: partId || null }
       );
       emitJob(
         { status: "running", step: "tts_processing", progress: 15 },
-        `Starting TTS synthesis for ${job.course}/${job.episode}...`
+        `Starting TTS synthesis for ${job.course}/${job.episode}${partId ? `/parts/${partId}` : ""}...`
       );
 
       const ttsArgs = [TTS_SCRIPT_PATH, "--episode", scriptPath, "--course", courseJsonPath, "--json"];
@@ -2214,10 +2391,10 @@ async function executeProductionJob(job) {
           ttsRes.stderr?.trim() || ttsRes.stdout?.trim() || `TTS exited with code ${ttsRes.code}`;
         mutateState(
           (state) => {
-            state.production.status = "needs_revision";
+            if (!partId) state.production.status = "needs_revision";
             state.last_error = errMsg;
           },
-          { type: "job_failed", job_id: job.id, step: "tts_processing", error: errMsg }
+          { type: "job_failed", job_id: job.id, step: "tts_processing", part_id: partId || null, error: errMsg }
         );
         emitJob(
           {
@@ -2233,21 +2410,37 @@ async function executeProductionJob(job) {
 
       if (job.mode === "tts_only") {
         const nowDone = new Date().toISOString();
-        mutateState(
-          (state, artifacts) => {
-            state.production.tts_done = true;
-            if (state.production.video_done || artifacts.video_file) {
-              state.production.stale = true;
-              state.production.stale_reason = "Audio regenerated; video needs re-render";
-            } else {
-              state.production.stale = false;
-              state.production.stale_reason = null;
-            }
-            state.production.status = "pending";
-            state.last_error = null;
-          },
-          { type: "job_tts_completed", job_id: job.id }
-        );
+        if (partId) {
+          try {
+            setPartState({
+              workspaceRoot: WORKSPACE_ROOT,
+              course: job.course,
+              epId: job.episode,
+              partId,
+              ttsDone: true,
+              note: `Part TTS completed (${partId})`,
+            });
+            scheduleStateBroadcast(job.course, `${job.episode}.json`);
+          } catch {
+            // fallback handled cleanly
+          }
+        } else {
+          mutateState(
+            (state, artifacts) => {
+              state.production.tts_done = true;
+              if (state.production.video_done || artifacts.video_file) {
+                state.production.stale = true;
+                state.production.stale_reason = "Audio regenerated; video needs re-render";
+              } else {
+                state.production.stale = false;
+                state.production.stale_reason = null;
+              }
+              state.production.status = "pending";
+              state.last_error = null;
+            },
+            { type: "job_tts_completed", job_id: job.id }
+          );
+        }
         emitJob(
           {
             status: "completed",
@@ -2262,7 +2455,7 @@ async function executeProductionJob(job) {
     } else {
       // render_only preflight validation before spawning Chrome
       if (!fs.existsSync(scriptPath)) {
-        const errMsg = `Không tìm thấy script.json cho ${job.course}/${job.episode}.`;
+        const errMsg = `Không tìm thấy script.json cho ${job.course}/${job.episode}${partId ? `/parts/${partId}` : ""}.`;
         emitJob(
           {
             status: "failed",
@@ -2274,16 +2467,17 @@ async function executeProductionJob(job) {
         );
         return;
       }
-      const audioCount = countEpisodeAudioFiles(epDir);
+      const targetScriptObj = readJsonFileOrNull(scriptPath);
+      const audioCount = countEpisodeAudioFiles(targetDir, targetScriptObj);
       if (audioCount === 0) {
-        const errMsg = `Tập "${job.episode}" chưa có file audio trong thư mục audio/. Hãy chạy TTS trước hoặc chọn "Tạo Audio & Render".`;
+        const errMsg = `${partId ? `Phần "${partId}" của tập "${job.episode}"` : `Tập "${job.episode}"`} chưa có file audio trong thư mục audio/. Hãy chạy TTS trước hoặc chọn "Tạo Audio & Render".`;
         mutateState(
           (state) => {
             state.production = state.production || {};
-            state.production.status = "needs_revision";
+            if (!partId) state.production.status = "needs_revision";
             state.last_error = errMsg;
           },
-          { type: "job_failed", job_id: job.id, step: "rendering", error: errMsg }
+          { type: "job_failed", job_id: job.id, step: "rendering", part_id: partId || null, error: errMsg }
         );
         emitJob(
           {
@@ -2306,14 +2500,17 @@ async function executeProductionJob(job) {
     mutateState(
       (state) => {
         state.production = state.production || {};
-        state.production.tts_done = true;
-        state.production.started_at = state.production.started_at || nowRenderStart;
-        state.production.status = "rendering";
+        if (!partId) {
+          state.production.tts_done = true;
+          state.production.started_at = state.production.started_at || nowRenderStart;
+          state.production.status = "rendering";
+        }
         state.last_error = null;
       },
       {
         type: "job_render_started",
         job_id: job.id,
+        part_id: partId || null,
         format: job.format,
         codec: job.codec,
         hardware: job.hardware,
@@ -2324,12 +2521,14 @@ async function executeProductionJob(job) {
     );
     emitJob(
       { status: "running", step: "rendering", progress: renderStartProgress },
-      `${job.mode === "render_only" ? "Starting" : "TTS complete. Starting"} offline video render [${job.engine || DEFAULT_RENDER_ENGINE}] (${job.resolution} @ ${job.fps}fps, ${job.speed}x, ${job.format}/${job.codec}, hw=${job.hardware})...`
+      `${job.mode === "render_only" ? "Starting" : "TTS complete. Starting"} offline video render [${job.engine || DEFAULT_RENDER_ENGINE}]${partId ? ` (part=${partId})` : ""} (${job.resolution} @ ${job.fps}fps, ${job.speed}x, ${job.format}/${job.codec}, hw=${job.hardware})...`
     );
 
-    const renderTimeoutMs = renderTimeoutForJob(job);
+    const targetScriptForDur = readJsonFileOrNull(scriptPath);
+    const scriptDurationSec = Number(targetScriptForDur?.total_duration_sec) || 0;
+    const renderTimeoutMs = renderTimeoutForJob(job, scriptDurationSec);
     const targetOutputFilename =
-      job.output_filename || `${job.output_stem || job.episode}.${job.format}`;
+      job.output_filename || `${job.output_stem || partId || job.episode}.${job.format}`;
     const renderArgs = [
       RENDER_SCRIPT_PATH,
       "--engine",
@@ -2357,6 +2556,9 @@ async function executeProductionJob(job) {
       "--timeout-ms",
       String(renderTimeoutMs),
     ];
+    if (partId) {
+      renderArgs.push("--part", partId);
+    }
 
     const renderRes = await runChildProcess(process.execPath, renderArgs, {
       timeoutMs: renderTimeoutMs,
@@ -2393,10 +2595,10 @@ async function executeProductionJob(job) {
         `render_video.mjs exited with code ${renderRes.code}`;
       mutateState(
         (state) => {
-          state.production.status = "needs_revision";
+          if (!partId) state.production.status = "needs_revision";
           state.last_error = errMsg;
         },
-        { type: "job_failed", job_id: job.id, step: "rendering", error: errMsg }
+        { type: "job_failed", job_id: job.id, step: "rendering", part_id: partId || null, error: errMsg }
       );
       emitJob(
         {
@@ -2410,14 +2612,14 @@ async function executeProductionJob(job) {
       return;
     }
 
-    const outputStem = job.output_stem || job.episode;
+    const outputStem = job.output_stem || partId || job.episode;
     const expectedFilename = `${outputStem}.${job.format}`;
     const fallbackWebmFilename = `${outputStem}.webm`;
-    const expectedPath = path.join(epDir, expectedFilename);
-    const fallbackWebmPath = path.join(epDir, fallbackWebmFilename);
+    const expectedPath = path.join(targetDir, expectedFilename);
+    const fallbackWebmPath = path.join(targetDir, fallbackWebmFilename);
     const artifacts = inspectEpisodeArtifacts(courseDir, job.episode);
 
-    let outputFile = artifacts.video_file || expectedFilename;
+    let outputFile = partId ? expectedFilename : (artifacts.video_file || expectedFilename);
     const hasExpected = fs.existsSync(expectedPath);
     const hasFallbackWebm =
       fallbackWebmFilename !== expectedFilename && fs.existsSync(fallbackWebmPath);
@@ -2432,25 +2634,42 @@ async function executeProductionJob(job) {
     }
 
     const nowFinal = new Date().toISOString();
-    mutateState(
-      (state) => {
-        state.production.tts_done = true;
-        state.production.video_done = true;
-        state.production.verified = true;
-        state.production.stale = false;
-        state.production.stale_reason = null;
-        state.production.status = "completed";
-        state.production.completed_at = nowFinal;
-        state.last_error = null;
-      },
-      {
-        type: "job_render_completed",
-        job_id: job.id,
-        format: job.format,
-        codec: job.codec,
-        output_file: outputFile,
+    if (partId) {
+      try {
+        setPartState({
+          workspaceRoot: WORKSPACE_ROOT,
+          course: job.course,
+          epId: job.episode,
+          partId,
+          ttsDone: true,
+          videoFile: outputFile,
+          note: `Rendered preview video: ${outputFile}`,
+        });
+        scheduleStateBroadcast(job.course, `${job.episode}.json`);
+      } catch {
+        // fallback handled cleanly
       }
-    );
+    } else {
+      mutateState(
+        (state) => {
+          state.production.tts_done = true;
+          state.production.video_done = true;
+          state.production.verified = true;
+          state.production.stale = false;
+          state.production.stale_reason = null;
+          state.production.status = "completed";
+          state.production.completed_at = nowFinal;
+          state.last_error = null;
+        },
+        {
+          type: "job_render_completed",
+          job_id: job.id,
+          format: job.format,
+          codec: job.codec,
+          output_file: outputFile,
+        }
+      );
+    }
     emitJob(
       {
         status: "completed",
@@ -2459,7 +2678,7 @@ async function executeProductionJob(job) {
         output_file: outputFile,
         completed_at: nowFinal,
       },
-      `${job.mode === "render_only" ? "Video render" : "TTS & Video render"} completed cleanly: ${outputFile}`
+      `${job.mode === "render_only" ? "Video render" : "TTS & Video render"} completed cleanly: ${partId ? `parts/${partId}/` : ""}${outputFile}`
     );
   } catch (err) {
     if (!rt.cancelled && job.status !== "cancelled") {
@@ -2535,16 +2754,20 @@ function validateRenderOptions(raw = {}, { requireScriptCheck = false } = {}) {
   const tts_provider = raw.tts_provider ? String(raw.tts_provider).trim() : null;
   const tts_voice = raw.tts_voice ? String(raw.tts_voice).trim() : null;
   const tts_rate = raw.tts_rate ? String(raw.tts_rate).trim() : null;
+  const part_id = String(raw.part_id ?? raw.part ?? "").trim();
   const format = String(raw.format || "mp4").trim().toLowerCase();
   const codec = String(raw.codec || (format === "webm" ? "vp9" : "h264")).trim().toLowerCase();
   const hardware = String(raw.hardware || "auto").trim().toLowerCase();
   const resolution = String(raw.resolution || "1080p").trim().toLowerCase();
-  const fps = raw.fps !== undefined && raw.fps !== null && raw.fps !== "" ? Number(raw.fps) : 60;
+  const fps = raw.fps !== undefined && raw.fps !== null && raw.fps !== "" ? Number(raw.fps) : DEFAULT_RENDER_FPS;
   const speed = raw.speed !== undefined && raw.speed !== null && raw.speed !== "" ? Number(raw.speed) : 1;
   const rawOutputName = raw.output_filename ?? raw.output_name ?? "";
-  const episodeFallback = raw.episode ? String(raw.episode).trim() : "";
+  const episodeFallback = part_id || (raw.episode ? String(raw.episode).trim() : "");
   const engine = String(raw.engine || DEFAULT_RENDER_ENGINE).trim().toLowerCase();
 
+  if (part_id && !/^[A-Za-z0-9_-]+$/.test(part_id)) {
+    return { ok: false, status: 400, error: "Invalid part_id identifier" };
+  }
   if (!VALID_JOB_MODES.has(mode)) {
     return { ok: false, status: 400, error: 'mode must be "tts_and_render", "tts_only", or "render_only"' };
   }
@@ -2589,8 +2812,15 @@ function validateRenderOptions(raw = {}, { requireScriptCheck = false } = {}) {
   if (!VALID_SPEEDS.has(speed)) {
     return { ok: false, status: 400, error: "speed must be 1, 1.25, 1.5, or 2" };
   }
+  if (engine === "legacy") {
+    return {
+      ok: false,
+      status: 400,
+      error: 'Legacy Canvas 2D renderer ("legacy") has been removed. Use "hyperframes".',
+    };
+  }
   if (!VALID_RENDER_ENGINES.has(engine)) {
-    return { ok: false, status: 400, error: 'engine must be "hyperframes" or "legacy"' };
+    return { ok: false, status: 400, error: 'engine must be "hyperframes"' };
   }
 
   let output_stem = null;
@@ -2615,6 +2845,7 @@ function validateRenderOptions(raw = {}, { requireScriptCheck = false } = {}) {
     ok: true,
     options: {
       mode,
+      part_id: part_id || null,
       profile_id: mode === "render_only" ? null : profile_id,
       tts_profile: mode === "render_only" ? null : profile_id,
       tts_provider: mode === "render_only" ? null : tts_provider,
@@ -2647,6 +2878,7 @@ function enqueueProductionJob(params = {}) {
   }
   const {
     mode,
+    part_id,
     profile_id,
     tts_profile,
     tts_provider,
@@ -2662,17 +2894,18 @@ function enqueueProductionJob(params = {}) {
     output_stem,
     output_filename,
   } = optsRes.options;
-  const resolvedStem = output_stem || episode;
+  const resolvedStem = output_stem || part_id || episode;
   const resolvedOutputFilename = output_filename || `${resolvedStem}.${format}`;
 
   const courseDir = safeResolve(WORKSPACE_ROOT, [course]);
   const epDir = safeResolve(WORKSPACE_ROOT, [course, "episodes", episode]);
-  const scriptPath = safeResolve(WORKSPACE_ROOT, [course, "episodes", episode, "script.json"]);
-  if (!courseDir || !epDir || !scriptPath || !fs.existsSync(scriptPath)) {
+  const targetDir = part_id && epDir ? safeResolve(epDir, ["parts", part_id]) : epDir;
+  const scriptPath = targetDir ? safeResolve(targetDir, ["script.json"]) : null;
+  if (!courseDir || !epDir || !targetDir || !scriptPath || !fs.existsSync(scriptPath)) {
     return {
       ok: false,
       status: 404,
-      error: `Không tìm thấy script.json cho ${course}/${episode}.`,
+      error: `Không tìm thấy script.json cho ${course}/${episode}${part_id ? `/parts/${part_id}` : ""}.`,
     };
   }
 
@@ -2683,17 +2916,17 @@ function enqueueProductionJob(params = {}) {
     return {
       ok: false,
       status: 400,
-      error: `script.json của ${course}/${episode} bị lỗi cú pháp JSON.`,
+      error: `script.json của ${course}/${episode}${part_id ? `/parts/${part_id}` : ""} bị lỗi cú pháp JSON.`,
     };
   }
 
   if (mode === "render_only") {
-    const audioCount = countEpisodeAudioFiles(epDir);
+    const audioCount = countEpisodeAudioFiles(targetDir, scriptJson);
     if (audioCount === 0) {
       return {
         ok: false,
         status: 400,
-        error: `Tập "${episode}" chưa có file audio trong thư mục audio/. Hãy tạo Audio (TTS) trước hoặc chọn "Tạo Audio & Render".`,
+        error: `${part_id ? `Phần "${part_id}" của tập "${episode}"` : `Tập "${episode}"`} chưa có file audio trong thư mục audio/. Hãy tạo Audio (TTS) trước hoặc chọn "Tạo Audio & Render".`,
       };
     }
   }
@@ -2720,6 +2953,7 @@ function enqueueProductionJob(params = {}) {
     _seq: ++jobSeqCounter,
     course,
     episode,
+    part_id: part_id || null,
     episode_title,
     mode,
     profile_id,
@@ -2749,7 +2983,7 @@ function enqueueProductionJob(params = {}) {
   };
   appendJobLog(
     job,
-    `Queued ${mode} (${resolution} @ ${fps}fps, ${speed}x, ${format}/${codec}, hw=${hardware}, output=${resolvedOutputFilename})`
+    `Queued ${mode}${part_id ? ` [part=${part_id}]` : ""} (${resolution} @ ${fps}fps, ${speed}x, ${format}/${codec}, hw=${hardware}, output=${resolvedOutputFilename})`
   );
 
   jobs.set(job.id, job);
@@ -2904,11 +3138,18 @@ function readJsonFileOrNull(filePath) {
   }
 }
 
-function resolveEpisodePaths(courseRaw, episodeRaw) {
+function resolveEpisodePaths(courseRaw, episodeRaw, partRaw = "") {
   const course = String(courseRaw || "").trim();
   const episode = String(episodeRaw || "").trim();
+  const partId = String(partRaw || "").trim();
   if (!course || !episode) {
     return { ok: false, status: 400, error: "course and episode are required" };
+  }
+  if (!/^[A-Za-z0-9_-]+$/.test(course) || !/^[A-Za-z0-9_-]+$/.test(episode)) {
+    return { ok: false, status: 400, error: "Invalid course or episode identifier" };
+  }
+  if (partId && !/^[A-Za-z0-9_-]+$/.test(partId)) {
+    return { ok: false, status: 400, error: "Invalid part identifier" };
   }
   const courseDir = safeResolve(WORKSPACE_ROOT, [course]);
   if (!courseDir || !fs.existsSync(path.join(courseDir, "course.json"))) {
@@ -2918,19 +3159,59 @@ function resolveEpisodePaths(courseRaw, episodeRaw) {
   if (!epDir) {
     return { ok: false, status: 400, error: "Invalid episode path" };
   }
+  const partDir = partId ? safeResolve(epDir, ["parts", partId]) : null;
+  if (partId && !partDir) {
+    return { ok: false, status: 400, error: "Invalid part path" };
+  }
+  const activeDir = partDir || epDir;
   return {
     ok: true,
     course,
     episode,
+    partId: partId || null,
     courseDir,
     courseJsonPath: path.join(courseDir, "course.json"),
     epDir,
+    partDir,
+    activeDir,
     briefPath: path.join(epDir, "brief.json"),
-    dialoguePath: path.join(epDir, "dialogue.json"),
-    audioSpinePath: path.join(epDir, "audio_spine.json"),
-    scriptPath: path.join(epDir, "script.json"),
-    notesPath: path.join(epDir, "notes.md"),
+    briefReviewPath: path.join(epDir, "brief_review.md"),
+    dialoguePath: path.join(activeDir, "dialogue.json"),
+    audioSpinePath: path.join(activeDir, "audio_spine.json"),
+    scriptPath: path.join(activeDir, "script.json"),
+    notesPath: path.join(activeDir, "notes.md"),
+    reviewPath: path.join(activeDir, "review.md"),
   };
+}
+
+function scanPartVideoFiles(partDir, partId) {
+  if (!partDir || !fs.existsSync(partDir) || !fs.statSync(partDir).isDirectory()) {
+    return [];
+  }
+  const files = [];
+  for (const entry of fs.readdirSync(partDir, { withFileTypes: true })) {
+    if (!entry.isFile() || !/\.(mp4|webm)$/i.test(entry.name)) continue;
+    const full = path.join(partDir, entry.name);
+    let stat = null;
+    try {
+      stat = fs.statSync(full);
+    } catch {
+      continue;
+    }
+    if (!stat || stat.size <= 0) continue;
+    const fmt = entry.name.toLowerCase().endsWith(".webm") ? "webm" : "mp4";
+    files.push({
+      filename: entry.name,
+      format: fmt,
+      size_bytes: stat.size,
+      modified_at: stat.mtime.toISOString(),
+      is_default: entry.name === `${partId}.${fmt}`,
+    });
+  }
+  files.sort(
+    (a, b) => Number(b.is_default) - Number(a.is_default) || b.modified_at.localeCompare(a.modified_at)
+  );
+  return files;
 }
 
 async function runAudioSpineProcess({
@@ -2975,21 +3256,44 @@ async function runAudioSpineProcess({
 function handleGetScriptingArtifacts(res, parsedUrl) {
   const resolved = resolveEpisodePaths(
     parsedUrl.searchParams.get("course"),
-    parsedUrl.searchParams.get("episode") || parsedUrl.searchParams.get("ep")
+    parsedUrl.searchParams.get("episode") || parsedUrl.searchParams.get("ep"),
+    parsedUrl.searchParams.get("part") || parsedUrl.searchParams.get("part_id") || ""
   );
   if (!resolved.ok) {
     return sendJson(res, resolved.status, { ok: false, error: resolved.error });
   }
   const stateDir = path.join(resolved.courseDir, "state");
   const epState = readEpisodeState(stateDir, resolved.episode);
+  const artifacts = inspectEpisodeArtifacts(resolved.courseDir, resolved.episode);
+  const stateForParts = epState ? structuredClone(epState) : { parts: [] };
+  reconcileEpisodeParts(resolved.courseDir, resolved.episode, stateForParts, artifacts);
+  const parts = buildMergedPartsPayload(resolved.course, resolved.episode, stateForParts, artifacts);
+  const briefReviewMd = fs.existsSync(resolved.briefReviewPath)
+    ? fs.readFileSync(resolved.briefReviewPath, "utf-8")
+    : "";
+  const briefReviewVerdict = briefReviewMd ? parseReviewVerdict(resolved.briefReviewPath) : null;
+  const partReviewMd =
+    resolved.partId && fs.existsSync(resolved.reviewPath)
+      ? fs.readFileSync(resolved.reviewPath, "utf-8")
+      : "";
+  const partReviewVerdict =
+    resolved.partId && partReviewMd ? parseReviewVerdict(resolved.reviewPath) : null;
+
   return sendJson(res, 200, {
     ok: true,
     course: resolved.course,
     episode: resolved.episode,
+    part_id: resolved.partId,
     brief: readJsonFileOrNull(resolved.briefPath),
+    brief_review_md: briefReviewMd,
+    brief_review_verdict: briefReviewVerdict,
     dialogue: readJsonFileOrNull(resolved.dialoguePath),
     audio_spine: readJsonFileOrNull(resolved.audioSpinePath),
     notes: fs.existsSync(resolved.notesPath) ? fs.readFileSync(resolved.notesPath, "utf-8") : "",
+    review_md: partReviewMd,
+    review_verdict: partReviewVerdict,
+    parts,
+    merged_at: epState?.merged_at || null,
     scripting_phase: epState?.scripting?.phase || null,
   });
 }
@@ -3009,9 +3313,24 @@ async function handleSaveEpisodeBrief(req, res) {
   if (!brief || typeof brief !== "object" || Array.isArray(brief)) {
     return sendJson(res, 400, { ok: false, error: "brief object is required" });
   }
-  if (!Array.isArray(brief.teaching_beats) || brief.teaching_beats.length === 0) {
-    return sendJson(res, 400, { ok: false, error: "brief.teaching_beats must be a non-empty array" });
+  const hasTopBeats = Array.isArray(brief.teaching_beats) && brief.teaching_beats.length > 0;
+  const hasPartBeats =
+    Array.isArray(brief.parts) &&
+    brief.parts.length > 0 &&
+    brief.parts.some((p) => p && typeof p === "object");
+  if (!hasTopBeats && !hasPartBeats) {
+    return sendJson(res, 400, {
+      ok: false,
+      error: "brief must include non-empty brief.teaching_beats or brief.parts",
+    });
   }
+
+  const beatCount = hasTopBeats
+    ? brief.teaching_beats.length
+    : brief.parts.reduce(
+        (acc, p) => acc + (Array.isArray(p?.teaching_beats) ? p.teaching_beats.length : 0),
+        0
+      );
 
   fs.mkdirSync(resolved.epDir, { recursive: true });
   writeJsonAtomic(resolved.briefPath, brief);
@@ -3025,8 +3344,11 @@ async function handleSaveEpisodeBrief(req, res) {
         epState.scripting = epState.scripting || {};
         epState.scripting.status = artifacts.script ? "completed" : "reviewing";
         epState.scripting.phase = "brief_ready";
-        epState.scripting.notes = `Content Brief updated (${brief.teaching_beats.length} beats)`;
+        epState.scripting.notes = `Content Brief updated (${beatCount} beats${
+          Array.isArray(brief.parts) && brief.parts.length ? `, ${brief.parts.length} parts` : ""
+        })`;
         epState.last_error = null;
+        reconcileEpisodeParts(resolved.courseDir, resolved.episode, epState, artifacts);
       },
       {
         type: "brief_updated",
@@ -3034,7 +3356,7 @@ async function handleSaveEpisodeBrief(req, res) {
       }
     );
   } catch {
-    scheduleStateBroadcast();
+    scheduleStateBroadcast(resolved.course, `${resolved.episode}.json`);
   }
   return sendJson(res, 200, { ok: true, brief, state });
 }
@@ -3046,7 +3368,11 @@ async function handleSaveEpisodeDialogue(req, res) {
   } catch (err) {
     return sendJson(res, 400, { ok: false, error: err.message });
   }
-  const resolved = resolveEpisodePaths(body.course, body.episode || body.ep);
+  const resolved = resolveEpisodePaths(
+    body.course,
+    body.episode || body.ep,
+    body.part_id || body.part || ""
+  );
   if (!resolved.ok) {
     return sendJson(res, resolved.status, { ok: false, error: resolved.error });
   }
@@ -3058,7 +3384,7 @@ async function handleSaveEpisodeDialogue(req, res) {
     return sendJson(res, 400, { ok: false, error: "dialogue.beats must be a non-empty array" });
   }
 
-  fs.mkdirSync(resolved.epDir, { recursive: true });
+  fs.mkdirSync(resolved.activeDir, { recursive: true });
   writeJsonAtomic(resolved.dialoguePath, dialogue);
   if (body.notes_md !== undefined && body.notes_md !== null) {
     const tmpNotes = `${resolved.notesPath}.${process.pid}.${Date.now()}.tmp`;
@@ -3075,18 +3401,20 @@ async function handleSaveEpisodeDialogue(req, res) {
         epState.scripting = epState.scripting || {};
         epState.scripting.status = artifacts.script ? "completed" : "reviewing";
         epState.scripting.phase = "dialogue_ready";
-        epState.scripting.notes = `Dialogue updated (${dialogue.beats.length} beats)`;
+        epState.scripting.notes = `Dialogue updated${resolved.partId ? ` [${resolved.partId}]` : ""} (${dialogue.beats.length} beats)`;
         epState.last_error = null;
+        reconcileEpisodeParts(resolved.courseDir, resolved.episode, epState, artifacts);
       },
       {
         type: "dialogue_updated",
-        message: `Đã lưu Lời thoại (Dialogue) cho ${resolved.episode}`,
+        part_id: resolved.partId,
+        message: `Đã lưu Lời thoại (Dialogue) cho ${resolved.episode}${resolved.partId ? ` (${resolved.partId})` : ""}`,
       }
     );
   } catch {
-    scheduleStateBroadcast();
+    scheduleStateBroadcast(resolved.course, `${resolved.episode}.json`);
   }
-  return sendJson(res, 200, { ok: true, dialogue, state });
+  return sendJson(res, 200, { ok: true, part_id: resolved.partId, dialogue, state });
 }
 
 async function handleLockEpisodeAudioSpine(req, res) {
@@ -3096,17 +3424,24 @@ async function handleLockEpisodeAudioSpine(req, res) {
   } catch (err) {
     return sendJson(res, 400, { ok: false, error: err.message });
   }
-  const resolved = resolveEpisodePaths(body.course, body.episode || body.ep);
+  const resolved = resolveEpisodePaths(
+    body.course,
+    body.episode || body.ep,
+    body.part_id || body.part || ""
+  );
   if (!resolved.ok) {
     return sendJson(res, resolved.status, { ok: false, error: resolved.error });
   }
   if (!fs.existsSync(resolved.dialoguePath)) {
-    return sendJson(res, 400, { ok: false, error: "dialogue.json does not exist for this episode yet." });
+    return sendJson(res, 400, {
+      ok: false,
+      error: `dialogue.json does not exist for ${resolved.episode}${resolved.partId ? `/${resolved.partId}` : ""} yet.`,
+    });
   }
 
   const spineRes = await runAudioSpineProcess({
     courseJsonPath: resolved.courseJsonPath,
-    epDir: resolved.epDir,
+    epDir: resolved.activeDir,
     dialoguePath: resolved.dialoguePath,
     profileId: body.profile_id || body.profile || null,
     provider: body.provider || null,
@@ -3126,19 +3461,241 @@ async function handleLockEpisodeAudioSpine(req, res) {
         epState.scripting = epState.scripting || {};
         epState.scripting.status = artifacts.script ? "completed" : "reviewing";
         epState.scripting.phase = "audio_spine_ready";
-        epState.scripting.notes = `Audio-Spine locked (${spineRes.audio_spine?.beats?.length || 0} beats, ${spineRes.audio_spine?.total_duration_ms || 0}ms)`;
+        epState.scripting.notes = `Audio-Spine locked${resolved.partId ? ` [${resolved.partId}]` : ""} (${spineRes.audio_spine?.beats?.length || 0} beats, ${spineRes.audio_spine?.total_duration_ms || 0}ms)`;
         epState.last_error = null;
       },
       {
         type: "audio_spine_locked",
-        message: `Đã khóa Audio-Spine TTS cho ${resolved.episode}`,
+        part_id: resolved.partId,
+        message: `Đã khóa Audio-Spine TTS cho ${resolved.episode}${resolved.partId ? ` (${resolved.partId})` : ""}`,
       }
     );
   } catch {
-    scheduleStateBroadcast();
+    scheduleStateBroadcast(resolved.course, `${resolved.episode}.json`);
   }
 
-  return sendJson(res, 200, { ok: true, audio_spine: spineRes.audio_spine, state });
+  return sendJson(res, 200, {
+    ok: true,
+    part_id: resolved.partId,
+    audio_spine: spineRes.audio_spine,
+    state,
+  });
+}
+
+function handleGetEpisodePart(res, parsedUrl) {
+  const course = String(parsedUrl.searchParams.get("course") || "").trim();
+  const episode = String(
+    parsedUrl.searchParams.get("episode") || parsedUrl.searchParams.get("ep") || ""
+  ).trim();
+  const partId = String(
+    parsedUrl.searchParams.get("part") || parsedUrl.searchParams.get("part_id") || ""
+  ).trim();
+
+  if (!partId) {
+    return sendJson(res, 400, { ok: false, error: "course, episode, and part are required" });
+  }
+  const resolved = resolveEpisodePaths(course, episode, partId);
+  if (!resolved.ok) {
+    return sendJson(res, resolved.status, { ok: false, error: resolved.error });
+  }
+
+  let courseMeta = { id: course, stages: [] };
+  try {
+    courseMeta = { ...courseMeta, ...loadCourseJson(resolved.courseDir) };
+  } catch {
+    // ignore malformed course.json
+  }
+  const epMeta = flattenCourseEpisodes(courseMeta).find((e) => e.id === episode) || {
+    id: episode,
+    number: 0,
+    stage: 0,
+    stage_title: "",
+    title: episode,
+    duration_target: "",
+    course_status: "planned",
+  };
+  if (!flattenCourseEpisodes(courseMeta).some((e) => e.id === episode) && !fs.existsSync(resolved.epDir)) {
+    return sendJson(res, 404, { ok: false, error: `Episode "${episode}" not found` });
+  }
+
+  const stateDir = path.join(resolved.courseDir, "state");
+  const artifacts = inspectEpisodeArtifacts(resolved.courseDir, episode);
+  let state = readEpisodeState(stateDir, episode);
+  if (state) {
+    state.artifacts = artifacts;
+    reconcileEpisodeParts(resolved.courseDir, episode, state, artifacts);
+    recomputeState(state);
+  } else {
+    state = createEpisodeStateFromMeta(epMeta, artifacts, {
+      seedReady: true,
+      courseDir: resolved.courseDir,
+    });
+  }
+
+  const briefJson = readJsonFileOrNull(resolved.briefPath);
+  const inBrief = Array.isArray(briefJson?.parts)
+    ? briefJson.parts.some((p) => String(p?.part_id || p?.id || "").trim() === partId)
+    : false;
+  const inState = Array.isArray(state?.parts)
+    ? state.parts.some((p) => p?.part_id === partId)
+    : false;
+  const partDirExists = Boolean(resolved.partDir && fs.existsSync(resolved.partDir));
+  if (!partDirExists && !inBrief && !inState) {
+    return sendJson(res, 404, {
+      ok: false,
+      error: `Part "${partId}" not found for ${course}/${episode}`,
+    });
+  }
+
+  let script = readJsonFileOrNull(resolved.scriptPath);
+  if (script) {
+    script = normalizeScriptVoiceTracks(script, resolved.activeDir, courseMeta, state);
+  }
+  const dialogue = readJsonFileOrNull(resolved.dialoguePath);
+  const audio_spine = readJsonFileOrNull(resolved.audioSpinePath);
+  const notes = fs.existsSync(resolved.notesPath)
+    ? fs.readFileSync(resolved.notesPath, "utf-8")
+    : "";
+  const review_md = fs.existsSync(resolved.reviewPath)
+    ? fs.readFileSync(resolved.reviewPath, "utf-8")
+    : "";
+  const review_verdict = review_md ? parseReviewVerdict(resolved.reviewPath) : null;
+
+  const basePayload = buildEpisodePayload(course, resolved.courseDir, stateDir, epMeta, courseMeta);
+  const { script: _ignoredRootScript, notes: _ignoredRootNotes, ...epMetaSummary } = basePayload;
+
+  const partBaseUrl = `/courses/${encodeURIComponent(course)}/episodes/${encodeURIComponent(episode)}/parts/${encodeURIComponent(partId)}`;
+  const partVideoFiles = scanPartVideoFiles(resolved.partDir, partId).map((f) => ({
+    ...f,
+    url: `${partBaseUrl}/${encodeURIComponent(f.filename)}`,
+  }));
+  const partState = (state?.parts || []).find((p) => p.part_id === partId) || null;
+  const partArtifacts = (artifacts?.parts || []).find((p) => p.part_id === partId) || null;
+  const partAudioCount = countEpisodeAudioFiles(resolved.activeDir, script);
+
+  const baseEpMeta = {
+    ...epMetaSummary,
+    part_id: partId,
+    title: script?.title || partState?.title || epMetaSummary.title,
+    total_duration_sec: script?.total_duration_sec || 0,
+    has_script: Boolean(script?.scenes?.length),
+    has_audio: partAudioCount > 0 || Boolean(partState?.tts_done),
+    has_video: partVideoFiles.length > 0,
+    video_file: partVideoFiles[0]?.filename || partState?.video_file || null,
+    video_url: partVideoFiles[0]?.url || null,
+    video_files: partVideoFiles,
+    base_url: partBaseUrl,
+  };
+
+  return sendJson(res, 200, {
+    ok: true,
+    course,
+    episode: baseEpMeta,
+    episode_id: episode,
+    part_id: partId,
+    script,
+    dialogue,
+    review_md,
+    review_verdict,
+    notes,
+    audio_spine,
+    state,
+    part_state: partState,
+    part_artifacts: partArtifacts,
+    video_files: partVideoFiles,
+  });
+}
+
+async function handleApproveEpisodePart(req, res) {
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch (err) {
+    return sendJson(res, 400, { ok: false, error: err.message });
+  }
+
+  const course = String(body.course || "").trim();
+  const episode = String(body.episode || body.ep || "").trim();
+  const partId = String(body.part_id || body.part || "").trim();
+  if (!/^[A-Za-z0-9_-]+$/.test(course) || !/^[A-Za-z0-9_-]+$/.test(episode) || !/^[A-Za-z0-9_-]+$/.test(partId)) {
+    return sendJson(res, 400, {
+      ok: false,
+      error: "Valid course, episode, and part_id identifiers are required",
+    });
+  }
+
+  const approved = body.approved !== undefined ? Boolean(body.approved) : true;
+  const status = body.status !== undefined && body.status !== null && String(body.status).trim() !== ""
+    ? String(body.status).trim()
+    : undefined;
+  const note = body.note !== undefined ? String(body.note) : undefined;
+
+  try {
+    const result = setPartState({
+      workspaceRoot: WORKSPACE_ROOT,
+      course,
+      epId: episode,
+      partId,
+      approved,
+      status,
+      note,
+    });
+    scheduleStateBroadcast(course, `${episode}.json`);
+    broadcastSse("courses_updated", {
+      course,
+      episode_id: episode,
+      part_id: partId,
+      approved: result.part?.approved,
+      ts: new Date().toISOString(),
+    });
+    return sendJson(res, 200, {
+      ok: true,
+      course,
+      episode,
+      part_id: partId,
+      state: result.state,
+      part: result.part,
+    });
+  } catch (err) {
+    const statusCode = /not found/i.test(err.message) ? 404 : 400;
+    return sendJson(res, statusCode, { ok: false, error: err.message });
+  }
+}
+
+async function handleMergeEpisodeParts(req, res) {
+  let body;
+  try {
+    body = await readJsonBody(req);
+  } catch (err) {
+    return sendJson(res, 400, { ok: false, error: err.message });
+  }
+
+  const course = String(body.course || "").trim();
+  const episode = String(body.episode || body.ep || "").trim();
+  if (!/^[A-Za-z0-9_-]+$/.test(course) || !/^[A-Za-z0-9_-]+$/.test(episode)) {
+    return sendJson(res, 400, { ok: false, error: "Invalid course or episode identifier" });
+  }
+
+  try {
+    const result = mergeEpisodeParts({
+      workspaceRoot: WORKSPACE_ROOT,
+      course,
+      epId: episode,
+      force: Boolean(body.force),
+      insertChapterDividers: Boolean(body.insert_chapter_dividers),
+    });
+    scheduleStateBroadcast(course, `${episode}.json`);
+    broadcastSse("courses_updated", {
+      course,
+      episode_id: episode,
+      merged: true,
+      ts: new Date().toISOString(),
+    });
+    return sendJson(res, 200, { ok: true, ...result });
+  } catch (err) {
+    const statusCode = /not found/i.test(err.message) ? 404 : 400;
+    return sendJson(res, statusCode, { ok: false, error: err.message });
+  }
 }
 
 // --- AI Broker (Providers, Builtin Runner, Worker Heartbeat & Queue) + MCP HTTP ---
@@ -3488,6 +4045,7 @@ const mediaHandlers = createMediaHandlers({
   activeJobByEp,
   jobs,
   mutateEpisodeStateForJob,
+  setPartState,
 });
 
 const server = http.createServer((req, res) => {
@@ -3536,6 +4094,18 @@ const server = http.createServer((req, res) => {
 
   if (req.method === "GET" && pathname === "/api/episodes/scripting-artifacts") {
     return handleGetScriptingArtifacts(res, parsedUrl);
+  }
+
+  if (req.method === "GET" && pathname === "/api/episodes/part") {
+    return handleGetEpisodePart(res, parsedUrl);
+  }
+
+  if (req.method === "POST" && pathname === "/api/episodes/part/approve") {
+    return void handleApproveEpisodePart(req, res);
+  }
+
+  if (req.method === "POST" && pathname === "/api/episodes/merge-parts") {
+    return void handleMergeEpisodeParts(req, res);
   }
 
   if (req.method === "POST" && pathname === "/api/episodes/brief") {

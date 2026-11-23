@@ -16,6 +16,12 @@ export const PIPELINE_ROLE_SPECS = Object.freeze([
     description: "Lập Content Brief, Hook & viết thoại TTS",
   },
   {
+    key: "content_reviewer",
+    label: "Kiểm duyệt nội dung (Content Reviewer)",
+    shortLabel: "Reviewer",
+    description: "Phản biện độ sâu chuyên môn & tính sư phạm (độc lập)",
+  },
+  {
     key: "visual_director",
     label: "Đạo diễn Visual (Tầng 3)",
     shortLabel: "Visual",
@@ -224,7 +230,7 @@ export function RoleRoutingPanel({
             className: `role-routing-count-pill ${customCount > 0 ? "is-custom" : ""}`,
             "data-testid": "role-routing-count-pill",
           },
-          customCount > 0 ? `${customCount}/4 tùy chỉnh` : "Mặc định chung"
+          customCount > 0 ? `${customCount}/${PIPELINE_ROLE_SPECS.length} tùy chỉnh` : "Mặc định chung"
         ),
         customCount > 0
           ? h(

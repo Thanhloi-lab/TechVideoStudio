@@ -5256,3 +5256,518 @@ html, body {
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* --- Export Single-Column Grid --- */
+.render-pills-grid.cols-1 {
+  grid-template-columns: 1fr;
+}
+
+/* --- Deep-Course AiScriptModal Controls --- */
+.ai-deep-course-banner {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(16, 192, 240, 0.12), rgba(59, 130, 246, 0.08));
+  border: 1px solid rgba(56, 189, 248, 0.32);
+  margin-bottom: 10px;
+}
+.ai-deep-course-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: #E2E8F0;
+}
+.ai-deep-course-badge {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(16, 192, 240, 0.16);
+  border: 1px solid rgba(56, 189, 248, 0.45);
+  color: #7DD3FC;
+}
+.ai-deep-course-sub {
+  margin-top: 4px;
+  font-size: 11.5px;
+  color: #94A3B8;
+  line-height: 1.45;
+}
+.ai-switch-row.is-muted {
+  opacity: 0.65;
+}
+
+/* --- ScriptingStageModal: Multi-Part Selector, AI Review & Approve/Merge --- */
+.stage-parts-selector {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+  background: rgba(15, 23, 42, 0.55);
+}
+.stage-parts-selector .stage-part-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  background: rgba(30, 41, 59, 0.85);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  color: #CBD5E1;
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: none;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.stage-parts-selector .stage-part-pill:hover {
+  border-color: rgba(56, 189, 248, 0.55);
+  color: #F1F5F9;
+}
+.stage-parts-selector .stage-part-pill.is-active {
+  background: rgba(16, 192, 240, 0.2);
+  border-color: #38BDF8;
+  color: #7DD3FC;
+  box-shadow: 0 0 12px rgba(56, 189, 248, 0.2);
+}
+.stage-parts-selector .stage-part-pill.is-approved {
+  border-color: rgba(16, 185, 129, 0.45);
+}
+.stage-parts-selector .stage-part-pill.is-approved.is-active {
+  background: rgba(16, 185, 129, 0.18);
+  border-color: #34D399;
+  color: #6EE7B7;
+}
+.stage-parts-selector .stage-part-pill.is-revise {
+  border-color: rgba(245, 158, 11, 0.5);
+  color: #FDE68A;
+}
+
+.stage-review-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.stage-review-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.72);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+}
+.stage-review-verdict-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.stage-review-verdict-badge.is-approved {
+  background: rgba(16, 185, 129, 0.16);
+  border: 1px solid rgba(52, 211, 153, 0.5);
+  color: #6EE7B7;
+}
+.stage-review-verdict-badge.is-revise {
+  background: rgba(245, 158, 11, 0.16);
+  border: 1px solid rgba(251, 191, 36, 0.55);
+  color: #FDE68A;
+}
+.stage-review-verdict-badge.is-unknown {
+  background: rgba(100, 116, 139, 0.22);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  color: #CBD5E1;
+}
+.stage-review-scope-tag {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: #94A3B8;
+}
+.stage-review-md {
+  padding: 14px 16px;
+  border-radius: 10px;
+  background: rgba(9, 17, 34, 0.72);
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  max-height: 54vh;
+  overflow-y: auto;
+}
+
+.stage-canon-line {
+  font-size: 12.5px;
+  color: #CBD5E1;
+  line-height: 1.5;
+  margin-bottom: 6px;
+}
+.stage-canon-glossary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.btn-approve-part {
+  padding: 7px 12px;
+  border-radius: 8px;
+  background: rgba(16, 185, 129, 0.14);
+  border: 1px solid rgba(52, 211, 153, 0.45);
+  color: #6EE7B7;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.btn-approve-part:hover:not(:disabled) {
+  background: rgba(16, 185, 129, 0.24);
+  border-color: #34D399;
+}
+.btn-approve-part.is-approved {
+  background: rgba(16, 185, 129, 0.24);
+  border-color: #10B981;
+  color: #A7F3D0;
+}
+.btn-merge-parts {
+  padding: 7px 13px;
+  border-radius: 8px;
+  background: rgba(59, 130, 246, 0.16);
+  border: 1px solid rgba(96, 165, 250, 0.45);
+  color: #93C5FD;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.btn-merge-parts.is-ready {
+  background: rgba(34, 197, 94, 0.2);
+  border-color: rgba(74, 222, 128, 0.6);
+  color: #86EFAC;
+}
+.btn-merge-parts:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+.btn-approve-part:disabled,
+.btn-merge-parts:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* --- Studio Player: Multi-Part Switcher Bar --- */
+.player-part-switcher {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 12px;
+  margin-bottom: 8px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.78);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+}
+.player-part-pills {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.player-part-pill {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(30, 41, 59, 0.85);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  color: #CBD5E1;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+.player-part-pill:hover:not(:disabled) {
+  border-color: rgba(56, 189, 248, 0.6);
+  color: #F8FAFC;
+}
+.player-part-pill.is-active {
+  background: rgba(16, 192, 240, 0.2);
+  border-color: #38BDF8;
+  color: #7DD3FC;
+}
+.player-part-pill.is-approved {
+  border-color: rgba(52, 211, 153, 0.42);
+}
+.player-part-pill.is-revise {
+  border-color: rgba(251, 191, 36, 0.52);
+  color: #FDE68A;
+}
+.player-part-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.player-part-act-btn {
+  padding: 4px 10px;
+  border-radius: 7px;
+  background: rgba(30, 41, 59, 0.9);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  color: #E2E8F0;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.player-part-act-btn.is-approve {
+  border-color: rgba(52, 211, 153, 0.45);
+  color: #6EE7B7;
+}
+.player-part-act-btn.is-approve.is-approved {
+  background: rgba(16, 185, 129, 0.22);
+  border-color: #10B981;
+}
+.player-part-act-btn.is-export-part {
+  border-color: rgba(56, 189, 248, 0.48);
+  color: #7DD3FC;
+}
+.player-part-act-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* --- 4 New Deep-Dive Visual Templates (16:9 Stage) --- */
+.scene-seq,
+.scene-mem,
+.scene-diff,
+.scene-breakdown {
+  position: absolute;
+  inset: 0;
+  padding: 76px 46px 96px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  pointer-events: none;
+}
+.tpl-seq-shell,
+.tpl-mem-shell,
+.tpl-diff-shell,
+.tpl-breakdown-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.tpl-seq-topbar,
+.tpl-mem-topbar,
+.tpl-diff-topbar,
+.tpl-breakdown-topbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* 8. Sequence Diagram */
+.tpl-seq-canvas {
+  position: relative;
+  border-radius: 14px;
+  padding: 14px 16px;
+  background: rgba(9, 17, 34, 0.82);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  box-sizing: border-box;
+}
+.tpl-seq-actors {
+  display: grid;
+  gap: 10px;
+  align-items: center;
+}
+.tpl-seq-actor {
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.92);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  color: #E2E8F0;
+  font-weight: 700;
+  font-size: 13px;
+  text-align: center;
+}
+.tpl-seq-lifelines {
+  position: relative;
+}
+.tpl-seq-messages {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.tpl-seq-msg {
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 12.5px;
+  color: #E2E8F0;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+.tpl-seq-highlights {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.tpl-seq-highlight-pill {
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.16);
+  border: 1px solid rgba(251, 191, 36, 0.45);
+  color: #FDE68A;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* 9. Memory Layout */
+.tpl-mem-lanes {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.tpl-mem-lane {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(9, 17, 34, 0.84);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+}
+.tpl-mem-cells {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.tpl-mem-cell {
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+.tpl-mem-cell.is-idle {
+  background: rgba(15, 23, 42, 0.78);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  color: #94A3B8;
+}
+.tpl-mem-cell.is-active {
+  background: rgba(14, 165, 233, 0.18);
+  border: 1px solid #38BDF8;
+  color: #E0F2FE;
+  box-shadow: 0 0 14px rgba(56, 189, 248, 0.24);
+}
+.tpl-mem-cell.is-match {
+  background: rgba(16, 185, 129, 0.18);
+  border: 1px solid #34D399;
+  color: #D1FAE5;
+}
+.tpl-mem-cell.is-write {
+  background: rgba(245, 158, 11, 0.18);
+  border: 1px solid #FBBF24;
+  color: #FEF3C7;
+}
+.tpl-mem-cell.is-danger {
+  background: rgba(239, 68, 68, 0.2);
+  border: 1px solid #F87171;
+  color: #FEE2E2;
+}
+.tpl-mem-stepbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #CBD5E1;
+}
+.tpl-mem-callout {
+  padding: 9px 14px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.88);
+  border: 1px solid rgba(56, 189, 248, 0.34);
+  color: #E2E8F0;
+  font-size: 13px;
+}
+
+/* 10. Code Diff */
+.tpl-diff-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.tpl-diff-pane {
+  border-radius: 12px;
+  padding: 10px 12px;
+  background: rgba(9, 17, 34, 0.88);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.tpl-diff-pane.is-before {
+  border-color: rgba(248, 113, 113, 0.32);
+}
+.tpl-diff-pane.is-after {
+  border-color: rgba(52, 211, 153, 0.35);
+}
+.tpl-diff-line {
+  padding: 2px 8px;
+  border-radius: 5px;
+  transition: opacity 0.18s ease, background 0.18s ease;
+}
+.tpl-diff-line.is-focused {
+  background: rgba(56, 189, 248, 0.16);
+  color: #F8FAFC;
+}
+.tpl-diff-line.is-dimmed {
+  opacity: 0.42;
+}
+.tpl-diff-callout {
+  padding: 9px 14px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.9);
+  border: 1px solid rgba(56, 189, 248, 0.34);
+  color: #E2E8F0;
+  font-size: 13px;
+}
+
+/* 11. Concept Breakdown */
+.tpl-breakdown-core {
+  padding: 12px 16px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, rgba(14, 165, 233, 0.2), rgba(30, 41, 59, 0.92));
+  border: 1.5px solid rgba(56, 189, 248, 0.5);
+  color: #F8FAFC;
+  font-weight: 700;
+}
+.tpl-breakdown-branches {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+}
+.tpl-breakdown-branch {
+  padding: 11px 13px;
+  border-radius: 12px;
+  background: rgba(9, 17, 34, 0.84);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  color: #E2E8F0;
+  transition: opacity 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease;
+}
+.tpl-breakdown-branch.is-active {
+  border-color: #38BDF8;
+  box-shadow: 0 0 18px rgba(56, 189, 248, 0.22);
+}
+.tpl-breakdown-branch.is-pending {
+  opacity: 0.35;
+}
+.tpl-breakdown-takeaway {
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: rgba(16, 185, 129, 0.14);
+  border: 1px solid rgba(52, 211, 153, 0.42);
+  color: #D1FAE5;
+  font-size: 13px;
+  font-weight: 600;
+}
+

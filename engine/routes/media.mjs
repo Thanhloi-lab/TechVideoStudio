@@ -102,6 +102,7 @@ export function createMediaHandlers({
   activeJobByEp,
   jobs,
   mutateEpisodeStateForJob,
+  setPartState = null,
 }) {
   const publicDir = path.join(ENGINE_DIR, "public");
   const vendorDir = path.join(publicDir, "vendor");
@@ -111,10 +112,18 @@ export function createMediaHandlers({
   function handleSaveVideo(req, res, parsedUrl) {
     const course = parsedUrl.searchParams.get("course") || "";
     const episode = parsedUrl.searchParams.get("episode") || "";
+    const rawPartId =
+      parsedUrl.searchParams.get("part") ||
+      (typeof req.headers["x-part-id"] === "string" ? req.headers["x-part-id"] : "") ||
+      "";
+    const partId = String(rawPartId).trim();
     const ext = resolveVideoFormatFromRequest(req, parsedUrl);
 
     if (!/^[A-Za-z0-9_-]+$/.test(course) || !/^[A-Za-z0-9_-]+$/.test(episode)) {
       return sendJson(res, 400, { ok: false, error: "Invalid course or episode identifier" });
+    }
+    if (partId && !/^[A-Za-z0-9_-]+$/.test(partId)) {
+      return sendJson(res, 400, { ok: false, error: "Invalid part identifier" });
     }
     if (ext !== "webm" && ext !== "mp4") {
       return sendJson(res, 400, { ok: false, error: "Only webm or mp4 formats are supported" });
@@ -127,7 +136,7 @@ export function createMediaHandlers({
         ? req.headers["x-video-filename"]
         : "") ||
       "";
-    const stemRes = sanitizeVideoOutputStem(rawRequestedName, episode);
+    const stemRes = sanitizeVideoOutputStem(rawRequestedName, partId || episode);
     if (!stemRes.ok) {
       return sendJson(res, 400, { ok: false, error: stemRes.error });
     }
@@ -138,7 +147,17 @@ export function createMediaHandlers({
     }
 
     const filename = `${stemRes.stem}.${ext}`;
-    const outPath = safeResolve(epDir, [filename]);
+    let outPath;
+    if (partId) {
+      const partDir = safeResolve(epDir, ["parts", partId]);
+      if (!partDir) {
+        return sendJson(res, 403, { ok: false, error: "Forbidden" });
+      }
+      fs.mkdirSync(partDir, { recursive: true });
+      outPath = safeResolve(partDir, [filename]);
+    } else {
+      outPath = safeResolve(epDir, [filename]);
+    }
     if (!outPath) {
       return sendJson(res, 403, { ok: false, error: "Forbidden" });
     }
@@ -255,13 +274,96 @@ export function createMediaHandlers({
 
       const courseDir = path.join(WORKSPACE_ROOT, course);
       const artifacts = inspectEpisodeArtifacts(courseDir, episode);
+      const stateDir = path.join(courseDir, "state");
+      const statePath = path.join(stateDir, `${episode}.json`);
+
+      if (partId) {
+        let updatedViaHelper = false;
+        if (typeof setPartState === "function" && fs.existsSync(path.join(courseDir, "course.json"))) {
+          try {
+            setPartState({
+              workspaceRoot: WORKSPACE_ROOT,
+              course,
+              epId: episode,
+              partId,
+              videoFile: filename,
+              note: `Part video saved: ${filename}`,
+            });
+            updatedViaHelper = true;
+            scheduleStateBroadcast(course, `${episode}.json`);
+          } catch {
+            updatedViaHelper = false;
+          }
+        }
+        if (!updatedViaHelper && fs.existsSync(statePath)) {
+          const state = readEpisodeState(stateDir, episode);
+          if (state) {
+            const now = new Date().toISOString();
+            state.artifacts = artifacts;
+            state.parts = Array.isArray(state.parts) ? state.parts : [];
+            let partEntry = state.parts.find((p) => p && p.part_id === partId);
+            if (!partEntry) {
+              partEntry = {
+                part_id: partId,
+                title: partId,
+                target_duration_sec: null,
+                status: "completed",
+                ai_review_verdict: null,
+                approved: false,
+                approved_at: null,
+                tts_done: false,
+                video_file: filename,
+                notes: "",
+              };
+              state.parts.push(partEntry);
+            } else {
+              partEntry.video_file = filename;
+            }
+            state.updated_at = now;
+            recomputeState(state);
+            writeJsonAtomic(statePath, state);
+            appendEvent(stateDir, {
+              type: "part_video_saved",
+              course,
+              episode_id: episode,
+              part_id: partId,
+              video_file: filename,
+              format: ext,
+              bytes: bytesWritten,
+              overall_status: state.overall_status,
+            });
+            scheduleStateBroadcast(course, `${episode}.json`);
+          }
+        }
+
+        broadcastSse("courses_updated", {
+          course,
+          episode_id: episode,
+          part_id: partId,
+          video_file: filename,
+          ts: new Date().toISOString(),
+        });
+
+        const partVideoUrl = `/courses/${encodeURIComponent(course)}/episodes/${encodeURIComponent(episode)}/parts/${encodeURIComponent(partId)}/${encodeURIComponent(filename)}`;
+        sendJson(res, 200, {
+          ok: true,
+          file: filename,
+          filename,
+          part_id: partId,
+          format: ext,
+          path: outPath,
+          bytes: bytesWritten,
+          video_url: partVideoUrl,
+          video_file: filename,
+        });
+        return;
+      }
+
       if (!artifacts.video_file) {
         artifacts.video_file = filename;
       }
 
       // Auto-update state/<episode>.json if it exists
-      const stateDir = path.join(courseDir, "state");
-      const statePath = path.join(stateDir, `${episode}.json`);
       if (fs.existsSync(statePath)) {
         const state = readEpisodeState(stateDir, episode);
         if (state) {

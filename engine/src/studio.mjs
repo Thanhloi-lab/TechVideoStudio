@@ -7,6 +7,10 @@ import { TerminalAndCode } from "./components/TerminalAndCode.mjs";
 import { TimelineFlow } from "./components/TimelineFlow.mjs";
 import { ExamTipCard } from "./components/ExamTipCard.mjs";
 import { KpiMetricsCard } from "./components/KpiMetricsCard.mjs";
+import { SequenceDiagram } from "./components/SequenceDiagram.mjs";
+import { MemoryLayout } from "./components/MemoryLayout.mjs";
+import { CodeDiff } from "./components/CodeDiff.mjs";
+import { ConceptBreakdown } from "./components/ConceptBreakdown.mjs";
 import { ProjectDashboard, SseStatusBadge } from "./components/ProjectDashboard.mjs";
 import { EpisodeRoadmap } from "./components/EpisodeRoadmap.mjs";
 import { HeaderJobsTray } from "./components/HeaderJobsTray.mjs";
@@ -27,13 +31,12 @@ const DEFAULT_RENDER_PREFS = {
   hardware: "auto",
   formatCodec: "mp4:h264",
   resolution: "1080p",
-  fps: 60,
+  fps: 30,
 };
 
-// Render engines (engine/render_video.mjs --engine). See engine/HYPERFRAMES_ENGINE.md.
+// Sole render engine (engine/render_video.mjs): HyperFrames composition. See engine/HYPERFRAMES_ENGINE.md.
 const ENGINE_OPTIONS = [
   { id: "hyperframes", label: "HyperFrames (DOM + GSAP)", short: "HyperFrames" },
-  { id: "legacy", label: "Canvas 2D cũ (nhanh)", short: "Canvas" },
 ];
 
 const HARDWARE_OPTIONS = [
@@ -273,7 +276,7 @@ function extractCalibratableItems(visualType, visualData) {
       const it = arr[i] || {};
       const hasRange = !forceMark && (it.progress_start !== undefined || it.progress_end !== undefined);
       const start = clamp01(
-        it.progress_start ?? it.progress_at ?? (i / Math.max(1, n))
+        it.progress_start ?? it.progress_at ?? it.show_at_progress ?? (i / Math.max(1, n))
       );
       const end =
         it.progress_end !== undefined
@@ -412,6 +415,52 @@ function extractCalibratableItems(visualType, visualData) {
         end: null,
       });
     }
+  } else if (visualType === "sequence_diagram") {
+    pushArrayItems(
+      "messages",
+      vd.messages,
+      (m, i) =>
+        m.label ||
+        (m.from && m.to ? `${m.from} → ${m.to}` : "") ||
+        m.cue_text ||
+        `Message ${i + 1}`
+    );
+    pushArrayItems(
+      "highlights",
+      vd.highlights,
+      (hl, i) => hl.label || hl.cue_text || `Highlight ${i + 1}`,
+      true
+    );
+  } else if (visualType === "memory_layout") {
+    pushArrayItems(
+      "steps",
+      vd.steps,
+      (s, i) => s.label || s.callout || s.cue_text || `Bước ${i + 1}`
+    );
+  } else if (visualType === "code_diff") {
+    pushArrayItems(
+      "focus_steps",
+      vd.focus_steps,
+      (s, i) => s.callout || s.fix_reason || s.cue_text || `Bước ${i + 1}`
+    );
+  } else if (visualType === "concept_breakdown") {
+    pushArrayItems(
+      "branches",
+      vd.branches,
+      (b, i) => b.label || b.role_badge || b.cue_text || `Nhánh ${i + 1}`
+    );
+    if (vd.takeaway && typeof vd.takeaway === "object") {
+      items.push({
+        id: "takeaway:0",
+        group: "takeaway",
+        index: 0,
+        stepNum: items.length + 1,
+        kind: "mark",
+        label: vd.takeaway.label || "Kết luận (Takeaway)",
+        start: clamp01(vd.takeaway.show_at_progress ?? 0.78),
+        end: null,
+      });
+    }
   }
 
   return items;
@@ -452,15 +501,34 @@ function applyPlayheadToVisualData(visualData, item, playheadProgress) {
       arr[idx - 1].progress_end = round4(clampedP);
     }
   } else {
-    const prevVal = idx > 0 ? clamp01(arr[idx - 1].progress_start ?? arr[idx - 1].progress_at ?? 0) : -0.01;
+    const prevVal =
+      idx > 0
+        ? clamp01(
+            arr[idx - 1].progress_start ??
+              arr[idx - 1].progress_at ??
+              arr[idx - 1].show_at_progress ??
+              0
+          )
+        : -0.01;
     const nextVal =
       idx + 1 < arr.length
-        ? clamp01(arr[idx + 1].progress_start ?? arr[idx + 1].progress_at ?? 0.99)
+        ? clamp01(
+            arr[idx + 1].progress_start ??
+              arr[idx + 1].progress_at ??
+              arr[idx + 1].show_at_progress ??
+              0.99
+          )
         : 0.99;
     const minBound = idx > 0 ? Math.min(0.97, prevVal + 0.01) : 0;
     const maxBound = Math.max(minBound, Math.min(0.98, nextVal - 0.01));
     const clampedP = Math.max(minBound, Math.min(maxBound, p));
-    if (arr[idx].progress_start !== undefined || arr[idx].progress_at === undefined) {
+    if (arr[idx].show_at_progress !== undefined || item.group === "highlights") {
+      arr[idx].show_at_progress = round4(clampedP);
+    }
+    if (
+      arr[idx].progress_start !== undefined ||
+      (arr[idx].progress_at === undefined && arr[idx].show_at_progress === undefined)
+    ) {
       arr[idx].progress_start = round4(clampedP);
     }
     if (arr[idx].progress_at !== undefined) {
@@ -484,6 +552,10 @@ function extractTimingsPayload(visualData) {
     "cards",
     "metrics",
     "bars",
+    "messages",
+    "highlights",
+    "focus_steps",
+    "branches",
   ];
   for (const key of arrayKeys) {
     if (Array.isArray(vd[key]) && vd[key].length > 0) {
@@ -492,6 +564,9 @@ function extractTimingsPayload(visualData) {
         if (item.progress_start !== undefined) entry.progress_start = round4(item.progress_start);
         if (item.progress_end !== undefined) entry.progress_end = round4(item.progress_end);
         if (item.progress_at !== undefined) entry.progress_at = round4(item.progress_at);
+        if (item.show_at_progress !== undefined) {
+          entry.show_at_progress = round4(item.show_at_progress);
+        }
         return entry;
       });
     }
@@ -508,6 +583,7 @@ function getInitialRouteParams() {
   const params = new URLSearchParams(window.location.search);
   const course = params.get("course") || "";
   const ep = params.get("ep") || "";
+  const part = params.get("part") || "";
   const scene = params.get("scene") || "";
   const viewParam = params.get("view") || "";
   const headless = params.get("headless") === "1" || params.get("headless") === "true";
@@ -519,7 +595,7 @@ function getInitialRouteParams() {
     view = "roadmap";
   }
 
-  return { course, ep, scene, view, headless };
+  return { course, ep, part, scene, view, headless };
 }
 
 const SCENE_COMPONENTS = {
@@ -530,6 +606,10 @@ const SCENE_COMPONENTS = {
   comparison_matrix: ComparisonMatrix,
   timeline_flow: TimelineFlow,
   kpi_metrics: KpiMetricsCard,
+  sequence_diagram: SequenceDiagram,
+  memory_layout: MemoryLayout,
+  code_diff: CodeDiff,
+  concept_breakdown: ConceptBreakdown,
 };
 
 function StudioApp() {
@@ -542,6 +622,10 @@ function StudioApp() {
   const [loading, setLoading] = useState(true);
   const [selectedCourseId, setSelectedCourseId] = useState(initialRoute.course);
   const [selectedEpId, setSelectedEpId] = useState(initialRoute.ep);
+  const [selectedPartId, setSelectedPartId] = useState(initialRoute.part || "");
+  const [partPayload, setPartPayload] = useState(null);
+  const [partLoading, setPartLoading] = useState(false);
+  const [partActionBusy, setPartActionBusy] = useState(false);
   const [sceneIdx, setSceneIdx] = useState(0);
   const [sceneTime, setSceneTime] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -553,6 +637,7 @@ function StudioApp() {
   const [playerAiOptions, setPlayerAiOptions] = useState({
     initialMode: null,
     initialPauseAfter: null,
+    initialPartId: null,
     startFrom: null,
   });
   const [playerStageModalOpen, setPlayerStageModalOpen] = useState(false);
@@ -709,7 +794,8 @@ function StudioApp() {
         const currentEid = selectedEpIdRef.current;
         const eps = targetCourse.episodes || [];
         if (!currentEid || !eps.some((e) => e.id === currentEid)) {
-          const firstPlayable = eps.find((e) => e.has_script) || eps[0];
+          const firstPlayable =
+            eps.find((e) => e.has_script || (e.parts || []).some((p) => p.has_script)) || eps[0];
           if (firstPlayable) {
             setSelectedEpId(firstPlayable.id);
           }
@@ -1024,6 +1110,7 @@ function StudioApp() {
       params.set("view", "player");
       params.set("course", selectedCourseId);
       if (selectedEpId) params.set("ep", selectedEpId);
+      if (selectedPartId) params.set("part", selectedPartId);
       const currScId = timelineStateRef.current.scenes?.[sceneIdx]?.id || pendingSceneIdRef.current;
       if (currScId) params.set("scene", currScId);
     }
@@ -1032,7 +1119,7 @@ function StudioApp() {
     if (window.location.search !== (qs ? `?${qs}` : "")) {
       window.history.replaceState(null, "", nextUrl);
     }
-  }, [view, selectedCourseId, selectedEpId, sceneIdx, initialRoute.headless]);
+  }, [view, selectedCourseId, selectedEpId, selectedPartId, sceneIdx, initialRoute.headless]);
 
   const currentCourse = useMemo(
     () => courses.find((c) => c.id === selectedCourseId) || null,
@@ -1044,7 +1131,96 @@ function StudioApp() {
     [currentCourse, selectedEpId]
   );
 
-  const scenes = currentEpisode?.script?.scenes || [];
+  const fetchPartPayload = useCallback(
+    async (courseId, epId, partId) => {
+      if (!courseId || !epId || !partId) {
+        setPartPayload(null);
+        return null;
+      }
+      setPartLoading(true);
+      try {
+        const res = await fetch(
+          `/api/episodes/part?course=${encodeURIComponent(courseId)}&episode=${encodeURIComponent(epId)}&part=${encodeURIComponent(partId)}`
+        );
+        const data = await res.json();
+        if (!res.ok || data.ok === false) {
+          throw new Error(data.error || `HTTP ${res.status}`);
+        }
+        setPartPayload(data);
+        return data;
+      } catch (err) {
+        setPartPayload(null);
+        showToast(false, `⚠️ Không tải được phần ${partId}: ${err.message}`);
+        return null;
+      } finally {
+        setPartLoading(false);
+      }
+    },
+    [showToast]
+  );
+
+  // Auto-select first scripted part when opening an unmerged multi-part episode in Player
+  useEffect(() => {
+    if (view !== "player" || !currentEpisode || selectedPartId) return;
+    if (!currentEpisode.has_script && Array.isArray(currentEpisode.parts)) {
+      const firstScriptedPart = currentEpisode.parts.find((p) => p.has_script);
+      if (firstScriptedPart) {
+        setSelectedPartId(firstScriptedPart.part_id);
+      }
+    }
+  }, [view, currentEpisode?.id, currentEpisode?.has_script, selectedPartId]);
+
+  // Load part payload when viewing a specific part in Studio Player (or when episode state updates via SSE)
+  useEffect(() => {
+    if (view !== "player" || !selectedCourseId || !selectedEpId || !selectedPartId) {
+      if (!selectedPartId) setPartPayload(null);
+      return;
+    }
+    void fetchPartPayload(selectedCourseId, selectedEpId, selectedPartId);
+  }, [
+    view,
+    selectedCourseId,
+    selectedEpId,
+    selectedPartId,
+    currentEpisode?.state?.updated_at,
+    fetchPartPayload,
+  ]);
+
+  const activeEpisode = useMemo(() => {
+    if (!currentEpisode) return null;
+    if (!selectedPartId) return currentEpisode;
+    const partEp = partPayload?.episode || {};
+    const partState =
+      partPayload?.part_state ||
+      (currentEpisode.parts || []).find((p) => p.part_id === selectedPartId) ||
+      null;
+    const partScript = partPayload?.script || null;
+    const partScenes = Array.isArray(partScript?.scenes) ? partScript.scenes : [];
+    const partHasAudio = Boolean(
+      partEp.has_audio ||
+        partState?.tts_done ||
+        partPayload?.part_artifacts?.audio_count > 0 ||
+        partScenes.some((s) => Boolean(s?.audio_file))
+    );
+    return {
+      ...currentEpisode,
+      ...partEp,
+      id: currentEpisode.id,
+      part_id: selectedPartId,
+      part_state: partState,
+      title: partScript?.title || partState?.title || currentEpisode.title,
+      has_script: Boolean(partScript && partScenes.length > 0),
+      has_audio: partHasAudio,
+      base_url:
+        partEp.base_url ||
+        `/courses/${encodeURIComponent(currentCourse?.id || "")}/episodes/${encodeURIComponent(currentEpisode.id)}/parts/${encodeURIComponent(selectedPartId)}`,
+      script: partScript,
+      notes: partPayload?.notes ?? "",
+      video_files: Array.isArray(partPayload?.video_files) ? partPayload.video_files : [],
+    };
+  }, [currentCourse?.id, currentEpisode, partPayload, selectedPartId]);
+
+  const scenes = activeEpisode?.script?.scenes || [];
   const currentScene = scenes[sceneIdx] || null;
   const effectiveScene = useMemo(() => {
     if (!currentScene) return null;
@@ -1054,44 +1230,44 @@ function StudioApp() {
     return currentScene;
   }, [currentScene, timingDraft]);
 
-  const voiceTracks = currentEpisode?.script?.voice_tracks || {};
+  const voiceTracks = activeEpisode?.script?.voice_tracks || {};
   const voiceTrackKeys = Object.keys(voiceTracks);
   const activeVoiceTrackId =
-    currentEpisode?.script?.active_voice_track ||
+    activeEpisode?.script?.active_voice_track ||
     (voiceTrackKeys.length === 1 ? voiceTrackKeys[0] : "");
   const activeTrackObj = activeVoiceTrackId ? voiceTracks[activeVoiceTrackId] || null : null;
   const currentTrackHasAudio = Boolean(
     activeTrackObj
       ? Object.keys(activeTrackObj.scene_data || {}).length > 0
-      : currentEpisode?.has_audio
+      : activeEpisode?.has_audio
   );
   const isEpStaleVal = Boolean(currentEpisode?.state?.production?.stale);
 
   useEffect(() => {
     setTimingDraft(null);
     setTimingDraftDirty(false);
-  }, [currentEpisode?.id, currentScene?.id, activeVoiceTrackId]);
+  }, [activeEpisode?.id, selectedPartId, currentScene?.id, activeVoiceTrackId]);
 
   useEffect(() => {
-    setIncludeTtsBeforeExport(!currentTrackHasAudio || isEpStaleVal);
-  }, [currentEpisode?.id, currentTrackHasAudio, isEpStaleVal, activeVoiceTrackId]);
+    setIncludeTtsBeforeExport(!currentTrackHasAudio || (!selectedPartId && isEpStaleVal));
+  }, [activeEpisode?.id, selectedPartId, currentTrackHasAudio, isEpStaleVal, activeVoiceTrackId]);
 
   useEffect(() => {
-    setOutputFilenameStem(currentEpisode?.id || "");
+    setOutputFilenameStem(selectedPartId || currentEpisode?.id || "");
     setFilenameSanitizeNote("");
     setPreviewVideoFile(null);
-  }, [currentEpisode?.id]);
+  }, [currentEpisode?.id, selectedPartId]);
 
   const isStoryboardMode = Boolean(
-    currentEpisode &&
+    activeEpisode &&
       currentScene &&
-      (currentEpisode.has_audio === false || !currentScene.audio_file)
+      (activeEpisode.has_audio === false || !currentScene.audio_file)
   );
 
   // Resolve deep-linked scene_id once episode scenes load
   useEffect(() => {
     const targetSceneId = pendingSceneIdRef.current;
-    if (!targetSceneId || view !== "player" || !currentEpisode || scenes.length === 0) return;
+    if (!targetSceneId || view !== "player" || !activeEpisode || scenes.length === 0) return;
     const idx = scenes.findIndex((s) => s.id === targetSceneId);
     pendingSceneIdRef.current = "";
     if (idx >= 0) {
@@ -1100,7 +1276,7 @@ function StudioApp() {
       setSceneTime(0);
       setIsPlaying(false);
     }
-  }, [view, currentEpisode?.id, scenes]);
+  }, [view, activeEpisode?.id, selectedPartId, scenes]);
 
   // Compute cumulative scene start offsets (supporting virtual 24s duration fallback in storyboard mode)
   const sceneOffsets = useMemo(() => {
@@ -1176,7 +1352,7 @@ function StudioApp() {
     const audio = audioRef.current;
     if (!audio) return;
 
-    if (view !== "player" || !currentEpisode || !currentScene || isStoryboardMode) {
+    if (view !== "player" || !activeEpisode || !currentScene || isStoryboardMode) {
       if (!audio.paused) audio.pause();
       if (audio.dataset.src) {
         audio.dataset.src = "";
@@ -1186,7 +1362,7 @@ function StudioApp() {
       return;
     }
 
-    const targetSrc = `${currentEpisode.base_url}/${currentScene.audio_file}?v=${audioVersion}`;
+    const targetSrc = `${activeEpisode.base_url}/${currentScene.audio_file}?v=${audioVersion}`;
     if (audio.dataset.src !== targetSrc) {
       audio.dataset.src = targetSrc;
       audio.src = targetSrc;
@@ -1196,7 +1372,7 @@ function StudioApp() {
     if (isPlaying) {
       audio.play().catch(() => setIsPlaying(false));
     }
-  }, [view, currentEpisode?.id, currentScene?.id, isStoryboardMode, audioVersion]);
+  }, [view, activeEpisode?.id, activeEpisode?.base_url, selectedPartId, currentScene?.id, isStoryboardMode, audioVersion]);
 
   // Update playback rate dynamically
   useEffect(() => {
@@ -1504,6 +1680,7 @@ function StudioApp() {
     async ({
       course,
       episode,
+      part_id,
       mode = "tts_and_render",
       profile_id,
       format,
@@ -1536,6 +1713,9 @@ function StudioApp() {
           mode,
           format: resolvedFormat,
         };
+        if (part_id) {
+          body.part_id = part_id;
+        }
         if (mode !== "tts_only") {
           body.codec = resolvedCodec;
           body.hardware = resolvedHardware;
@@ -1562,13 +1742,14 @@ function StudioApp() {
           upsertJob(data.job);
         }
         setTrayHighlightSignal((n) => n + 1);
+        const targetLabel = part_id ? `${episode}/${part_id}` : episode;
         showToast(
           true,
           mode === "tts_only"
-            ? `🎙️ Đã đưa tạo Audio (TTS) cho ${episode} vào hàng đợi Server...`
+            ? `🎙️ Đã đưa tạo Audio (TTS) cho ${targetLabel} vào hàng đợi Server...`
             : mode === "render_only"
-              ? `🎬 Đã đưa vào hàng đợi xuất ngầm trên Server — đóng trình duyệt vẫn chạy tiếp (${episode})`
-              : `🎬 Đã đưa Tạo Audio & Render Video (${episode}) vào hàng đợi Server — đóng trình duyệt vẫn chạy tiếp`
+              ? `🎬 Đã đưa vào hàng đợi xuất ngầm trên Server — đóng trình duyệt vẫn chạy tiếp (${targetLabel})`
+              : `🎬 Đã đưa Tạo Audio & Render Video (${targetLabel}) vào hàng đợi Server — đóng trình duyệt vẫn chạy tiếp`
         );
         return data;
       } catch (err) {
@@ -1588,12 +1769,16 @@ function StudioApp() {
     setExportStatus(null);
     setExportMenuOpen(false);
     const { format, codec } = splitFormatCodec(renderPrefs.formatCodec);
-    const resolvedStem = resolveOutputFilenameStem(outputFilenameStem, currentEpisode.id);
+    const resolvedStem = resolveOutputFilenameStem(
+      outputFilenameStem,
+      selectedPartId || currentEpisode.id
+    );
     const resolvedFilename = `${resolvedStem}.${format}`;
     try {
       await handleRunProduction({
         course: currentCourse.id,
         episode: currentEpisode.id,
+        part_id: selectedPartId || undefined,
         mode: includeTtsBeforeExport ? "tts_and_render" : "render_only",
         format,
         codec,
@@ -1616,6 +1801,107 @@ function StudioApp() {
     outputFilenameStem,
     playbackRate,
     renderPrefs,
+    selectedPartId,
+  ]);
+
+  const handleSwitchPart = useCallback((nextPartId) => {
+    if (audioRef.current && !audioRef.current.paused) {
+      audioRef.current.pause();
+    }
+    setIsPlaying(false);
+    setExportSeekActive(false);
+    virtualTimeRef.current = 0;
+    setSceneIdx(0);
+    setSceneTime(0);
+    setTimingDraft(null);
+    setTimingDraftDirty(false);
+    setPreviewVideoFile(null);
+    setSelectedPartId(nextPartId || "");
+  }, []);
+
+  const handleApproveActivePart = useCallback(async () => {
+    if (!currentCourse || !currentEpisode || !selectedPartId || partActionBusy) return;
+    const currentPart =
+      partPayload?.part_state ||
+      (currentEpisode.parts || []).find((p) => p.part_id === selectedPartId) ||
+      null;
+    const nextApproved = !Boolean(currentPart?.approved);
+    setPartActionBusy(true);
+    try {
+      const res = await fetch("/api/episodes/part/approve", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          course: currentCourse.id,
+          episode: currentEpisode.id,
+          part_id: selectedPartId,
+          approved: nextApproved,
+          status: nextApproved ? "completed" : "reviewing",
+          note: nextApproved ? "Approved from Studio Player" : "Approval cleared from Studio Player",
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.ok === false) {
+        throw new Error(data.error || `HTTP ${res.status}`);
+      }
+      await fetchPartPayload(currentCourse.id, currentEpisode.id, selectedPartId);
+      await fetchCourses();
+      await fetchEvents(currentCourse.id);
+      showToast(
+        true,
+        nextApproved ? `✅ Đã duyệt ${selectedPartId}.` : `↺ Đã bỏ duyệt ${selectedPartId}.`
+      );
+    } catch (err) {
+      showToast(false, `⚠️ Không thể duyệt phần: ${err.message}`);
+    } finally {
+      setPartActionBusy(false);
+    }
+  }, [
+    currentCourse,
+    currentEpisode,
+    fetchCourses,
+    fetchEvents,
+    fetchPartPayload,
+    partActionBusy,
+    partPayload?.part_state,
+    selectedPartId,
+    showToast,
+  ]);
+
+  const handleExportActivePartPreview = useCallback(async () => {
+    if (!currentCourse || !currentEpisode || !selectedPartId) return;
+    if (isPlaying) {
+      if (audioRef.current) audioRef.current.pause();
+      setIsPlaying(false);
+    }
+    const { format, codec } = splitFormatCodec(renderPrefs.formatCodec);
+    try {
+      await handleRunProduction({
+        course: currentCourse.id,
+        episode: currentEpisode.id,
+        part_id: selectedPartId,
+        mode: activeEpisode?.has_audio ? "render_only" : "tts_and_render",
+        format,
+        codec,
+        hardware: renderPrefs.hardware,
+        resolution: renderPrefs.resolution,
+        fps: renderPrefs.fps,
+        speed: playbackRate,
+        engine: renderPrefs.engine,
+        output_filename: `${selectedPartId}.${format}`,
+      });
+    } catch {
+      // handled by handleRunProduction
+    }
+  }, [
+    activeEpisode?.has_audio,
+    currentCourse,
+    currentEpisode,
+    handleRunProduction,
+    isPlaying,
+    playbackRate,
+    renderPrefs,
+    selectedPartId,
   ]);
 
   const openExportMenuWithFocus = useCallback(() => {
@@ -1638,7 +1924,7 @@ function StudioApp() {
       ).toLowerCase();
       const currentFormat = splitFormatCodec(renderPrefs.formatCodec).format;
 
-      setOutputFilenameStem(stem || currentEpisode?.id || "");
+      setOutputFilenameStem(stem || selectedPartId || currentEpisode?.id || "");
       setFilenameSanitizeNote("");
       if (targetFormat !== currentFormat) {
         updateRenderPrefs({
@@ -1653,7 +1939,9 @@ function StudioApp() {
   const handleCopyVideoPath = useCallback(
     async (file) => {
       if (!currentCourse || !currentEpisode || !file?.filename) return;
-      const relPath = `${currentCourse.id}/episodes/${currentEpisode.id}/${file.filename}`;
+      const relPath = selectedPartId
+        ? `${currentCourse.id}/episodes/${currentEpisode.id}/parts/${selectedPartId}/${file.filename}`
+        : `${currentCourse.id}/episodes/${currentEpisode.id}/${file.filename}`;
       try {
         if (navigator?.clipboard?.writeText) {
           await navigator.clipboard.writeText(relPath);
@@ -1817,6 +2105,7 @@ function StudioApp() {
         body: JSON.stringify({
           course: currentCourse.id,
           episode: currentEpisode.id,
+          part_id: selectedPartId || undefined,
           scene_id: currentScene.id,
           action: "save",
           timings,
@@ -1828,6 +2117,9 @@ function StudioApp() {
       }
       setTimingDraft(null);
       setTimingDraftDirty(false);
+      if (selectedPartId) {
+        await fetchPartPayload(currentCourse.id, currentEpisode.id, selectedPartId);
+      }
       await fetchCourses();
       await fetchEvents(currentCourse.id);
       showToast(true, `💾 Đã lưu timing animation cho ${currentScene.id}.`);
@@ -1836,7 +2128,18 @@ function StudioApp() {
     } finally {
       setTimingSaving(false);
     }
-  }, [currentCourse, currentEpisode, currentScene, fetchCourses, fetchEvents, showToast, timingDraft, timingSaving]);
+  }, [
+    currentCourse,
+    currentEpisode,
+    currentScene,
+    fetchCourses,
+    fetchEvents,
+    fetchPartPayload,
+    selectedPartId,
+    showToast,
+    timingDraft,
+    timingSaving,
+  ]);
 
   const handleAutoAlignTimings = useCallback(async () => {
     if (!currentCourse || !currentEpisode || !currentScene || timingAutoAligning) return;
@@ -1848,6 +2151,7 @@ function StudioApp() {
         body: JSON.stringify({
           course: currentCourse.id,
           episode: currentEpisode.id,
+          part_id: selectedPartId || undefined,
           scene_id: currentScene.id,
           action: "auto_align",
         }),
@@ -1858,6 +2162,9 @@ function StudioApp() {
       }
       setTimingDraft(null);
       setTimingDraftDirty(false);
+      if (selectedPartId) {
+        await fetchPartPayload(currentCourse.id, currentEpisode.id, selectedPartId);
+      }
       await fetchCourses();
       await fetchEvents(currentCourse.id);
       showToast(true, `⚡ Đã tự căn lại timing theo phụ đề cho ${currentScene.id}.`);
@@ -1866,7 +2173,17 @@ function StudioApp() {
     } finally {
       setTimingAutoAligning(false);
     }
-  }, [currentCourse, currentEpisode, currentScene, fetchCourses, fetchEvents, showToast, timingAutoAligning]);
+  }, [
+    currentCourse,
+    currentEpisode,
+    currentScene,
+    fetchCourses,
+    fetchEvents,
+    fetchPartPayload,
+    selectedPartId,
+    showToast,
+    timingAutoAligning,
+  ]);
 
   // Navigation handlers across the 3 screens
   const stopPlayback = () => {
@@ -1876,13 +2193,15 @@ function StudioApp() {
     setIsPlaying(false);
   };
 
-  const handleNavigateToPlayer = useCallback((courseId, epId) => {
+  const handleNavigateToPlayer = useCallback((courseId, epId, partId = "") => {
     if (audioRef.current && !audioRef.current.paused) {
       audioRef.current.pause();
     }
     setIsPlaying(false);
     if (courseId) setSelectedCourseId(courseId);
     if (epId) setSelectedEpId(epId);
+    setSelectedPartId(partId || "");
+    setPartPayload(null);
     pendingSceneIdRef.current = "";
     setExportSeekActive(false);
     virtualTimeRef.current = 0;
@@ -1902,16 +2221,22 @@ function StudioApp() {
     if (courseId) {
       setSelectedCourseId(courseId);
       const targetCourse = courses.find((c) => c.id === courseId);
-      const firstPlayable = targetCourse?.episodes?.find((e) => e.has_script) || targetCourse?.episodes?.[0];
+      const firstPlayable =
+        targetCourse?.episodes?.find((e) => e.has_script || (e.parts || []).some((p) => p.has_script)) ||
+        targetCourse?.episodes?.[0];
       if (firstPlayable) setSelectedEpId(firstPlayable.id);
     }
+    setSelectedPartId("");
+    setPartPayload(null);
     setView("roadmap");
   };
 
-  const openPlayerForEpisode = (epId, targetSceneId = "", targetTab = "scenes") => {
+  const openPlayerForEpisode = (epId, targetSceneId = "", targetTab = "scenes", targetPartId = "") => {
     stopPlayback();
     pendingSceneIdRef.current = targetSceneId || "";
     setSelectedEpId(epId);
+    setSelectedPartId(targetPartId || "");
+    setPartPayload(null);
     setActiveTab(targetTab || "scenes");
     setExportSeekActive(false);
     virtualTimeRef.current = 0;
@@ -1922,7 +2247,9 @@ function StudioApp() {
   };
 
   const openLatestPlayableEpisode = () => {
-    const eps = (currentCourse?.episodes || []).filter((e) => Boolean(e.has_script));
+    const eps = (currentCourse?.episodes || []).filter(
+      (e) => Boolean(e.has_script) || (e.parts || []).some((p) => p.has_script)
+    );
     if (eps.length === 0) return;
     const latest = [...eps].sort((a, b) => (b.number || 0) - (a.number || 0))[0];
     openPlayerForEpisode(latest.id);
@@ -2042,7 +2369,7 @@ function StudioApp() {
   const activeEpVoice =
     activeVoiceTrackId ||
     currentEpisode?.state?.voice_override?.tts_profile ||
-    currentEpisode?.tts_profile ||
+    activeEpisode?.tts_profile ||
     currentCourse?.meta?.tts_profile ||
     currentCourse?.meta?.tts_voice ||
     "edge-hoaimy";
@@ -2055,11 +2382,11 @@ function StudioApp() {
   );
   const activeFormatSpec = splitFormatCodec(renderPrefs.formatCodec);
   const renderSettingsSummary = formatRenderPrefsPill(renderPrefs, playbackRate);
-  const epVideoFiles = Array.isArray(currentEpisode?.video_files) ? currentEpisode.video_files : [];
+  const epVideoFiles = Array.isArray(activeEpisode?.video_files) ? activeEpisode.video_files : [];
   const activeExt = activeFormatSpec.format === "webm" ? "webm" : "mp4";
   const resolvedOutputStem = resolveOutputFilenameStem(
     outputFilenameStem,
-    currentEpisode?.id || "video"
+    selectedPartId || currentEpisode?.id || "video"
   );
   const resolvedOutputFilename = `${resolvedOutputStem}.${activeExt}`;
   const collidingVideoFile =
@@ -2083,10 +2410,17 @@ function StudioApp() {
           ) || {
             filename: activeEpJob.output_file,
             format: String(activeEpJob.output_file).toLowerCase().endsWith(".webm") ? "webm" : "mp4",
-            url: `/courses/${encodeURIComponent(activeEpJob.course)}/episodes/${encodeURIComponent(activeEpJob.episode)}/${encodeURIComponent(activeEpJob.output_file)}`,
+            url: activeEpJob.part_id
+              ? `/courses/${encodeURIComponent(activeEpJob.course)}/episodes/${encodeURIComponent(activeEpJob.episode)}/parts/${encodeURIComponent(activeEpJob.part_id)}/${encodeURIComponent(activeEpJob.output_file)}`
+              : `/courses/${encodeURIComponent(activeEpJob.course)}/episodes/${encodeURIComponent(activeEpJob.episode)}/${encodeURIComponent(activeEpJob.output_file)}`,
           }
         : epVideoFiles[0] || null
       : null;
+  const episodePartsList = Array.isArray(currentEpisode?.parts) ? currentEpisode.parts : [];
+  const activePartRecord = selectedPartId
+    ? partPayload?.part_state || episodePartsList.find((p) => p.part_id === selectedPartId) || null
+    : null;
+  const isSelectedPartApproved = Boolean(activePartRecord?.approved);
 
   return h(
     "div",
@@ -2164,8 +2498,12 @@ function StudioApp() {
               const cid = e.target.value;
               setSelectedCourseId(cid);
               const c = courses.find((x) => x.id === cid);
-              const firstPlayable = c?.episodes?.find((ep) => ep.has_script) || c?.episodes?.[0];
+              const firstPlayable =
+                c?.episodes?.find((ep) => ep.has_script || (ep.parts || []).some((p) => p.has_script)) ||
+                c?.episodes?.[0];
               setSelectedEpId(firstPlayable?.id || "");
+              setSelectedPartId("");
+              setPartPayload(null);
               setExportSeekActive(false);
               virtualTimeRef.current = 0;
               setSceneIdx(0);
@@ -2182,6 +2520,8 @@ function StudioApp() {
             value: selectedEpId,
             onChange: (e) => {
               setSelectedEpId(e.target.value);
+              setSelectedPartId("");
+              setPartPayload(null);
               setExportSeekActive(false);
               virtualTimeRef.current = 0;
               setSceneIdx(0);
@@ -2189,13 +2529,14 @@ function StudioApp() {
               setIsPlaying(false);
             },
           },
-          ...(currentCourse?.episodes || []).map((ep) =>
-            h(
+          ...(currentCourse?.episodes || []).map((ep) => {
+            const hasPlayable = Boolean(ep.has_script || (ep.parts || []).some((p) => p.has_script));
+            return h(
               "option",
-              { key: ep.id, value: ep.id, disabled: !ep.has_script },
-              `Tập ${String(ep.number).padStart(2, "0")}: ${ep.title}${ep.has_script ? "" : " (Chưa có script)"}`
-            )
-          )
+              { key: ep.id, value: ep.id, disabled: !hasPlayable },
+              `Tập ${String(ep.number).padStart(2, "0")}: ${ep.title}${hasPlayable ? "" : " (Chưa có script)"}`
+            );
+          })
         ),
         currentEpisode
           ? h(
@@ -2209,7 +2550,7 @@ function StudioApp() {
               `🎙️ ${activeEpVoice}`
             )
           : null,
-        currentEpisode && voiceTrackEntries.length >= 1
+        currentEpisode && !selectedPartId && voiceTrackEntries.length >= 1
           ? h(
               "div",
               {
@@ -2264,7 +2605,7 @@ function StudioApp() {
               })
             )
           : null,
-        currentEpisode?.has_script
+        activeEpisode?.has_script
           ? h(
               "button",
               {
@@ -2275,10 +2616,13 @@ function StudioApp() {
                   handleRunProduction({
                     course: currentCourse.id,
                     episode: currentEpisode.id,
+                    part_id: selectedPartId || undefined,
                     mode: "tts_only",
                     profile_id: activeEpVoice,
                   }),
-                title: "Tạo lại file audio TTS ngay trên server",
+                title: selectedPartId
+                  ? `Tạo file audio TTS cho phần ${selectedPartId}`
+                  : "Tạo lại file audio TTS ngay trên server",
               },
               isEpJobRunning && activeEpJob?.mode === "tts_only" ? "⏳ TTS..." : "🎙️ Tạo Audio (TTS)"
             )
@@ -2293,7 +2637,7 @@ function StudioApp() {
             {
               type: "button",
               className: `btn-export-unified ${exportMenuOpen ? "is-open" : ""}`,
-              disabled: !currentEpisode?.has_script && !currentEpisode?.has_video,
+              disabled: !activeEpisode?.has_script && !activeEpisode?.has_video,
               onClick: () => setExportMenuOpen((v) => !v),
               "aria-expanded": exportMenuOpen,
               "aria-haspopup": "dialog",
@@ -2317,7 +2661,11 @@ function StudioApp() {
                   h(
                     "div",
                     null,
-                    h("div", { className: "render-pop-title" }, "🎬 Xuất Video"),
+                    h(
+                      "div",
+                      { className: "render-pop-title" },
+                      selectedPartId ? `🎬 Xuất Preview (${selectedPartId})` : "🎬 Xuất Video"
+                    ),
                     h("div", { className: "render-settings-summary" }, renderSettingsSummary)
                   ),
                   h(
@@ -2353,7 +2701,7 @@ function StudioApp() {
                   h("div", { className: "render-pop-label" }, "Engine render"),
                   h(
                     "div",
-                    { className: "render-pills-grid cols-2" },
+                    { className: "render-pills-grid cols-1" },
                     ...ENGINE_OPTIONS.map((opt) =>
                       h(
                         "button",
@@ -2363,9 +2711,7 @@ function StudioApp() {
                           className: `render-opt-pill ${renderPrefs.engine === opt.id ? "is-selected" : ""}`,
                           onClick: () => updateRenderPrefs({ engine: opt.id }),
                           title:
-                            opt.id === "hyperframes"
-                              ? "Biên dịch tập thành composition HyperFrames (HTML + GSAP) rồi render deterministic qua Chrome + WebCodecs"
-                              : "Engine Canvas 2D cũ (window.__STUDIO_RENDER_OFFLINE__), giữ làm fallback",
+                            "Biên dịch tập thành composition HyperFrames (HTML + GSAP) rồi render deterministic qua Chrome + WebCodecs",
                         },
                         opt.label
                       )
@@ -2498,7 +2844,7 @@ function StudioApp() {
                       type: "text",
                       className: "export-filename-input",
                       value: outputFilenameStem,
-                      placeholder: currentEpisode?.id || "ep01-video",
+                      placeholder: selectedPartId || currentEpisode?.id || "ep01-video",
                       "aria-label": "Tên file đầu ra",
                       spellCheck: false,
                       onChange: (e) => {
@@ -2513,7 +2859,7 @@ function StudioApp() {
                     ? h(
                         "div",
                         { className: "export-filename-helper" },
-                        `Để trống sẽ tự dùng tên mặc định: ${currentEpisode?.id || "video"}.${activeExt}`
+                        `Để trống sẽ tự dùng tên mặc định: ${selectedPartId || currentEpisode?.id || "video"}.${activeExt}`
                       )
                     : null,
                   filenameSanitizeNote
@@ -2544,7 +2890,7 @@ function StudioApp() {
                     : h(
                         "div",
                         { className: "export-target-path" },
-                        `📄 Sẽ lưu tại: ${currentCourse?.id || ""}/episodes/${currentEpisode?.id || ""}/${resolvedOutputFilename}`
+                        `📄 Sẽ lưu tại: ${currentCourse?.id || ""}/episodes/${currentEpisode?.id || ""}/${selectedPartId ? `parts/${selectedPartId}/` : ""}${resolvedOutputFilename}`
                       )
                 ),
 
@@ -2564,14 +2910,16 @@ function StudioApp() {
                     {
                       type: "button",
                       className: `export-cta-btn ${collidingVideoFile ? "is-overwrite" : ""}`,
-                      disabled: !currentEpisode?.has_script || isEpJobRunning,
+                      disabled: !activeEpisode?.has_script || isEpJobRunning,
                       onClick: handleUnifiedExport,
                     },
                     isEpJobRunning
                       ? "⏳ Đang xử lý trên Server..."
                       : collidingVideoFile
                         ? `⚠️ Ghi đè "${resolvedOutputFilename}"`
-                        : "🚀 Bắt đầu Xuất Video"
+                        : selectedPartId
+                          ? `🚀 Xuất Preview (${selectedPartId})`
+                          : "🚀 Bắt đầu Xuất Video"
                   )
                 )
               )
@@ -2592,11 +2940,100 @@ function StudioApp() {
     h(
       "main",
       { className: "studio-main" },
-      // Left Column: 16:9 Stage + Player Controls
+      // Left Column: Part Switcher Bar (when multi-part) + 16:9 Stage + Player Controls
       h(
         "section",
         { className: "stage-column" },
-        currentScene
+        episodePartsList.length > 0 && !initialRoute.headless
+          ? h(
+              "div",
+              { className: "player-part-switcher", role: "navigation", "aria-label": "Chuyển đổi Phần bài học" },
+              h(
+                "div",
+                { className: "player-part-pills" },
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    className: `player-part-pill ${!selectedPartId ? "is-active" : ""}`,
+                    disabled: !currentEpisode?.has_script,
+                    onClick: () => handleSwitchPart(""),
+                    title: currentEpisode?.has_script
+                      ? "Xem toàn tập đã gộp (script.json)"
+                      : "Chưa gộp thành Full Tập — hãy duyệt các phần và bấm Merge",
+                  },
+                  currentEpisode?.merged_at || currentEpisode?.has_script
+                    ? "📺 Full Tập (Đã gộp)"
+                    : "📺 Full Tập (Chưa gộp)"
+                ),
+                ...episodePartsList.map((p, idx) => {
+                  const isSel = selectedPartId === p.part_id;
+                  const verdict = p.ai_review_verdict || p.review_verdict;
+                  const icon = p.approved
+                    ? "✓"
+                    : verdict === "REVISE"
+                      ? "⚠️"
+                      : verdict === "APPROVED"
+                        ? "🛡️"
+                        : "⏳";
+                  return h(
+                    "button",
+                    {
+                      key: p.part_id,
+                      type: "button",
+                      className: `player-part-pill ${isSel ? "is-active" : ""} ${
+                        p.approved ? "is-approved" : verdict === "REVISE" ? "is-revise" : ""
+                      }`,
+                      onClick: () => handleSwitchPart(p.part_id),
+                      title: `${p.title || p.part_id} (${p.part_id})`,
+                    },
+                    `Phần ${idx + 1} ${icon}`
+                  );
+                })
+              ),
+              h(
+                "div",
+                { className: "player-part-actions" },
+                selectedPartId
+                  ? h(
+                      "button",
+                      {
+                        type: "button",
+                        className: `player-part-act-btn is-approve ${isSelectedPartApproved ? "is-approved" : ""}`,
+                        disabled: partActionBusy || partLoading,
+                        onClick: handleApproveActivePart,
+                      },
+                      isSelectedPartApproved ? "✅ Đã duyệt" : "✅ Duyệt phần này"
+                    )
+                  : null,
+                selectedPartId && activeEpisode?.has_script
+                  ? h(
+                      "button",
+                      {
+                        type: "button",
+                        className: "player-part-act-btn is-export-part",
+                        disabled: isEpJobRunning,
+                        onClick: handleExportActivePartPreview,
+                        title: `Render preview MP4 cho riêng ${selectedPartId}`,
+                      },
+                      "🎬 Export Preview"
+                    )
+                  : null,
+                h(
+                  "button",
+                  {
+                    type: "button",
+                    className: "player-part-act-btn",
+                    onClick: () => setPlayerStageModalOpen(true),
+                  },
+                  "📝 Review / Merge"
+                )
+              )
+            )
+          : null,
+        partLoading
+          ? h("div", { className: "empty-stage" }, `⏳ Đang tải ${selectedPartId}...`)
+          : currentScene
           ? h(
               "div",
               { className: "aspect-frame" },
@@ -2651,7 +3088,7 @@ function StudioApp() {
                   )
                 ),
 
-                // Dynamic Visual Scene Component across all 7 templates
+                // Dynamic Visual Scene Component across all 11 templates
                 h(SCENE_COMPONENTS[effectiveScene?.visual_type || currentScene.visual_type] || ArchitectureDiagram, {
                   scene: effectiveScene || currentScene,
                   progress: sceneProgress,
@@ -2664,7 +3101,7 @@ function StudioApp() {
                     "div",
                     {
                       className: `stage-subtitle-wrap ${
-                        currentEpisode?.script?.aspect_ratio === "9:16" ? "is-vertical" : ""
+                        activeEpisode?.script?.aspect_ratio === "9:16" ? "is-vertical" : ""
                       }`,
                     },
                     h(
@@ -2784,7 +3221,7 @@ function StudioApp() {
                     { className: "job-progress-title" },
                     `${formatJobModeTitle(activeEpJob.mode)} · ${activeEpJob.phase || activeEpJob.step || activeEpJob.status}${
                       activeEpJob.mode !== "tts_only" && activeEpJob.resolution
-                        ? ` (${activeEpJob.resolution} · ${activeEpJob.fps || 60}fps · ${Number(activeEpJob.speed) || 1}x · ${String(activeEpJob.format || "mp4").toUpperCase()})`
+                        ? ` (${activeEpJob.resolution} · ${activeEpJob.fps || 30}fps · ${Number(activeEpJob.speed) || 1}x · ${String(activeEpJob.format || "mp4").toUpperCase()})`
                         : ""
                     }`
                   ),
@@ -2869,7 +3306,7 @@ function StudioApp() {
                 h(
                   "div",
                   { className: "ep-video-files-title" },
-                  `📁 Video đã xuất (${epVideoFiles.length})`
+                  `📁 Video đã xuất${selectedPartId ? ` (${selectedPartId})` : ""} (${epVideoFiles.length})`
                 ),
                 h(
                   "button",
@@ -2877,7 +3314,7 @@ function StudioApp() {
                     type: "button",
                     className: "ep-video-new-btn",
                     "data-export-trigger": "true",
-                    disabled: !currentEpisode?.has_script,
+                    disabled: !activeEpisode?.has_script,
                     onClick: openExportMenuWithFocus,
                   },
                   "+ Xuất bản mới"
@@ -2887,7 +3324,9 @@ function StudioApp() {
                 ? h(
                     "div",
                     { className: "ep-video-files-empty" },
-                    "Chưa có file video nào trong thư mục bài học. Bấm \"+ Xuất bản mới\" hoặc \"🎬 Xuất Video ▾\" để render và lưu trực tiếp tại đây."
+                    selectedPartId
+                      ? `Chưa có video preview cho ${selectedPartId}. Bấm "🎬 Export Preview" hoặc "🎬 Xuất Video ▾" để render phần này.`
+                      : "Chưa có file video nào trong thư mục bài học. Bấm \"+ Xuất bản mới\" hoặc \"🎬 Xuất Video ▾\" để render và lưu trực tiếp tại đây."
                   )
                 : h(
                     "div",
@@ -2899,7 +3338,12 @@ function StudioApp() {
                       const isDeletingThis = deletingVideoFile === file.filename;
                       const previewUrl =
                         file.url ||
-                        `/courses/${encodeURIComponent(currentCourse?.id || "")}/episodes/${encodeURIComponent(currentEpisode?.id || "")}/${encodeURIComponent(file.filename || "")}`;
+                        (selectedPartId
+                          ? `/courses/${encodeURIComponent(currentCourse?.id || "")}/episodes/${encodeURIComponent(currentEpisode?.id || "")}/parts/${encodeURIComponent(selectedPartId)}/${encodeURIComponent(file.filename || "")}`
+                          : `/courses/${encodeURIComponent(currentCourse?.id || "")}/episodes/${encodeURIComponent(currentEpisode?.id || "")}/${encodeURIComponent(file.filename || "")}`);
+                      const copyHint = selectedPartId
+                        ? `${currentCourse?.id}/episodes/${currentEpisode?.id}/parts/${selectedPartId}/${file.filename}`
+                        : `${currentCourse?.id}/episodes/${currentEpisode?.id}/${file.filename}`;
                       return h(
                         "div",
                         { key: file.filename, className: "ep-video-file-row" },
@@ -2963,21 +3407,23 @@ function StudioApp() {
                               type: "button",
                               className: "ep-video-act-btn",
                               onClick: () => handleCopyVideoPath(file),
-                              title: `Sao chép ${currentCourse?.id}/episodes/${currentEpisode?.id}/${file.filename}`,
+                              title: `Sao chép ${copyHint}`,
                             },
                             "📋 Copy path"
                           ),
-                          h(
-                            "button",
-                            {
-                              type: "button",
-                              className: "ep-video-act-btn is-danger",
-                              disabled: Boolean(deletingVideoFile),
-                              onClick: () => handleDeleteVideoFile(file),
-                              title: `Xóa ${file.filename}`,
-                            },
-                            isDeletingThis ? "⏳" : "🗑️ Xóa"
-                          )
+                          !selectedPartId
+                            ? h(
+                                "button",
+                                {
+                                  type: "button",
+                                  className: "ep-video-act-btn is-danger",
+                                  disabled: Boolean(deletingVideoFile),
+                                  onClick: () => handleDeleteVideoFile(file),
+                                  title: `Xóa ${file.filename}`,
+                                },
+                                isDeletingThis ? "⏳" : "🗑️ Xóa"
+                              )
+                            : null
                         )
                       );
                     })
@@ -3074,7 +3520,7 @@ function StudioApp() {
               ? h("div", {
                   className: "md-body",
                   dangerouslySetInnerHTML: {
-                    __html: renderMarkdownToHtml(currentEpisode?.notes || ""),
+                    __html: renderMarkdownToHtml(activeEpisode?.notes || ""),
                   },
                 })
               : activeTab === "revisions"
@@ -3085,7 +3531,12 @@ function StudioApp() {
                     currentSceneId: currentScene?.id || "",
                     scenes: scenes.map((s, idx) => ({ id: s.id, title: s.title, index: idx })),
                     onOpenAiRewrite: () => {
-                      setPlayerAiOptions({ initialMode: null, initialPauseAfter: null, startFrom: null });
+                      setPlayerAiOptions({
+                        initialMode: "deep_course",
+                        initialPauseAfter: null,
+                        initialPartId: selectedPartId || null,
+                        startFrom: null,
+                      });
                       setPlayerAiModalOpen(true);
                     },
                     onOpenScriptingStage: () => setPlayerStageModalOpen(true),
@@ -3110,19 +3561,24 @@ function StudioApp() {
       )
     ),
 
-    // Scripting 3-Stage Review Modal inside Studio Player
+    // Scripting Multi-Part Review & Merge Modal inside Studio Player
     h(ScriptingStageModal, {
       isOpen: playerStageModalOpen,
       course: currentCourse,
       episode: currentEpisode,
+      initialPartId: selectedPartId || null,
       onClose: () => setPlayerStageModalOpen(false),
       onSaved: async () => {
         await fetchCourses();
+        if (selectedPartId && currentCourse?.id && currentEpisode?.id) {
+          await fetchPartPayload(currentCourse.id, currentEpisode.id, selectedPartId);
+        }
       },
-      onContinueToStage: ({ startFrom, initialMode, initialPauseAfter }) => {
+      onContinueToStage: ({ startFrom, initialMode, initialPauseAfter, partId }) => {
         setPlayerAiOptions({
-          initialMode: initialMode || "three_stage",
-          initialPauseAfter: initialPauseAfter || (startFrom === "visual" ? "none" : "dialogue"),
+          initialMode: initialMode || "deep_course",
+          initialPauseAfter: initialPauseAfter || (startFrom === "visual" ? "none" : "part_review"),
+          initialPartId: partId || null,
           startFrom: startFrom || null,
         });
         setPlayerAiModalOpen(true);
@@ -3137,13 +3593,19 @@ function StudioApp() {
       targetEpisode: currentEpisode,
       initialMode: playerAiOptions.initialMode,
       initialPauseAfter: playerAiOptions.initialPauseAfter,
+      initialPartId: playerAiOptions.initialPartId,
       startFrom: playerAiOptions.startFrom,
       providersData,
       onProvidersLoaded: setProvidersData,
       renderPrefs,
       onClose: () => {
         setPlayerAiModalOpen(false);
-        setPlayerAiOptions({ initialMode: null, initialPauseAfter: null, startFrom: null });
+        setPlayerAiOptions({
+          initialMode: null,
+          initialPauseAfter: null,
+          initialPartId: null,
+          startFrom: null,
+        });
       },
       onSubmitJob: async (payload) => {
         await handleStartAiScript(payload);
@@ -3162,7 +3624,7 @@ function StudioApp() {
       mode: "episode",
       course: currentCourse,
       episode: currentEpisode,
-      script: currentEpisode?.script || null,
+      script: activeEpisode?.script || null,
       onClose: () => setVoiceModalOpen(false),
       onAssigned: async (_data, info) => {
         await fetchCourses();
@@ -3226,7 +3688,9 @@ function StudioApp() {
                 h(
                   "div",
                   { className: "studio-modal-sub" },
-                  `${currentCourse?.id || ""}/episodes/${currentEpisode?.id || ""}/${previewVideoFile.filename}${
+                  `${currentCourse?.id || ""}/episodes/${currentEpisode?.id || ""}/${
+                    previewVideoFile.part_id ? `parts/${previewVideoFile.part_id}/` : ""
+                  }${previewVideoFile.filename}${
                     previewVideoFile.size_bytes
                       ? ` · ${formatVideoFileSize(previewVideoFile.size_bytes)}`
                       : ""
@@ -3256,7 +3720,9 @@ function StudioApp() {
                 className: "ep-video-preview-player",
                 src:
                   previewVideoFile.url ||
-                  `/courses/${encodeURIComponent(currentCourse?.id || "")}/episodes/${encodeURIComponent(currentEpisode?.id || "")}/${encodeURIComponent(previewVideoFile.filename || "")}`,
+                  `/courses/${encodeURIComponent(currentCourse?.id || "")}/episodes/${encodeURIComponent(currentEpisode?.id || "")}/${
+                    previewVideoFile.part_id ? `parts/${encodeURIComponent(previewVideoFile.part_id)}/` : ""
+                  }${encodeURIComponent(previewVideoFile.filename || "")}`,
                 controls: true,
                 autoPlay: true,
                 playsInline: true,

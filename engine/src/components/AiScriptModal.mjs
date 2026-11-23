@@ -41,8 +41,9 @@ export function AiScriptModal({
   course,
   targetEpisode = null,
   initialSelectedIds = null,
-  initialMode = null,
+  initialMode: _initialMode = null,
   initialPauseAfter = null,
+  initialPartId = null,
   startFrom = null,
   resumeJob = null,
   providersData = null,
@@ -65,8 +66,9 @@ export function AiScriptModal({
   const [sharedRewriteNote, setSharedRewriteNote] = useState("");
   const [epRewriteNotes, setEpRewriteNotes] = useState({});
 
-  const [generationMode, setGenerationMode] = useState("three_stage");
-  const [pauseAfter, setPauseAfter] = useState("dialogue");
+  const [pauseAfter, setPauseAfter] = useState("part_review");
+  const [maxPartDurationSec, setMaxPartDurationSec] = useState(300);
+  const [targetPartId, setTargetPartId] = useState("");
   const [lockAudioSpine, setLockAudioSpine] = useState(false);
 
   const [autoProduce, setAutoProduce] = useState(false);
@@ -75,7 +77,7 @@ export function AiScriptModal({
   const [formatCodec, setFormatCodec] = useState(renderPrefs?.formatCodec || "mp4:h264");
   const [resolution, setResolution] = useState(renderPrefs?.resolution || "1080p");
   const [hardware, setHardware] = useState(renderPrefs?.hardware || "auto");
-  const [fps, setFps] = useState(renderPrefs?.fps || 60);
+  const [fps, setFps] = useState(renderPrefs?.fps || 30);
 
   // Manual Web Mode state
   const [manualEpId, setManualEpId] = useState("");
@@ -163,14 +165,20 @@ export function AiScriptModal({
     setFormatCodec(renderPrefs?.formatCodec || "mp4:h264");
     setResolution(renderPrefs?.resolution || "1080p");
     setHardware(renderPrefs?.hardware || "auto");
-    setFps(renderPrefs?.fps || 60);
+    setFps(renderPrefs?.fps || 30);
 
-    const nextGenMode = initialMode || "three_stage";
+    const validPauses = new Set(["part_review", "dialogue", "brief", "none"]);
     const defaultPause =
-      initialPauseAfter ||
-      (startFrom === "visual" ? "none" : mode === "batch" ? "none" : "dialogue");
-    setGenerationMode(nextGenMode);
+      initialPauseAfter && validPauses.has(initialPauseAfter)
+        ? initialPauseAfter
+        : startFrom === "visual"
+          ? "none"
+          : mode === "batch"
+            ? "none"
+            : "part_review";
     setPauseAfter(defaultPause);
+    setMaxPartDurationSec(300);
+    setTargetPartId(initialPartId ? String(initialPartId).trim() : "");
     setLockAudioSpine(false);
 
     let nextIds = [];
@@ -184,7 +192,7 @@ export function AiScriptModal({
       nextIds = [targetEpisode.id];
       setInstructions("");
       setAutoProduce(
-        nextGenMode === "three_stage" && defaultPause !== "none"
+        defaultPause !== "none"
           ? false
           : Boolean(effectiveProvidersData?.last_selection?.auto_produce)
       );
@@ -200,7 +208,7 @@ export function AiScriptModal({
       }
       setInstructions("");
       setAutoProduce(
-        nextGenMode === "three_stage" && defaultPause !== "none"
+        defaultPause !== "none"
           ? false
           : Boolean(effectiveProvidersData?.last_selection?.auto_produce)
       );
@@ -239,7 +247,7 @@ export function AiScriptModal({
     return () => {
       alive = false;
     };
-  }, [isOpen, mode, course?.id, targetEpisode?.id, resumeJob?.id, initialMode, initialPauseAfter, startFrom]);
+  }, [isOpen, mode, course?.id, targetEpisode?.id, resumeJob?.id, initialPauseAfter, initialPartId, startFrom]);
 
   useEffect(() => {
     if (!isOpen || !autoProduce || voices.length > 0) return;
@@ -302,8 +310,7 @@ export function AiScriptModal({
   const isBuiltinSelected = Boolean(
     selectedProviderId && selectedProviderId !== "antigravity" && selectedProviderId !== "manual_web"
   );
-  const effectivePausedGate =
-    isBuiltinSelected && generationMode === "three_stage" && pauseAfter !== "none";
+  const effectivePausedGate = isBuiltinSelected && pauseAfter !== "none";
   const mcpBatchLimitExceeded =
     selectedProviderId === "antigravity" && mode !== "resume" && selectedIds.length > 5;
 
@@ -459,6 +466,11 @@ export function AiScriptModal({
         });
       } else {
         const effectiveAutoProduce = effectivePausedGate ? false : autoProduce;
+        const clampedMaxPartDur = Math.max(120, Math.min(900, Number(maxPartDurationSec) || 300));
+        const cleanTargetPartId =
+          isBuiltinSelected && mode === "single" && selectedIds.length === 1 && targetPartId.trim()
+            ? targetPartId.trim()
+            : undefined;
         await onSubmitJob({
           type: mode === "single" && selectedIds.length === 1 ? "script_episode" : "script_batch",
           course: course.id,
@@ -466,14 +478,13 @@ export function AiScriptModal({
           provider_id: selectedProviderId,
           model: selectedModel || undefined,
           execution_mode: selectedProviderId === "antigravity" ? "mcp" : "builtin",
-          mode: isBuiltinSelected ? generationMode : "auto",
-          pause_after:
-            isBuiltinSelected && generationMode === "three_stage" ? pauseAfter : "none",
+          mode: "deep_course",
+          pause_after: isBuiltinSelected ? pauseAfter : "none",
           start_from: isBuiltinSelected && startFrom ? startFrom : undefined,
+          part_id: cleanTargetPartId,
+          max_part_duration_sec: isBuiltinSelected ? clampedMaxPartDur : undefined,
           lock_audio_spine:
-            isBuiltinSelected && generationMode === "three_stage" && pauseAfter === "none"
-              ? Boolean(lockAudioSpine)
-              : false,
+            isBuiltinSelected && pauseAfter === "none" ? Boolean(lockAudioSpine) : false,
           custom_instructions: instructions.trim(),
           rewrite_note: sharedRewriteNote.trim() || undefined,
           rewrite_notes: Object.keys(rewriteNotesPayload).length > 0 ? rewriteNotesPayload : undefined,
@@ -486,7 +497,7 @@ export function AiScriptModal({
                 codec: fc.codec,
                 hardware: safeHardware,
                 resolution,
-                fps: Number(fps) || 60,
+                fps: Number(fps) || 30,
                 speed: 1,
               }
             : null,
@@ -803,99 +814,141 @@ export function AiScriptModal({
                     "div",
                     { className: "ai-stage-resume-banner" },
                     startFrom === "dialogue"
-                      ? "▶ Tiếp tục từ Content Brief đã duyệt → Viết lời thoại & Beats (Tầng 2)"
+                      ? "▶ Tiếp tục từ Master Brief đã duyệt → Viết lời thoại & Beats (Tầng 2)"
                       : "▶ Tiếp tục từ Lời thoại đã chốt → Đạo diễn Visual & Component (Tầng 3)"
                   )
                 : null,
+              h(
+                "div",
+                { className: "ai-deep-course-banner" },
+                h(
+                  "div",
+                  { className: "ai-deep-course-title" },
+                  "🎯 Quy trình Deep-Dive Multi-Part + AI Review độc lập",
+                  h("span", { className: "ai-deep-course-badge" }, "deep_course")
+                ),
+                h(
+                  "div",
+                  { className: "ai-deep-course-sub" },
+                  "Master Brief → Viết từng phần (≤ 5 phút) → Content Reviewer phản biện độc lập → Đạo diễn Visual (11 templates)"
+                )
+              ),
               h(
                 "div",
                 { className: "ai-render-prefs-grid" },
                 h(
                   "div",
                   null,
-                  h("label", { className: "form-label-sm" }, "Quy trình biên kịch"),
+                  h("label", { className: "form-label-sm" }, "Điểm dừng duyệt (Gate)"),
                   h(
                     "select",
                     {
                       className: "studio-input studio-input-sm",
-                      value: generationMode,
+                      value: pauseAfter,
                       onChange: (e) => {
-                        const nextM = e.target.value;
-                        setGenerationMode(nextM);
-                        if (nextM === "three_stage" && pauseAfter !== "none") {
-                          setAutoProduce(false);
-                        }
+                        const nextP = e.target.value;
+                        setPauseAfter(nextP);
+                        if (nextP !== "none") setAutoProduce(false);
                       },
                       disabled: busy,
                     },
-                    h("option", { value: "three_stage" }, "3 Tầng tách biệt (Brief → Thoại → Visual)"),
-                    h("option", { value: "two_pass" }, "2-Pass (Storyboard → Compiler)"),
-                    h("option", { value: "auto" }, "Tự động nhanh (auto)")
+                    h("option", { value: "part_review" }, "Dừng sau kiểm duyệt phần (AI Review)"),
+                    h("option", { value: "dialogue" }, "Dừng sau Lời thoại (Dialogue)"),
+                    h("option", { value: "brief" }, "Dừng sau Dàn ý (Master Brief)"),
+                    h("option", { value: "none" }, "Chạy liền tới Visual (script.json)")
                   )
                 ),
-                generationMode === "three_stage"
-                  ? h(
-                      "div",
-                      null,
-                      h("label", { className: "form-label-sm" }, "Điểm dừng duyệt"),
-                      h(
-                        "select",
-                        {
-                          className: "studio-input studio-input-sm",
-                          value: pauseAfter,
-                          onChange: (e) => {
-                            const nextP = e.target.value;
-                            setPauseAfter(nextP);
-                            if (nextP !== "none") setAutoProduce(false);
-                          },
-                          disabled: busy,
-                        },
-                        h("option", { value: "brief" }, "Dừng sau Brief (Duyệt dàn ý)"),
-                        h("option", { value: "dialogue" }, "Dừng sau Lời thoại (Khuyến nghị)"),
-                        h("option", { value: "none" }, "Chạy liền tới Visual (script.json)")
-                      )
-                    )
+                h(
+                  "div",
+                  null,
+                  h("label", { className: "form-label-sm" }, "Thời lượng tối đa / phần (≤ 300s = 5 phút)"),
+                  h("input", {
+                    type: "number",
+                    className: "studio-input studio-input-sm",
+                    min: 120,
+                    max: 600,
+                    step: 30,
+                    value: maxPartDurationSec,
+                    onChange: (e) => setMaxPartDurationSec(Number(e.target.value) || 300),
+                    disabled: busy,
+                  })
+                ),
+                mode === "single" && selectedIds.length === 1
+                  ? (() => {
+                      const singleParts = Array.isArray(selectedEpisodes[0]?.parts)
+                        ? selectedEpisodes[0].parts
+                        : [];
+                      return h(
+                        "div",
+                        null,
+                        h("label", { className: "form-label-sm" }, "Chạy riêng 1 phần (tùy chọn)"),
+                        singleParts.length > 0
+                          ? h(
+                              "select",
+                              {
+                                className: "studio-input studio-input-sm",
+                                value: targetPartId,
+                                onChange: (e) => setTargetPartId(e.target.value),
+                                disabled: busy,
+                              },
+                              h("option", { value: "" }, "Toàn bộ các phần (Full Episode)"),
+                              ...singleParts.map((p, idx) =>
+                                h(
+                                  "option",
+                                  { key: p.part_id, value: p.part_id },
+                                  `Phần ${idx + 1} (${p.part_id})${p.title && p.title !== p.part_id ? ` · ${p.title}` : ""}`
+                                )
+                              )
+                            )
+                          : h("input", {
+                              type: "text",
+                              className: "studio-input studio-input-sm",
+                              value: targetPartId,
+                              onChange: (e) => setTargetPartId(e.target.value),
+                              placeholder: "Để trống = cả tập (vd: part_01)",
+                              disabled: busy,
+                            })
+                      );
+                    })()
                   : null
               ),
-              generationMode === "three_stage" && pauseAfter === "none"
-                ? h(
-                    "label",
-                    { className: "ai-switch-row ai-spine-toggle" },
-                    h("input", {
-                      type: "checkbox",
-                      checked: lockAudioSpine,
-                      onChange: (e) => setLockAudioSpine(e.target.checked),
-                      disabled: busy,
-                    }),
-                    h(
-                      "span",
-                      { className: "ai-switch-text" },
-                      h("strong", null, "🔒 Khóa Audio-Spine (TTS từng beat) trước khi dựng Visual"),
-                      h(
-                        "small",
-                        null,
-                        "Tạo audio từng beat giữa Tầng 2 và Tầng 3 để đo thời lượng thật trước khi bố cục animation (tự bỏ qua nếu TTS offline)."
-                      )
-                    )
+              h(
+                "label",
+                { className: `ai-switch-row ai-spine-toggle ${pauseAfter !== "none" ? "is-muted" : ""}` },
+                h("input", {
+                  type: "checkbox",
+                  checked: lockAudioSpine,
+                  onChange: (e) => setLockAudioSpine(e.target.checked),
+                  disabled: busy || pauseAfter !== "none",
+                }),
+                h(
+                  "span",
+                  { className: "ai-switch-text" },
+                  h("strong", null, "🔒 Khóa Audio-Spine (TTS từng beat) trước khi dựng Visual"),
+                  h(
+                    "small",
+                    null,
+                    pauseAfter !== "none"
+                      ? "Chọn Điểm dừng = 'Chạy liền tới Visual' để kích hoạt đo thời lượng audio thật giữa Tầng 2 → 3."
+                      : "Tạo audio từng beat giữa Tầng 2 và Tầng 3 để đo thời lượng thật trước khi bố cục animation (tự reuse khi chạy TTS)."
                   )
-                : null,
-              generationMode === "three_stage"
-                ? h(RoleRoutingPanel, {
-                    providersData: effectiveProvidersData,
-                    disabled: busy || manualBusy,
-                    compact: true,
-                    defaultExpanded: false,
-                    onRoutingSaved: (nextRouting) => {
-                      const base =
-                        effectiveProvidersData && typeof effectiveProvidersData === "object"
-                          ? effectiveProvidersData
-                          : {};
-                      const nextData = { ...base, pipeline_routing: nextRouting };
-                      setLocalProvidersData(nextData);
-                      onProvidersLoaded && onProvidersLoaded(nextData);
-                    },
-                  })
-                : null
+                )
+              ),
+              h(RoleRoutingPanel, {
+                providersData: effectiveProvidersData,
+                disabled: busy || manualBusy,
+                compact: true,
+                defaultExpanded: false,
+                onRoutingSaved: (nextRouting) => {
+                  const base =
+                    effectiveProvidersData && typeof effectiveProvidersData === "object"
+                      ? effectiveProvidersData
+                      : {};
+                  const nextData = { ...base, pipeline_routing: nextRouting };
+                  setLocalProvidersData(nextData);
+                  onProvidersLoaded && onProvidersLoaded(nextData);
+                },
+              })
             )
           : null,
 
