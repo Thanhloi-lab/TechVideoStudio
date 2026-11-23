@@ -186,6 +186,24 @@ async function buildCodeCliAssets(scene) {
   return { lang, base: baseIdx, snapshots, phase_snapshot: phaseSnapshot };
 }
 
+async function buildCodeDiffAssets(scene) {
+  const vd = scene.visual_data || {};
+  const lang = normalizeCodeLang(vd.language || vd.code_language || "json");
+  const leftLines = toLineArray(vd.left_lines);
+  const rightLines = toLineArray(vd.right_lines);
+  const [leftTokens, rightTokens] = await Promise.all([
+    leftLines.length ? highlightCodeLines(leftLines, lang) : Promise.resolve([]),
+    rightLines.length ? highlightCodeLines(rightLines, lang) : Promise.resolve([]),
+  ]);
+  return {
+    lang,
+    left_lines: leftLines,
+    right_lines: rightLines,
+    left_tokens: leftTokens,
+    right_tokens: rightTokens,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Timing
 // ---------------------------------------------------------------------------
@@ -203,19 +221,23 @@ function readCue(cue) {
  * Compute the output timeline: each scene lasts as long as its narration audio (÷ speed),
  * falling back to scene.duration_sec (÷ speed) when there is no audio file.
  */
-export function computeTimeline(scenes, { episodeDir, speed = 1 } = {}) {
+export function computeTimeline(scenes, { episodeDir, partDir, speed = 1 } = {}) {
   const rate = Number(speed) > 0 ? Number(speed) : 1;
+  const searchDirs = [partDir, episodeDir].filter(Boolean).map((d) => path.resolve(d));
   let cursor = 0;
   const out = [];
   scenes.forEach((scene, index) => {
     let sourceDuration = null;
     let audioAbs = null;
     const rel = scene.audio_file ? String(scene.audio_file).replace(/\\/g, "/") : "";
-    if (rel && episodeDir) {
-      const candidate = path.resolve(episodeDir, ...rel.split("/"));
-      if (candidate.startsWith(path.resolve(episodeDir)) && fs.existsSync(candidate)) {
-        audioAbs = candidate;
-        sourceDuration = probeAudioDuration(candidate);
+    if (rel && searchDirs.length) {
+      for (const baseDir of searchDirs) {
+        const candidate = path.resolve(baseDir, ...rel.split("/"));
+        if ((candidate === baseDir || candidate.startsWith(baseDir + path.sep)) && fs.existsSync(candidate)) {
+          audioAbs = candidate;
+          sourceDuration = probeAudioDuration(candidate);
+          break;
+        }
       }
     }
     if (!(sourceDuration > 0)) {
@@ -366,16 +388,36 @@ function buildSfxCues(scenes, timing, { sfxDir = SFX_ASSETS_DIR } = {}) {
         addAuto("pop", ms?.progress_start ?? 0.12, 0.46);
       }
       if (vd.callout?.text) addAuto("chime", vd.callout.show_at_progress ?? 0.78, 0.55);
+    } else if (vt === "sequence_diagram") {
+      for (const msg of (Array.isArray(vd.messages) ? vd.messages : []).slice(0, 2)) {
+        addAuto(msg?.style === "danger" ? "impact" : "pop", msg?.progress_start ?? 0.12, 0.46);
+      }
+      if (Array.isArray(vd.highlights) && vd.highlights[0]?.label) {
+        addAuto("chime", vd.highlights[0].show_at_progress ?? 0.72, 0.55);
+      }
+    } else if (vt === "memory_layout") {
+      for (const st of (Array.isArray(vd.steps) ? vd.steps : []).slice(0, 3)) {
+        addAuto("click", st?.progress_start ?? 0.12, 0.46);
+      }
+    } else if (vt === "code_diff") {
+      for (const st of (Array.isArray(vd.focus_steps) ? vd.focus_steps : []).slice(0, 2)) {
+        addAuto(st?.tone === "danger" ? "impact" : st?.tone === "success" ? "chime" : "click", st?.progress_start ?? 0.15, 0.48);
+      }
+    } else if (vt === "concept_breakdown") {
+      for (const br of (Array.isArray(vd.branches) ? vd.branches : []).slice(0, 2)) {
+        addAuto("pop", br?.progress_start ?? 0.12, 0.46);
+      }
+      if (vd.takeaway?.text) addAuto("chime", vd.takeaway.show_at_progress ?? 0.80, 0.55);
     }
   }
   cues.sort((a, b) => a.start - b.start);
   return cues;
 }
 
-function resolveBgmSource(rawPath, { episodeDir, courseDir }) {
+function resolveBgmSource(rawPath, { episodeDir, partDir, courseDir }) {
   const rel = String(rawPath || "").trim();
   if (!rel) return null;
-  const bases = [episodeDir, courseDir, path.join(ENGINE_DIR, "assets")].filter(Boolean);
+  const bases = [partDir, episodeDir, courseDir, path.join(ENGINE_DIR, "assets")].filter(Boolean);
   for (const base of bases) {
     const resolvedBase = path.resolve(base);
     const candidate = path.resolve(resolvedBase, rel);
@@ -392,6 +434,7 @@ export function renderIndexHtml({ title, total, scenesTiming, scenes, audioClips
     const nxt = scenes[i + 1];
     const nxtT = scenesTiming[i + 1];
     if (!cur?.part || !nxt?.part || cur.part !== nxt.part || !nxtT) return 0;
+    if (cur.source_part && nxt.source_part && cur.source_part !== nxt.source_part) return 0;
     if (t.duration < 0.8 || nxtT.duration < 0.8) return 0;
     return round3(Math.min(0.45, nxtT.duration * 0.22));
   });
@@ -490,24 +533,34 @@ function pickSceneForComposition(scene, extra) {
 }
 
 /**
- * Compile one episode into a HyperFrames project.
+ * Compile one episode (or single preview part) into a HyperFrames project.
  *
  * @param {object} args
  * @param {string} args.workspaceRoot   repo root (course folders live here)
  * @param {string} args.courseId        course folder name
  * @param {object} args.episode         episode payload from GET /api/courses (needs .id and .script)
  * @param {number} [args.speed=1]       playback speed (1, 1.25, 1.5, 2) baked into the timeline
- * @param {string} [args.outDir]        override output folder (default <ep>/hyperframes)
+ * @param {string} [args.outDir]        override output folder (default <ep>/hyperframes or <ep>/parts/<partId>/hyperframes)
+ * @param {string} [args.partId]        optional part_id (e.g. "part_01") for single-part preview builds
  * @returns {Promise<{ projectDir: string, indexPath: string, manifest: object }>}
  */
-export async function compileEpisodeProject({ workspaceRoot, courseId, episode, speed = 1, outDir } = {}) {
+export async function compileEpisodeProject({ workspaceRoot, courseId, episode, speed = 1, outDir, partId } = {}) {
   if (!workspaceRoot || !courseId || !episode?.id) throw new Error("compileEpisodeProject: missing workspaceRoot/courseId/episode");
+  const cleanPartId = String(partId || episode.part_id || "").trim();
+  if (cleanPartId && !/^[A-Za-z0-9_-]+$/.test(cleanPartId)) {
+    throw new Error(`compileEpisodeProject: invalid partId "${cleanPartId}"`);
+  }
   const script = episode.script;
   const scenes = Array.isArray(script?.scenes) ? script.scenes : [];
   if (!scenes.length) throw new Error(`Episode ${episode.id} has no scenes in script.json`);
 
   const episodeDir = path.join(workspaceRoot, courseId, "episodes", episode.id);
-  const projectDir = outDir ? path.resolve(outDir) : path.join(episodeDir, PROJECT_DIRNAME);
+  const partDir = cleanPartId ? path.join(episodeDir, "parts", cleanPartId) : "";
+  const projectDir = outDir
+    ? path.resolve(outDir)
+    : cleanPartId
+      ? path.join(partDir, PROJECT_DIRNAME)
+      : path.join(episodeDir, PROJECT_DIRNAME);
   fs.mkdirSync(path.join(projectDir, "lib", "scenes"), { recursive: true });
   fs.mkdirSync(path.join(projectDir, "assets", "audio"), { recursive: true });
 
@@ -547,7 +600,7 @@ export async function compileEpisodeProject({ workspaceRoot, courseId, episode, 
   }
 
   // 2. Timeline
-  const timing = computeTimeline(scenes, { episodeDir, speed });
+  const timing = computeTimeline(scenes, { episodeDir, partDir, speed });
 
   // 3. Audio clips (copied so the project is self-contained for `npx hyperframes render`)
   const audioClips = [];
@@ -599,7 +652,7 @@ export async function compileEpisodeProject({ workspaceRoot, courseId, episode, 
   const bgmOutDir = path.join(projectDir, "assets", "bgm");
   let bgmManifest = null;
   const rawBgmPath = script.bgm_file || episode.bgm_file || null;
-  const resolvedBgm = resolveBgmSource(rawBgmPath, { episodeDir, courseDir });
+  const resolvedBgm = resolveBgmSource(rawBgmPath, { episodeDir, partDir, courseDir });
   if (resolvedBgm) {
     fs.mkdirSync(bgmOutDir, { recursive: true });
     const bgmName = path.basename(resolvedBgm);
@@ -622,6 +675,8 @@ export async function compileEpisodeProject({ workspaceRoot, courseId, episode, 
     const extra = {};
     if (scene.visual_type === "code_cli") {
       extra.code = await buildCodeCliAssets(scene);
+    } else if (scene.visual_type === "code_diff") {
+      extra.code_diff = await buildCodeDiffAssets(scene);
     }
     compiledScenes.push(pickSceneForComposition(scene, extra));
     cuesByScene.push(buildSubtitleCues(scene, timing.scenes[i], timing.speed));
@@ -632,6 +687,7 @@ export async function compileEpisodeProject({ workspaceRoot, courseId, episode, 
     generator: "tech-video-studio/hyperframes-compiler@1",
     episode: {
       id: episode.id,
+      ...(cleanPartId ? { part_id: cleanPartId } : {}),
       course_id: script.course_id || courseId,
       number: Number(script.episode_number || episode.number || 1),
       title: script.title || episode.title || episode.id,
@@ -666,6 +722,7 @@ export async function compileEpisodeProject({ workspaceRoot, courseId, episode, 
     height: FRAME_HEIGHT,
     course_id: courseId,
     episode_id: episode.id,
+    ...(cleanPartId ? { part_id: cleanPartId } : {}),
     speed: timing.speed,
     total_duration: timing.total,
     scenes: timing.scenes.map(({ index, id, start, duration, source_duration, audio_rel }) => ({

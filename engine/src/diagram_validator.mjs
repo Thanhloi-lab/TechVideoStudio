@@ -831,6 +831,547 @@ export function validateKpiMetricsData(visualData, sceneTag = "scene") {
   return { valid: errors.length === 0, errors, warnings };
 }
 
+function extractVisualPayload(input) {
+  if (!input || typeof input !== "object") return {};
+  if (
+    "visual_data" in input &&
+    !("actors" in input || "lanes" in input || "left_lines" in input || "branches" in input)
+  ) {
+    return input.visual_data && typeof input.visual_data === "object" ? input.visual_data : {};
+  }
+  return input;
+}
+
+export function validateSequenceDiagram(visualData, sceneTag = "scene") {
+  const errors = [];
+  const warnings = [];
+  const data = extractVisualPayload(visualData);
+  const budget = TEMPLATE_LAYOUT_BUDGETS.sequence_diagram;
+
+  const actors = Array.isArray(data.actors) ? data.actors : null;
+  if (!actors || actors.length < budget.minActors) {
+    errors.push(`[${sceneTag}] sequence_diagram requires at least ${budget.minActors} actors in visual_data.actors.`);
+    return { valid: false, errors, warnings };
+  }
+  if (actors.length > budget.maxActors) {
+    errors.push(
+      `[${sceneTag}] sequence_diagram has ${actors.length} actors (max ${budget.maxActors} allowed to fit 1080p lifelines cleanly).`
+    );
+  }
+
+  const actorIds = new Set();
+  for (let i = 0; i < actors.length; i++) {
+    const a = actors[i];
+    const id = String(a?.id ?? "").trim();
+    const label = String(a?.label ?? "").trim();
+    if (!a || !id || !label) {
+      errors.push(`[${sceneTag}] sequence_diagram.actors[${i}] requires non-empty "id" and "label".`);
+      continue;
+    }
+    if (actorIds.has(id)) {
+      errors.push(`[${sceneTag}] sequence_diagram duplicate actor id "${id}".`);
+    } else {
+      actorIds.add(id);
+    }
+  }
+
+  const messages = Array.isArray(data.messages) ? data.messages : null;
+  const msgIdSet = new Set();
+  const validStyles = new Set(budget.styles);
+  if (!messages || messages.length < budget.minMessages) {
+    errors.push(`[${sceneTag}] sequence_diagram requires at least ${budget.minMessages} message in visual_data.messages.`);
+  } else {
+    if (messages.length > budget.maxMessages) {
+      errors.push(
+        `[${sceneTag}] sequence_diagram has ${messages.length} messages (max ${budget.maxMessages} allowed to prevent vertical overflow).`
+      );
+    }
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i];
+      if (!m || typeof m !== "object") {
+        errors.push(`[${sceneTag}] sequence_diagram.messages[${i}] must be an object.`);
+        continue;
+      }
+      if (m.id !== undefined && m.id !== null && String(m.id).trim() !== "") {
+        const mid = String(m.id).trim();
+        if (msgIdSet.has(mid)) {
+          errors.push(`[${sceneTag}] sequence_diagram duplicate message id "${mid}".`);
+        }
+        msgIdSet.add(mid);
+      }
+      const from = String(m.from ?? "").trim();
+      const to = String(m.to ?? "").trim();
+      if (!from || !actorIds.has(from)) {
+        errors.push(`[${sceneTag}] sequence_diagram.messages[${i}].from references unknown actor "${m.from}".`);
+      }
+      if (!to || !actorIds.has(to)) {
+        errors.push(`[${sceneTag}] sequence_diagram.messages[${i}].to references unknown actor "${m.to}".`);
+      }
+      const label = String(m.label ?? "").trim();
+      if (!label) {
+        errors.push(`[${sceneTag}] sequence_diagram.messages[${i}] requires non-empty "label".`);
+      } else if (label.length > budget.maxLabelChars) {
+        warnings.push({
+          code: "sequence-long-label",
+          scene_id: sceneTag,
+          message: `sequence_diagram.messages[${i}].label is ${label.length} chars (recommended <= ${budget.maxLabelChars}).`,
+        });
+      }
+      if (m.detail && String(m.detail).length > budget.maxDetailChars) {
+        warnings.push({
+          code: "sequence-long-detail",
+          scene_id: sceneTag,
+          message: `sequence_diagram.messages[${i}].detail exceeds ${budget.maxDetailChars} chars.`,
+        });
+      }
+      if (m.style !== undefined && m.style !== null && String(m.style).trim() !== "" && !validStyles.has(m.style)) {
+        warnings.push({
+          code: "sequence-unknown-style",
+          scene_id: sceneTag,
+          message: `sequence_diagram.messages[${i}].style "${m.style}" is not one of ${budget.styles.join("|")}.`,
+        });
+      }
+      const psOk = isProgressInRange(m.progress_start);
+      const peOk = isProgressInRange(m.progress_end);
+      if (!psOk || !peOk) {
+        errors.push(
+          `[${sceneTag}] sequence_diagram.messages[${i}] requires progress_start and progress_end in [0..1] (got start=${m.progress_start}, end=${m.progress_end}).`
+        );
+      } else if (Number(m.progress_start) > Number(m.progress_end)) {
+        errors.push(
+          `[${sceneTag}] sequence_diagram.messages[${i}] has progress_start (${m.progress_start}) > progress_end (${m.progress_end}).`
+        );
+      }
+    }
+  }
+
+  const highlights = Array.isArray(data.highlights) ? data.highlights : [];
+  if (highlights.length > budget.maxHighlights) {
+    warnings.push({
+      code: "sequence-too-many-highlights",
+      scene_id: sceneTag,
+      message: `sequence_diagram has ${highlights.length} highlights (recommended max ${budget.maxHighlights}).`,
+    });
+  }
+  const validHlTones = new Set(budget.highlightTones);
+  const msgCount = messages ? messages.length : 0;
+  const resolveMsgRef = (ref, fieldName, hi) => {
+    if (ref === undefined || ref === null || ref === "") return null;
+    if (typeof ref === "number") {
+      if (!Number.isInteger(ref) || ref < 0 || ref > msgCount) {
+        errors.push(`[${sceneTag}] sequence_diagram.highlights[${hi}].${fieldName} index ${ref} out of range.`);
+        return null;
+      }
+      return ref;
+    }
+    const s = String(ref).trim();
+    if (msgIdSet.has(s)) return s;
+    if (/^\d+$/.test(s)) {
+      const idx = Number(s);
+      if (idx >= 0 && idx <= msgCount) return idx;
+    }
+    errors.push(`[${sceneTag}] sequence_diagram.highlights[${hi}].${fieldName} references unknown message "${ref}".`);
+    return null;
+  };
+
+  for (let hi = 0; hi < highlights.length; hi++) {
+    const hl = highlights[hi];
+    if (!hl || typeof hl !== "object") {
+      errors.push(`[${sceneTag}] sequence_diagram.highlights[${hi}] must be an object.`);
+      continue;
+    }
+    if (!String(hl.label ?? "").trim()) {
+      errors.push(`[${sceneTag}] sequence_diagram.highlights[${hi}] requires non-empty "label".`);
+    }
+    if (hl.show_at_progress !== undefined && hl.show_at_progress !== null && !isProgressInRange(hl.show_at_progress)) {
+      errors.push(`[${sceneTag}] sequence_diagram.highlights[${hi}].show_at_progress must be in [0..1].`);
+    }
+    if (hl.tone && !validHlTones.has(hl.tone)) {
+      warnings.push({
+        code: "sequence-unknown-highlight-tone",
+        scene_id: sceneTag,
+        message: `sequence_diagram.highlights[${hi}].tone "${hl.tone}" should be danger|warn|info|success.`,
+      });
+    }
+    resolveMsgRef(hl.from_msg, "from_msg", hi);
+    resolveMsgRef(hl.to_msg, "to_msg", hi);
+  }
+
+  return { valid: errors.length === 0, errors, warnings };
+}
+
+export function validateMemoryLayout(visualData, sceneTag = "scene") {
+  const errors = [];
+  const warnings = [];
+  const data = extractVisualPayload(visualData);
+  const budget = TEMPLATE_LAYOUT_BUDGETS.memory_layout;
+  const validStates = new Set(budget.cellStates);
+
+  const lanes = Array.isArray(data.lanes) ? data.lanes : null;
+  if (!lanes || lanes.length < budget.minLanes) {
+    errors.push(`[${sceneTag}] memory_layout requires at least ${budget.minLanes} lane in visual_data.lanes.`);
+    return { valid: false, errors, warnings };
+  }
+  if (lanes.length > budget.maxLanes) {
+    errors.push(
+      `[${sceneTag}] memory_layout has ${lanes.length} lanes (max ${budget.maxLanes} allowed to fit 1080p stage cleanly).`
+    );
+  }
+
+  const laneCellMap = new Map();
+  for (let li = 0; li < lanes.length; li++) {
+    const lane = lanes[li];
+    const lid = String(lane?.id ?? "").trim();
+    const llabel = String(lane?.label ?? "").trim();
+    if (!lane || !lid || !llabel) {
+      errors.push(`[${sceneTag}] memory_layout.lanes[${li}] requires non-empty "id" and "label".`);
+      continue;
+    }
+    if (laneCellMap.has(lid)) {
+      errors.push(`[${sceneTag}] memory_layout duplicate lane id "${lid}".`);
+      continue;
+    }
+    const cells = Array.isArray(lane.cells) ? lane.cells : null;
+    if (!cells || cells.length < budget.minCellsPerLane) {
+      errors.push(`[${sceneTag}] memory_layout.lanes[${li}] requires at least ${budget.minCellsPerLane} cell.`);
+      laneCellMap.set(lid, new Set());
+      continue;
+    }
+    if (cells.length > budget.maxCellsPerLane) {
+      errors.push(
+        `[${sceneTag}] memory_layout.lanes[${li}] has ${cells.length} cells (max ${budget.maxCellsPerLane} allowed).`
+      );
+    }
+    const cellIds = new Set();
+    for (let ci = 0; ci < cells.length; ci++) {
+      const cell = cells[ci];
+      const cid = String(cell?.id ?? "").trim();
+      const clabel = String(cell?.label ?? "").trim();
+      if (!cell || !cid || !clabel) {
+        errors.push(`[${sceneTag}] memory_layout.lanes[${li}].cells[${ci}] requires non-empty "id" and "label".`);
+        continue;
+      }
+      if (cellIds.has(cid)) {
+        errors.push(`[${sceneTag}] memory_layout.lanes[${li}] duplicate cell id "${cid}".`);
+      } else {
+        cellIds.add(cid);
+      }
+      if (cell.state !== undefined && cell.state !== null && cell.state !== "" && !validStates.has(cell.state)) {
+        warnings.push({
+          code: "memory-unknown-cell-state",
+          scene_id: sceneTag,
+          message: `memory_layout.lanes[${li}].cells[${ci}].state "${cell.state}" should be ${budget.cellStates.join("|")}.`,
+        });
+      }
+    }
+    laneCellMap.set(lid, cellIds);
+  }
+
+  const checkCellRef = (laneId, cellId, ctxLabel) => {
+    const lid = String(laneId ?? "").trim();
+    const cid = String(cellId ?? "").trim();
+    const cells = laneCellMap.get(lid);
+    if (!cells) {
+      errors.push(`[${sceneTag}] ${ctxLabel} references unknown lane_id "${laneId}".`);
+      return false;
+    }
+    if (!cells.has(cid)) {
+      errors.push(`[${sceneTag}] ${ctxLabel} references unknown cell_id "${cellId}" in lane "${lid}".`);
+      return false;
+    }
+    return true;
+  };
+
+  const steps = Array.isArray(data.steps) ? data.steps : null;
+  if (!steps || steps.length < budget.minSteps) {
+    errors.push(`[${sceneTag}] memory_layout requires at least ${budget.minSteps} step in visual_data.steps.`);
+  } else {
+    if (steps.length > budget.maxSteps) {
+      errors.push(`[${sceneTag}] memory_layout has ${steps.length} steps (max ${budget.maxSteps} allowed).`);
+    }
+    for (let si = 0; si < steps.length; si++) {
+      const st = steps[si];
+      if (!st || typeof st !== "object") {
+        errors.push(`[${sceneTag}] memory_layout.steps[${si}] must be an object.`);
+        continue;
+      }
+      if (!String(st.label ?? "").trim()) {
+        errors.push(`[${sceneTag}] memory_layout.steps[${si}] requires non-empty "label".`);
+      }
+      const psOk = isProgressInRange(st.progress_start);
+      const peOk = isProgressInRange(st.progress_end);
+      if (!psOk || !peOk) {
+        errors.push(
+          `[${sceneTag}] memory_layout.steps[${si}] requires progress_start and progress_end in [0..1] (got start=${st.progress_start}, end=${st.progress_end}).`
+        );
+      } else if (Number(st.progress_start) > Number(st.progress_end)) {
+        errors.push(
+          `[${sceneTag}] memory_layout.steps[${si}] has progress_start (${st.progress_start}) > progress_end (${st.progress_end}).`
+        );
+      }
+      if (st.callout && String(st.callout).length > budget.maxCalloutChars) {
+        warnings.push({
+          code: "memory-long-callout",
+          scene_id: sceneTag,
+          message: `memory_layout.steps[${si}].callout exceeds ${budget.maxCalloutChars} chars.`,
+        });
+      }
+      if (Array.isArray(st.highlight_cells)) {
+        for (let hi = 0; hi < st.highlight_cells.length; hi++) {
+          const hc = st.highlight_cells[hi];
+          if (!hc || typeof hc !== "object") {
+            errors.push(`[${sceneTag}] memory_layout.steps[${si}].highlight_cells[${hi}] must be an object.`);
+            continue;
+          }
+          checkCellRef(hc.lane_id, hc.cell_id, `memory_layout.steps[${si}].highlight_cells[${hi}]`);
+          if (hc.state && !validStates.has(hc.state)) {
+            warnings.push({
+              code: "memory-unknown-highlight-state",
+              scene_id: sceneTag,
+              message: `memory_layout.steps[${si}].highlight_cells[${hi}].state "${hc.state}" is non-standard.`,
+            });
+          }
+        }
+      }
+      if (Array.isArray(st.pointers)) {
+        for (let pi = 0; pi < st.pointers.length; pi++) {
+          const ptr = st.pointers[pi];
+          if (!ptr || typeof ptr !== "object") {
+            errors.push(`[${sceneTag}] memory_layout.steps[${si}].pointers[${pi}] must be an object.`);
+            continue;
+          }
+          checkCellRef(ptr.from_lane, ptr.from_cell, `memory_layout.steps[${si}].pointers[${pi}] (from)`);
+          checkCellRef(ptr.to_lane, ptr.to_cell, `memory_layout.steps[${si}].pointers[${pi}] (to)`);
+        }
+      }
+    }
+  }
+
+  return { valid: errors.length === 0, errors, warnings };
+}
+
+export function validateCodeDiff(visualData, sceneTag = "scene") {
+  const errors = [];
+  const warnings = [];
+  const data = extractVisualPayload(visualData);
+  const budget = TEMPLATE_LAYOUT_BUDGETS.code_diff;
+  const validTones = new Set(budget.tones);
+
+  if (!String(data.left_title ?? "").trim()) {
+    errors.push(`[${sceneTag}] code_diff requires non-empty "left_title".`);
+  }
+  if (!String(data.right_title ?? "").trim()) {
+    errors.push(`[${sceneTag}] code_diff requires non-empty "right_title".`);
+  }
+
+  const leftLines = Array.isArray(data.left_lines) ? data.left_lines : null;
+  const rightLines = Array.isArray(data.right_lines) ? data.right_lines : null;
+
+  if (!leftLines || leftLines.length < budget.minLines) {
+    errors.push(`[${sceneTag}] code_diff requires non-empty "left_lines" (${budget.minLines}..${budget.maxLines} lines).`);
+  } else {
+    if (leftLines.length > budget.maxLines) {
+      errors.push(
+        `[${sceneTag}] code_diff.left_lines has ${leftLines.length} lines (max ${budget.maxLines} allowed to fit 1080p diff panes).`
+      );
+    }
+    leftLines.forEach((ln, idx) => {
+      if (String(ln ?? "").length > budget.maxLineChars) {
+        warnings.push({
+          code: "diff-long-left-line",
+          scene_id: sceneTag,
+          message: `code_diff.left_lines[${idx}] exceeds ${budget.maxLineChars} chars and may wrap.`,
+        });
+      }
+    });
+  }
+
+  if (!rightLines || rightLines.length < budget.minLines) {
+    errors.push(`[${sceneTag}] code_diff requires non-empty "right_lines" (${budget.minLines}..${budget.maxLines} lines).`);
+  } else {
+    if (rightLines.length > budget.maxLines) {
+      errors.push(
+        `[${sceneTag}] code_diff.right_lines has ${rightLines.length} lines (max ${budget.maxLines} allowed to fit 1080p diff panes).`
+      );
+    }
+    rightLines.forEach((ln, idx) => {
+      if (String(ln ?? "").length > budget.maxLineChars) {
+        warnings.push({
+          code: "diff-long-right-line",
+          scene_id: sceneTag,
+          message: `code_diff.right_lines[${idx}] exceeds ${budget.maxLineChars} chars and may wrap.`,
+        });
+      }
+    });
+  }
+
+  const leftLen = leftLines ? leftLines.length : 0;
+  const rightLen = rightLines ? rightLines.length : 0;
+  const steps = Array.isArray(data.focus_steps) ? data.focus_steps : null;
+  if (!steps || steps.length < budget.minFocusSteps) {
+    errors.push(`[${sceneTag}] code_diff requires at least ${budget.minFocusSteps} entry in visual_data.focus_steps.`);
+  } else {
+    if (steps.length > budget.maxFocusSteps) {
+      errors.push(`[${sceneTag}] code_diff.focus_steps has ${steps.length} items (max ${budget.maxFocusSteps} allowed).`);
+    }
+    for (let i = 0; i < steps.length; i++) {
+      const st = steps[i];
+      if (!st || typeof st !== "object") {
+        errors.push(`[${sceneTag}] code_diff.focus_steps[${i}] must be an object.`);
+        continue;
+      }
+      const callout = String(st.callout ?? "").trim();
+      if (!callout) {
+        errors.push(`[${sceneTag}] code_diff.focus_steps[${i}] requires non-empty "callout".`);
+      } else if (callout.length > budget.maxCalloutChars) {
+        warnings.push({
+          code: "diff-long-callout",
+          scene_id: sceneTag,
+          message: `code_diff.focus_steps[${i}].callout exceeds ${budget.maxCalloutChars} chars.`,
+        });
+      }
+      const psOk = isProgressInRange(st.progress_start);
+      const peOk = isProgressInRange(st.progress_end);
+      if (!psOk || !peOk) {
+        errors.push(
+          `[${sceneTag}] code_diff.focus_steps[${i}] requires progress_start and progress_end in [0..1] (got start=${st.progress_start}, end=${st.progress_end}).`
+        );
+      } else if (Number(st.progress_start) > Number(st.progress_end)) {
+        errors.push(
+          `[${sceneTag}] code_diff.focus_steps[${i}] has progress_start (${st.progress_start}) > progress_end (${st.progress_end}).`
+        );
+      }
+      if (st.tone !== undefined && st.tone !== null && st.tone !== "" && !validTones.has(st.tone)) {
+        warnings.push({
+          code: "diff-unknown-tone",
+          scene_id: sceneTag,
+          message: `code_diff.focus_steps[${i}].tone "${st.tone}" should be danger|success|info.`,
+        });
+      }
+      if (st.left_lines !== undefined) {
+        if (!Array.isArray(st.left_lines)) {
+          errors.push(`[${sceneTag}] code_diff.focus_steps[${i}].left_lines must be an array of 1-based line numbers.`);
+        } else {
+          for (const ln of st.left_lines) {
+            if (!Number.isInteger(ln) || ln < 1 || (leftLen > 0 && ln > leftLen)) {
+              errors.push(
+                `[${sceneTag}] code_diff.focus_steps[${i}].left_lines has invalid 1-based line number ${ln} (left_lines has ${leftLen} lines).`
+              );
+            }
+          }
+        }
+      }
+      if (st.right_lines !== undefined) {
+        if (!Array.isArray(st.right_lines)) {
+          errors.push(`[${sceneTag}] code_diff.focus_steps[${i}].right_lines must be an array of 1-based line numbers.`);
+        } else {
+          for (const ln of st.right_lines) {
+            if (!Number.isInteger(ln) || ln < 1 || (rightLen > 0 && ln > rightLen)) {
+              errors.push(
+                `[${sceneTag}] code_diff.focus_steps[${i}].right_lines has invalid 1-based line number ${ln} (right_lines has ${rightLen} lines).`
+              );
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return { valid: errors.length === 0, errors, warnings };
+}
+
+export function validateConceptBreakdown(visualData, sceneTag = "scene") {
+  const errors = [];
+  const warnings = [];
+  const data = extractVisualPayload(visualData);
+  const budget = TEMPLATE_LAYOUT_BUDGETS.concept_breakdown;
+
+  if (data.mode !== undefined && data.mode !== null && data.mode !== "" && !budget.modes.includes(data.mode)) {
+    errors.push(
+      `[${sceneTag}] concept_breakdown invalid mode "${data.mode}" (expected ${budget.modes.join(" | ")}).`
+    );
+  }
+
+  const core = data.core;
+  if (!core || typeof core !== "object" || !String(core.label ?? "").trim()) {
+    errors.push(`[${sceneTag}] concept_breakdown requires visual_data.core with non-empty "label".`);
+  } else if (core.code_snippet && String(core.code_snippet).split("\n").length > budget.maxCoreCodeLines) {
+    warnings.push({
+      code: "breakdown-long-core-snippet",
+      scene_id: sceneTag,
+      message: `concept_breakdown.core.code_snippet exceeds ${budget.maxCoreCodeLines} lines.`,
+    });
+  }
+
+  const branches = Array.isArray(data.branches) ? data.branches : null;
+  if (!branches || branches.length < budget.minBranches) {
+    errors.push(
+      `[${sceneTag}] concept_breakdown requires at least ${budget.minBranches} branches in visual_data.branches.`
+    );
+    return { valid: false, errors, warnings };
+  }
+  if (branches.length > budget.maxBranches) {
+    errors.push(
+      `[${sceneTag}] concept_breakdown has ${branches.length} branches (max ${budget.maxBranches} allowed to fit 1080p stage cleanly).`
+    );
+  }
+
+  const branchIds = new Set();
+  for (let i = 0; i < branches.length; i++) {
+    const b = branches[i];
+    if (!b || typeof b !== "object") {
+      errors.push(`[${sceneTag}] concept_breakdown.branches[${i}] must be an object.`);
+      continue;
+    }
+    const bid = String(b.id ?? "").trim();
+    if (!bid) {
+      errors.push(`[${sceneTag}] concept_breakdown.branches[${i}] requires non-empty "id".`);
+    } else if (branchIds.has(bid)) {
+      errors.push(`[${sceneTag}] concept_breakdown duplicate branch id "${bid}".`);
+    } else {
+      branchIds.add(bid);
+    }
+    if (!String(b.label ?? "").trim()) {
+      errors.push(`[${sceneTag}] concept_breakdown.branches[${i}] requires non-empty "label".`);
+    }
+    const detail = String(b.detail ?? "").trim();
+    if (!detail) {
+      errors.push(`[${sceneTag}] concept_breakdown.branches[${i}] requires non-empty "detail".`);
+    } else if (detail.length > budget.maxDetailChars) {
+      warnings.push({
+        code: "breakdown-long-detail",
+        scene_id: sceneTag,
+        message: `concept_breakdown.branches[${i}].detail exceeds ${budget.maxDetailChars} chars.`,
+      });
+    }
+    const psOk = isProgressInRange(b.progress_start);
+    const peOk = isProgressInRange(b.progress_end);
+    if (!psOk || !peOk) {
+      errors.push(
+        `[${sceneTag}] concept_breakdown.branches[${i}] requires progress_start and progress_end in [0..1] (got start=${b.progress_start}, end=${b.progress_end}).`
+      );
+    } else if (Number(b.progress_start) > Number(b.progress_end)) {
+      errors.push(
+        `[${sceneTag}] concept_breakdown.branches[${i}] has progress_start (${b.progress_start}) > progress_end (${b.progress_end}).`
+      );
+    }
+  }
+
+  if (data.takeaway !== undefined && data.takeaway !== null) {
+    if (typeof data.takeaway !== "object" || !String(data.takeaway.text ?? "").trim()) {
+      errors.push(`[${sceneTag}] concept_breakdown.takeaway requires non-empty "text" when provided.`);
+    } else if (
+      data.takeaway.show_at_progress !== undefined &&
+      data.takeaway.show_at_progress !== null &&
+      !isProgressInRange(data.takeaway.show_at_progress)
+    ) {
+      errors.push(`[${sceneTag}] concept_breakdown.takeaway.show_at_progress must be in [0..1].`);
+    }
+  }
+
+  return { valid: errors.length === 0, errors, warnings };
+}
+
 /**
  * Validate a single scene (template payload + scene metadata).
  */
@@ -883,6 +1424,22 @@ export function validateSingleScene(scene, index = 0) {
     const res = validateKpiMetricsData(scene.visual_data, tag);
     errors.push(...res.errors);
     warnings.push(...res.warnings);
+  } else if (vtype === "sequence_diagram") {
+    const res = validateSequenceDiagram(scene.visual_data, tag);
+    errors.push(...res.errors);
+    warnings.push(...res.warnings);
+  } else if (vtype === "memory_layout") {
+    const res = validateMemoryLayout(scene.visual_data, tag);
+    errors.push(...res.errors);
+    warnings.push(...res.warnings);
+  } else if (vtype === "code_diff") {
+    const res = validateCodeDiff(scene.visual_data, tag);
+    errors.push(...res.errors);
+    warnings.push(...res.warnings);
+  } else if (vtype === "concept_breakdown") {
+    const res = validateConceptBreakdown(scene.visual_data, tag);
+    errors.push(...res.errors);
+    warnings.push(...res.warnings);
   }
 
   // Scene metadata validation (appended after visual_data checks to preserve visual error ordering)
@@ -926,7 +1483,10 @@ export function validateSingleScene(scene, index = 0) {
       (Array.isArray(vd.comparisons) ? vd.comparisons.length : 0) +
       (Array.isArray(vd.rows) ? vd.rows.length : 0) +
       (Array.isArray(vd.milestones) ? vd.milestones.length : 0) +
-      (Array.isArray(vd.cards) ? vd.cards.length : 0);
+      (Array.isArray(vd.cards) ? vd.cards.length : 0) +
+      (Array.isArray(vd.messages) ? vd.messages.length : 0) +
+      (Array.isArray(vd.focus_steps) ? vd.focus_steps.length : 0) +
+      (Array.isArray(vd.branches) ? vd.branches.length : 0);
     if (stepCount <= 1) {
       warnings.push(
         `[${tag}] Long narration (${narrationWords} words) with <= 1 animation step may cause >3.5s static hold; consider adding more sub-steps.`
@@ -945,19 +1505,22 @@ export function validateSingleScene(scene, index = 0) {
 }
 
 /**
- * Validate all scenes inside a script.json object across all 7 templates.
+ * Validate all scenes inside a script.json object across all 11 templates,
+ * including non-blocking Visual Variety Guard warnings.
  */
 export function validateScriptDiagrams(scriptJson) {
   const scenes = Array.isArray(scriptJson?.scenes) ? scriptJson.scenes : [];
   const errors = [];
   const warnings = [];
   const seenIds = new Set();
+  const validScenes = [];
   let sceneCount = 0;
   let architectureCount = 0;
 
   for (let idx = 0; idx < scenes.length; idx++) {
     const scene = scenes[idx];
     if (!scene) continue;
+    validScenes.push({ scene, idx });
     const res = validateSingleScene(scene, idx);
     if (res.visual_type && SUPPORTED_VISUAL_SET.has(res.visual_type)) {
       sceneCount++;
@@ -975,6 +1538,45 @@ export function validateScriptDiagrams(scriptJson) {
       } else {
         seenIds.add(rawId);
       }
+    }
+  }
+
+  // Visual Variety Guard (non-blocking warnings only)
+  if (validScenes.length > 1) {
+    for (let i = 1; i < validScenes.length; i++) {
+      const prev = validScenes[i - 1].scene;
+      const cur = validScenes[i].scene;
+      const prevType = prev?.visual_type || "architecture";
+      const curType = cur?.visual_type || "architecture";
+      if (prevType !== curType) continue;
+
+      const isCodeCliLabContinuation =
+        curType === "code_cli" &&
+        (cur?.part === "setup" ||
+          prev?.part === "setup" ||
+          Boolean(cur?.continuation || cur?.is_continuation || cur?.visual_data?.continuation) ||
+          (cur?.source_part && prev?.source_part && cur.source_part !== prev.source_part));
+      if (isCodeCliLabContinuation) continue;
+
+      const curTag = (typeof cur?.id === "string" && cur.id.trim()) || `scene_${validScenes[i].idx + 1}`;
+      warnings.push({
+        code: "duplicate-adjacent-visual-type",
+        scene_id: curTag,
+        message: `[${curTag}] Hai scene liên tiếp dùng cùng visual_type "${curType}" (nên luân phiên template khác nhau trừ khi nối tiếp lab code_cli).`,
+      });
+    }
+  }
+
+  if (validScenes.length >= 4) {
+    const distinctTypes = new Set(validScenes.map(({ scene }) => scene?.visual_type || "architecture"));
+    if (distinctTypes.size < 3) {
+      const firstTag =
+        (typeof validScenes[0]?.scene?.id === "string" && validScenes[0].scene.id.trim()) || "script";
+      warnings.push({
+        code: "low-visual-variety",
+        scene_id: firstTag,
+        message: `Script có ${validScenes.length} scenes nhưng chỉ dùng ${distinctTypes.size} loại visual_type (${[...distinctTypes].join(", ")}); nên dùng >= 3 loại template khác nhau để tránh đơn điệu.`,
+      });
     }
   }
 

@@ -1,4 +1,4 @@
-// Single Source of Truth (SSOT) Schema & Layout Budgets for all 7 Tech Video Studio Visual Templates.
+// Single Source of Truth (SSOT) Schema & Layout Budgets for all 11 Tech Video Studio Visual Templates.
 // Pure Node.js ESM & Browser-safe; zero external dependencies.
 
 import { SUPPORTED_VISUAL_TYPES } from "./motion/kernel.mjs";
@@ -139,6 +139,43 @@ export const TEMPLATE_LAYOUT_BUDGETS = Object.freeze({
     maxCards: 4,
     minChartSeries: 1,
     maxChartSeries: 8,
+  }),
+  sequence_diagram: Object.freeze({
+    minActors: 2,
+    maxActors: 5,
+    minMessages: 1,
+    maxMessages: 10,
+    maxHighlights: 4,
+    maxLabelChars: 48,
+    maxDetailChars: 80,
+    styles: ["solid", "dashed", "danger", "async"],
+    highlightTones: ["danger", "warn", "info", "success"],
+  }),
+  memory_layout: Object.freeze({
+    minLanes: 1,
+    maxLanes: 4,
+    minCellsPerLane: 1,
+    maxCellsPerLane: 8,
+    minSteps: 1,
+    maxSteps: 8,
+    maxCalloutChars: 110,
+    cellStates: ["idle", "active", "match", "write", "danger"],
+  }),
+  code_diff: Object.freeze({
+    minLines: 1,
+    maxLines: 16,
+    maxLineChars: 62,
+    minFocusSteps: 1,
+    maxFocusSteps: 6,
+    maxCalloutChars: 110,
+    tones: ["danger", "success", "info"],
+  }),
+  concept_breakdown: Object.freeze({
+    minBranches: 2,
+    maxBranches: 6,
+    modes: ["anatomy", "decision", "chapter"],
+    maxDetailChars: 110,
+    maxCoreCodeLines: 5,
   }),
 });
 
@@ -420,6 +457,176 @@ export const TEMPLATE_SPECS = Object.freeze({
       },
     },
   }),
+
+  sequence_diagram: Object.freeze({
+    visual_type: "sequence_diagram",
+    label: "Sequence Diagram",
+    recommended_parts: ["problem", "architecture", "setup"],
+    description:
+      "Protocol, RPC, auth handshake, and event-loop trace across 2..5 actor lifelines with 1..10 progressive message arrows and highlight bands.",
+    fields: {
+      badge: "string (optional, e.g. 'TLS 1.3 Handshake')",
+      subtitle: "string (optional)",
+      actors: [
+        {
+          id: "string (unique, required)",
+          label: "string (required)",
+          sublabel: "string (optional)",
+          icon: VALID_ICONS.join(" | "),
+          tone: VALID_TONES.join(" | "),
+        },
+      ],
+      messages: [
+        {
+          id: "string (optional)",
+          from: "string (must match existing actor.id)",
+          to: "string (must match existing actor.id)",
+          label: "string (required, concise <= 48 chars)",
+          detail: "string (optional, <= 80 chars)",
+          style: "solid | dashed | danger | async",
+          badge: "string (optional, e.g. 'SYN', '200 OK')",
+          cue_sentence: "number (optional 1-based sentence index in scene.narration)",
+          cue_text: "string (optional spoken phrase for TTS sync)",
+          progress_start: "number in [0..1] (<= progress_end)",
+          progress_end: "number in [0..1] (>= progress_start)",
+        },
+      ],
+      highlights: [
+        {
+          label: "string (required)",
+          from_msg: "string | number (optional message id or index)",
+          to_msg: "string | number (optional message id or index)",
+          tone: "danger | warn | info | success",
+          cue_sentence: "number (optional)",
+          show_at_progress: "number in [0..1] (optional, default 0.72)",
+        },
+      ],
+    },
+  }),
+
+  memory_layout: Object.freeze({
+    visual_type: "memory_layout",
+    label: "Memory & Data Structure Layout",
+    recommended_parts: ["problem", "architecture"],
+    description:
+      "RAM, cache, stack/heap, buffer, hash-slot, or B-tree page layout across 1..4 lanes (1..8 cells/lane) with animated state steps and pointers.",
+    fields: {
+      badge: "string (optional)",
+      subtitle: "string (optional)",
+      complexity_badge: "string (optional, e.g. 'O(1) Lookup')",
+      lanes: [
+        {
+          id: "string (unique, required)",
+          label: "string (required)",
+          sublabel: "string (optional)",
+          tone: VALID_TONES.join(" | "),
+          cells: [
+            {
+              id: "string (unique within lane, required)",
+              label: "string (required)",
+              value: "string (optional)",
+              subtext: "string (optional)",
+              state: "idle | active | match | write | danger",
+            },
+          ],
+        },
+      ],
+      steps: [
+        {
+          label: "string (required)",
+          callout: "string (optional, <= 110 chars)",
+          complexity: "string (optional per-step badge override)",
+          highlight_cells: [{ lane_id: "string (existing lane.id)", cell_id: "string (existing cell.id)", state: "idle | active | match | write | danger" }],
+          pointers: [
+            {
+              from_lane: "string (existing lane.id)",
+              from_cell: "string (existing cell.id)",
+              to_lane: "string (existing lane.id)",
+              to_cell: "string (existing cell.id)",
+              label: "string (optional)",
+              tone: VALID_TONES.join(" | "),
+            },
+          ],
+          cue_sentence: "number (optional)",
+          cue_text: "string (optional)",
+          progress_start: "number in [0..1] (<= progress_end)",
+          progress_end: "number in [0..1] (>= progress_start)",
+        },
+      ],
+    },
+  }),
+
+  code_diff: Object.freeze({
+    visual_type: "code_diff",
+    label: "Side-by-Side Code Diff",
+    recommended_parts: ["problem", "architecture", "setup", "exam_tips"],
+    description:
+      "Shiki-highlighted side-by-side comparison of buggy/insecure vs fixed/optimized code (1..16 lines per side) with progressive focus steps.",
+    fields: {
+      badge: "string (optional)",
+      subtitle: "string (optional)",
+      language: "string (json | python | bash | yaml | javascript | typescript | go | sql | hcl)",
+      left_title: "string (required, e.g. 'vulnerable.json')",
+      left_badge: "string (optional, e.g. 'BEFORE · BUGGY')",
+      left_lines: "string[] (1..16 lines, required)",
+      right_title: "string (required, e.g. 'hardened.json')",
+      right_badge: "string (optional, e.g. 'AFTER · FIXED')",
+      right_lines: "string[] (1..16 lines, required)",
+      focus_steps: [
+        {
+          left_lines: "number[] (optional 1-based line numbers in left_lines)",
+          right_lines: "number[] (optional 1-based line numbers in right_lines)",
+          callout: "string (required, <= 110 chars)",
+          consequence: "string (optional failure impact pill)",
+          fix_reason: "string (optional fix explanation pill)",
+          tone: "danger | success | info",
+          cue_sentence: "number (optional)",
+          cue_text: "string (optional)",
+          progress_start: "number in [0..1] (<= progress_end)",
+          progress_end: "number in [0..1] (>= progress_start)",
+        },
+      ],
+    },
+  }),
+
+  concept_breakdown: Object.freeze({
+    visual_type: "concept_breakdown",
+    label: "Concept Breakdown Tree",
+    recommended_parts: ["problem", "architecture", "exam_tips"],
+    description:
+      "Core-and-branches mental model diagram (anatomy, decision, or chapter overview) with 2..6 progressive branches and optional takeaway.",
+    fields: {
+      badge: "string (optional)",
+      subtitle: "string (optional)",
+      mode: "anatomy | decision | chapter (optional, default 'anatomy')",
+      core: {
+        label: "string (required)",
+        sublabel: "string (optional)",
+        badge: "string (optional)",
+        code_snippet: "string (optional short <= 5-line snippet)",
+        tone: VALID_TONES.join(" | "),
+      },
+      branches: [
+        {
+          id: "string (unique, required)",
+          label: "string (required)",
+          role_badge: "string (optional)",
+          detail: "string (required, <= 110 chars)",
+          example: "string (optional)",
+          tone: VALID_TONES.join(" | "),
+          cue_sentence: "number (optional)",
+          cue_text: "string (optional)",
+          progress_start: "number in [0..1] (<= progress_end)",
+          progress_end: "number in [0..1] (>= progress_start)",
+        },
+      ],
+      takeaway: {
+        label: "string (optional)",
+        text: "string (required if takeaway present)",
+        show_at_progress: "number in [0..1] (optional, default 0.80)",
+      },
+    },
+  }),
 });
 
 /**
@@ -483,6 +690,24 @@ export function buildTemplatesSchemaDoc() {
         cards: `${TEMPLATE_LAYOUT_BUDGETS.kpi_metrics.minCards}..${TEMPLATE_LAYOUT_BUDGETS.kpi_metrics.maxCards}`,
         chart_series: `${TEMPLATE_LAYOUT_BUDGETS.kpi_metrics.minChartSeries}..${TEMPLATE_LAYOUT_BUDGETS.kpi_metrics.maxChartSeries}`,
       },
+      sequence_diagram: {
+        actors: `${TEMPLATE_LAYOUT_BUDGETS.sequence_diagram.minActors}..${TEMPLATE_LAYOUT_BUDGETS.sequence_diagram.maxActors}`,
+        messages: `${TEMPLATE_LAYOUT_BUDGETS.sequence_diagram.minMessages}..${TEMPLATE_LAYOUT_BUDGETS.sequence_diagram.maxMessages}`,
+        max_highlights: TEMPLATE_LAYOUT_BUDGETS.sequence_diagram.maxHighlights,
+      },
+      memory_layout: {
+        lanes: `${TEMPLATE_LAYOUT_BUDGETS.memory_layout.minLanes}..${TEMPLATE_LAYOUT_BUDGETS.memory_layout.maxLanes}`,
+        cells_per_lane: `${TEMPLATE_LAYOUT_BUDGETS.memory_layout.minCellsPerLane}..${TEMPLATE_LAYOUT_BUDGETS.memory_layout.maxCellsPerLane}`,
+        steps: `${TEMPLATE_LAYOUT_BUDGETS.memory_layout.minSteps}..${TEMPLATE_LAYOUT_BUDGETS.memory_layout.maxSteps}`,
+      },
+      code_diff: {
+        lines_per_side: `${TEMPLATE_LAYOUT_BUDGETS.code_diff.minLines}..${TEMPLATE_LAYOUT_BUDGETS.code_diff.maxLines}`,
+        focus_steps: `${TEMPLATE_LAYOUT_BUDGETS.code_diff.minFocusSteps}..${TEMPLATE_LAYOUT_BUDGETS.code_diff.maxFocusSteps}`,
+      },
+      concept_breakdown: {
+        branches: `${TEMPLATE_LAYOUT_BUDGETS.concept_breakdown.minBranches}..${TEMPLATE_LAYOUT_BUDGETS.concept_breakdown.maxBranches}`,
+        modes: TEMPLATE_LAYOUT_BUDGETS.concept_breakdown.modes.join("|"),
+      },
     },
     layout_budgets: TEMPLATE_LAYOUT_BUDGETS,
     templates: TEMPLATE_SPECS,
@@ -502,8 +727,9 @@ export function getSchemaPromptSpec({ compact = false, pass = 2 } = {}) {
     const lines = [
       "### Pass 1 — Storyboard & Scene Intent Specification",
       `1. \`part\` must be one of: ${VALID_SCENE_PARTS.map((p) => `"${p}"`).join(" | ")}.`,
-      `2. \`visual_type\` must be one of the 7 supported templates: ${SUPPORTED_VISUAL_TYPES.join(", ")}.`,
-      "3. Each scene requires: `id` (unique slug), `part`, `part_label`, `title`, `visual_type`, `narration` (natural spoken Vietnamese, keeping English technical terms intact), `highlight_words` (`string[]`), `key_points` (`string[]`), and `visual_intent` (concise design plan):",
+      `2. \`visual_type\` must be one of the ${SUPPORTED_VISUAL_TYPES.length} supported templates: ${SUPPORTED_VISUAL_TYPES.join(", ")}.`,
+      "3. Visual Variety Guard: avoid back-to-back identical `visual_type` (except consecutive `code_cli` lab continuations), use >= 3 distinct `visual_type` values on scripts with >= 4 scenes, and alternate `world_theme` (`dark`/`light`) & `causal_mechanic`.",
+      "4. Each scene requires: `id` (unique slug), `part`, `part_label`, `title`, `visual_type`, `narration` (natural spoken Vietnamese, keeping English technical terms intact), `highlight_words` (`string[]`), `key_points` (`string[]`), and `visual_intent` (concise design plan):",
     ];
     if (compact) {
       lines.push(
@@ -513,7 +739,11 @@ export function getSchemaPromptSpec({ compact = false, pass = 2 } = {}) {
         "   - `exam_tips`: up to 4 wrong-vs-right traps + 1 multiple-choice quiz (A/B/C/D).",
         "   - `comparison_matrix`: 2..4 columns x 1..6 criterion rows + takeaway.",
         "   - `timeline_flow`: 2..6 sequential milestones (horizontal|vertical) + callout.",
-        "   - `kpi_metrics`: 1..4 metric cards + optional bar chart (1..8 bars) + optional alert_stamp."
+        "   - `kpi_metrics`: 1..4 metric cards + optional bar chart (1..8 bars) + optional alert_stamp.",
+        "   - `sequence_diagram`: 2..5 actor lifelines + 1..10 messages + optional highlight spans.",
+        "   - `memory_layout`: 1..4 lanes (1..8 cells/lane) + 1..8 state/pointer steps.",
+        "   - `code_diff`: before vs after code (1..16 lines/side) + 1..6 focus_steps.",
+        "   - `concept_breakdown`: central core + 2..6 branches (anatomy|decision|chapter) + optional takeaway."
       );
     } else {
       lines.push(
@@ -523,7 +753,11 @@ export function getSchemaPromptSpec({ compact = false, pass = 2 } = {}) {
         "   - `exam_tips`: Specify up to 4 `comparisons` (`title`, `wrong`, `right`) and optional `quiz` (`question`, 2..4 `{ key, text }` options, `correct_key`, `explanation`).",
         "   - `comparison_matrix`: Specify 2..4 `columns` (`id`, `title`, `tone`) and 1..6 `rows` (`criterion`, `values[colId]`) plus optional `takeaway`.",
         "   - `timeline_flow`: Specify `orientation` (`horizontal|vertical`), 2..6 `milestones` (`time_label`, `title`, `description`, `icon`, `tone`), and optional `callout`.",
-        "   - `kpi_metrics`: Specify 1..4 `cards` (`label`, `value`/`numeric_target`, `delta_text`, `sparkline`), optional `chart` (`series[1..8]`), and optional `alert_stamp`."
+        "   - `kpi_metrics`: Specify 1..4 `cards` (`label`, `value`/`numeric_target`, `delta_text`, `sparkline`), optional `chart` (`series[1..8]`), and optional `alert_stamp`.",
+        "   - `sequence_diagram`: Specify 2..5 `actors` (`id`, `label`, `icon`, `tone`), 1..10 `messages` (`from`, `to`, `label`, `style`, `badge`), and optional `highlights` spanning key message ranges.",
+        "   - `memory_layout`: Specify `complexity_badge`, 1..4 `lanes` (each with 1..8 `cells`), and 1..8 `steps` updating `highlight_cells` states and `pointers` between cells.",
+        "   - `code_diff`: Specify `language`, `left_title`/`left_lines` (1..16) vs `right_title`/`right_lines` (1..16), and 1..6 `focus_steps` pointing out root cause vs fix.",
+        "   - `concept_breakdown`: Specify `mode` (`anatomy|decision|chapter`), central `core`, 2..6 progressive `branches` (`id`, `label`, `role_badge`, `detail`, `example`), and optional `takeaway`."
       );
     }
     return lines.join("\n");
@@ -541,13 +775,18 @@ export function getSchemaPromptSpec({ compact = false, pass = 2 } = {}) {
       "- `comparison_matrix`: `{ badge?, title?, criterion_heading?, columns: (2..4)[{ id, title, subtitle?, tone?, badge? }], rows: (1..6)[{ criterion, progress_start?, values: { [colId]: { text, status?: 'good'|'best'|'warn'|'neutral'|'bad'|'risk' } } }], takeaway?: { label?, text, show_at_progress? } }`.",
       "- `timeline_flow`: `{ orientation?: 'horizontal'|'vertical', badge?, subtitle?, milestones: (2..6)[{ id?, time_label?, title, description?, icon?, tone?, metric_badge?, progress_start, progress_end }], callout?: { title?, text, show_at_progress? } }`.",
       "- `kpi_metrics`: `{ cards: (1..4)[{ id?, label, value?, numeric_target?, prefix?, suffix?, decimals?, delta_text?, delta_tone?, tone?, sparkline?, progress_start? }], chart?: { title?, type?: 'bar', show_at_progress?, unit?, series: (1..8)[{ label, value, highlight? }] }, alert_stamp?: { text, tone: 'danger'|'success', show_at_progress? } }`.",
+      "- `sequence_diagram`: `{ badge?, subtitle?, actors: (2..5)[{ id, label, sublabel?, icon?, tone? }], messages: (1..10)[{ id?, from, to, label, detail?, style?: 'solid'|'dashed'|'danger'|'async', badge?, cue_sentence?, cue_text?, progress_start, progress_end }], highlights?: [{ label, from_msg?, to_msg?, tone?: 'danger'|'warn'|'info'|'success', cue_sentence?, show_at_progress }] }`.",
+      "- `memory_layout`: `{ badge?, subtitle?, complexity_badge?, lanes: (1..4)[{ id, label, sublabel?, tone?, cells: (1..8)[{ id, label, value?, subtext?, state?: 'idle'|'active'|'match'|'write'|'danger' }] }], steps: (1..8)[{ label, callout?, complexity?, highlight_cells?: [{ lane_id, cell_id, state }], pointers?: [{ from_lane, from_cell, to_lane, to_cell, label?, tone? }], cue_sentence?, cue_text?, progress_start, progress_end }] }`.",
+      "- `code_diff`: `{ badge?, subtitle?, language?, left_title, left_badge?, left_lines: (1..16)string[], right_title, right_badge?, right_lines: (1..16)string[], focus_steps: (1..6)[{ left_lines?: number[], right_lines?: number[], callout, consequence?, fix_reason?, tone?: 'danger'|'success'|'info', cue_sentence?, cue_text?, progress_start, progress_end }] }`.",
+      "- `concept_breakdown`: `{ badge?, subtitle?, mode?: 'anatomy'|'decision'|'chapter', core: { label, sublabel?, badge?, code_snippet?, tone? }, branches: (2..6)[{ id, label, role_badge?, detail, example?, tone?, cue_sentence?, cue_text?, progress_start, progress_end }], takeaway?: { label?, text, show_at_progress } }`.",
     ].join("\n");
   }
 
   return [
     "### Visual Templates Exact Schema (Pass 2 — SSOT Runtime Reference)",
     `1. Scene Metadata: each scene MUST have unique non-empty \`id\`, valid \`part\` (${VALID_SCENE_PARTS.map((p) => `'${p}'`).join(" | ")}), \`title\`, \`visual_type\` (${SUPPORTED_VISUAL_TYPES.join(" | ")}), non-empty spoken \`narration\`, optional \`part_label\`, \`key_points[]\`, and \`highlight_words[]\`.`,
-    "2. Exact `visual_data` schemas per `visual_type`:",
+    "2. Visual Variety Guard: never place two consecutive scenes with the same `visual_type` (except consecutive `code_cli` lab continuations), use >= 3 distinct `visual_type` templates when a script has >= 4 scenes, and alternate `world_theme` (`dark`/`light`) & `causal_mechanic`.",
+    "3. Exact `visual_data` schemas per `visual_type`:",
     "   - `architecture`:",
     "     `{ layout_mode?: 'auto'|'manual', orientation?: 'LR'|'TB', zones?: [{ id, label, sublabel?, role: 'client'|'network'|'compute'|'security'|'data'|'danger', parent_zone?, node_ids?, x?, y?, w?, h? }], nodes: [{ id, label, sublabel?, icon, tone, x?, y?, tier? }], edges: [{ id, from, to, label?, style?: 'solid'|'dashed'|'danger', routing?: 'auto'|'straight'|'orthogonal'|'curved' }], flow_steps: [{ progress_start, progress_end, active_nodes: string[], active_edges: string[], badge_text?, packet_label?, camera_focus?: { x: 0..100, y: 0..100, zoom: 1.0..1.25 } }] }`.",
     "     Rules: `layout_mode:'auto'` computes non-overlapping x/y automatically (so x/y may be omitted). Max 2 zone nesting levels. `active_nodes` & `active_edges` must reference existing IDs; `0 <= progress_start <= progress_end <= 1`.",
@@ -566,6 +805,17 @@ export function getSchemaPromptSpec({ compact = false, pass = 2 } = {}) {
     "     `{ orientation?: 'horizontal'|'vertical', badge?, subtitle?, milestones: (2..6)[{ id?, time_label?, title, description?, icon?, tone?, metric_badge?, progress_start, progress_end }], callout?: { title?, text, show_at_progress? } }`.",
     "   - `kpi_metrics`:",
     "     `{ cards: (1..4)[{ id?, label, value?, numeric_target?, prefix?, suffix?, decimals?, delta_text?, delta_tone?, tone?, sparkline?, progress_start? }], chart?: { title?, type?: 'bar', show_at_progress?, unit?, series: (1..8)[{ label, value, highlight? }] }, alert_stamp?: { text, tone?: 'danger'|'success', show_at_progress? } }`.",
-    `3. Valid Icons: ${VALID_ICONS.join(", ")}. Valid Tones: ${VALID_TONES.join(", ")}.`,
+    "   - `sequence_diagram`:",
+    "     `{ badge?, subtitle?, actors: (2..5)[{ id, label, sublabel?, icon?, tone? }], messages: (1..10)[{ id?, from, to, label, detail?, style?: 'solid'|'dashed'|'danger'|'async', badge?, cue_sentence?, cue_text?, progress_start, progress_end }], highlights?: [{ label, from_msg?, to_msg?, tone?: 'danger'|'warn'|'info'|'success', cue_sentence?, show_at_progress }] }`.",
+    "     Rules: `from`/`to` must match `actors[].id`; `0 <= progress_start <= progress_end <= 1`.",
+    "   - `memory_layout`:",
+    "     `{ badge?, subtitle?, complexity_badge?, lanes: (1..4)[{ id, label, sublabel?, tone?, cells: (1..8)[{ id, label, value?, subtext?, state?: 'idle'|'active'|'match'|'write'|'danger' }] }], steps: (1..8)[{ label, callout?, complexity?, highlight_cells?: [{ lane_id, cell_id, state }], pointers?: [{ from_lane, from_cell, to_lane, to_cell, label?, tone? }], cue_sentence?, cue_text?, progress_start, progress_end }] }`.",
+    "     Rules: `highlight_cells` and `pointers` must reference valid `lane_id` and `cell_id` pairs.",
+    "   - `code_diff`:",
+    "     `{ badge?, subtitle?, language?, left_title, left_badge?, left_lines: (1..16)string[], right_title, right_badge?, right_lines: (1..16)string[], focus_steps: (1..6)[{ left_lines?: number[], right_lines?: number[], callout, consequence?, fix_reason?, tone?: 'danger'|'success'|'info', cue_sentence?, cue_text?, progress_start, progress_end }] }`.",
+    "     Rules: 1-based line numbers in `left_lines`/`right_lines` must fall within `1..left_lines.length` / `1..right_lines.length`.",
+    "   - `concept_breakdown`:",
+    "     `{ badge?, subtitle?, mode?: 'anatomy'|'decision'|'chapter', core: { label, sublabel?, badge?, code_snippet?, tone? }, branches: (2..6)[{ id, label, role_badge?, detail, example?, tone?, cue_sentence?, cue_text?, progress_start, progress_end }], takeaway?: { label?, text, show_at_progress } }`.",
+    `4. Valid Icons: ${VALID_ICONS.join(", ")}. Valid Tones: ${VALID_TONES.join(", ")}.`,
   ].join("\n");
 }

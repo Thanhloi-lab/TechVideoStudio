@@ -23,6 +23,10 @@ export const SCENE_MODULES = Object.freeze({
   comparison_matrix: "./scenes/comparison_matrix.mjs",
   timeline_flow: "./scenes/timeline_flow.mjs",
   kpi_metrics: "./scenes/kpi_metrics.mjs",
+  sequence_diagram: "./scenes/sequence_diagram.mjs",
+  memory_layout: "./scenes/memory_layout.mjs",
+  code_diff: "./scenes/code_diff.mjs",
+  concept_breakdown: "./scenes/concept_breakdown.mjs",
 });
 
 /** Load only the builders this episode uses; a broken module only breaks its own scenes. */

@@ -125,14 +125,28 @@ body {
 }
 .tvs-scene--light .cm__title,
 .tvs-scene--light .tf__sub,
-.tvs-scene--light .ex__sub { color: #334155; }
+.tvs-scene--light .ex__sub,
+.tvs-scene--light .seq__sub,
+.tvs-scene--light .mem__sub,
+.tvs-scene--light .diff__sub,
+.tvs-scene--light .cbd__sub { color: #334155; }
 .tvs-scene--light .tvs-card,
 .tvs-scene--light .km__card,
 .tvs-scene--light .km__chart,
 .tvs-scene--light .tf__card,
 .tvs-scene--light .cm__cell,
 .tvs-scene--light .ex__card,
-.tvs-scene--light .ex__quiz {
+.tvs-scene--light .ex__quiz,
+.tvs-scene--light .seq__actor,
+.tvs-scene--light .seq__pill,
+.tvs-scene--light .seq__hlbar,
+.tvs-scene--light .mem__lane,
+.tvs-scene--light .mem__stepbar,
+.tvs-scene--light .diff__pane,
+.tvs-scene--light .diff__foot,
+.tvs-scene--light .cbd__core,
+.tvs-scene--light .cbd__branch,
+.tvs-scene--light .cbd__takeaway {
   box-shadow: 0 18px 40px rgba(15, 23, 42, 0.18);
 }
 .tvs-build-error {
