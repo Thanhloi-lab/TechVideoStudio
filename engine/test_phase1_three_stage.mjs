@@ -20,6 +20,12 @@ import {
   savePipelineRouting,
   VALID_PIPELINE_ROLES,
 } from "./ai/providers.mjs";
+import {
+  createCdpClient,
+  resolveChromePath,
+  sleep,
+  terminateProcess,
+} from "./hyperframes/cdp.mjs";
 import { validateScriptDiagrams, validateSingleScene } from "./src/diagram_validator.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -297,6 +303,11 @@ try {
       if (req.url.endsWith("/models")) {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ data: [{ id: "mock-writer-v1" }, { id: "mock-director-v2" }] }));
+        return;
+      }
+      if (req.url.endsWith("/user/balance")) {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ is_available: true, balance_infos: [{ total_balance: "10.00", currency: "USD" }] }));
         return;
       }
       const sysPrompt = String(reqJson.messages?.find((m) => m.role === "system")?.content || "");
@@ -691,6 +702,374 @@ try {
   assert.ok(!srtContent.includes("K-8-S"), "Subtitles SRT must NOT leak phonetic K-8-S");
 
   console.log("PASS: 3-stage pipeline, dynamic routing, edit endpoints, audio_spine & Dual-Text TTS verified.");
+
+  // -------------------------------------------------------------------------
+  // 6. Phase 3.1 Headless Chrome UI Verification: Per-Role Provider Routing UI
+  // -------------------------------------------------------------------------
+  console.log("=== 5. Phase 3.1 Headless Chrome UI: RoleRoutingPanel (Roadmap + AiScriptModal) ===");
+  const resetInit = await httpRequestJson(studioPort, "POST", "/api/ai/preferences/routing", {
+    pipeline_routing: {
+      outliner: null,
+      brief_scriptwriter: null,
+      visual_director: null,
+      repair: null,
+    },
+  });
+  assert.equal(resetInit.status, 200);
+
+  const chromePath = resolveChromePath();
+  const cdpPort = await getFreePort();
+  const chromeUserDir = fs.mkdtempSync(path.join(os.tmpdir(), "tvs-phase31-chrome-"));
+  const chromeProc = spawn(
+    chromePath,
+    [
+      "--headless=new",
+      "--disable-gpu-sandbox",
+      `--remote-debugging-port=${cdpPort}`,
+      `--user-data-dir=${chromeUserDir}`,
+      "--no-first-run",
+      "--no-default-browser-check",
+      "about:blank",
+    ],
+    { stdio: ["ignore", "ignore", "pipe"] }
+  );
+
+  let cdp = null;
+  try {
+    const deadline = Date.now() + 12_000;
+    let wsUrl = null;
+    while (Date.now() < deadline) {
+      try {
+        const listRes = await httpRequestJson(cdpPort, "GET", "/json/list");
+        const target = Array.isArray(listRes.body)
+          ? listRes.body.find((t) => t.type === "page" && t.webSocketDebuggerUrl)
+          : null;
+        if (target?.webSocketDebuggerUrl) {
+          wsUrl = target.webSocketDebuggerUrl;
+          break;
+        }
+      } catch {
+        // waiting for Chrome CDP endpoint
+      }
+      await sleep(120);
+    }
+    assert.ok(wsUrl, "Chrome CDP WebSocket URL unavailable");
+
+    cdp = createCdpClient(wsUrl);
+    await cdp.openPromise;
+    await cdp.send("Page.enable");
+    await cdp.send("Runtime.enable");
+    await cdp.send("Emulation.setDeviceMetricsOverride", {
+      width: 1280,
+      height: 900,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+
+    const consoleErrors = [];
+    const pageExceptions = [];
+    cdp.on("Runtime.consoleAPICalled", (p) => {
+      if (p.type === "error") {
+        consoleErrors.push((p.args || []).map((a) => a.value ?? a.description ?? "").join(" "));
+      }
+    });
+    cdp.on("Runtime.exceptionThrown", (p) => {
+      pageExceptions.push(
+        p.exceptionDetails?.exception?.description || p.exceptionDetails?.text || "Uncaught page exception"
+      );
+    });
+
+    const loadedPromise = new Promise((resolve) => {
+      cdp.on("Page.loadEventFired", () => resolve());
+      setTimeout(resolve, 6000);
+    });
+    await cdp.send("Page.navigate", {
+      url: `http://127.0.0.1:${studioPort}/?view=roadmap&course=DEMO3`,
+    });
+    await loadedPromise;
+
+    const evalBrowser = async (expr) => {
+      const res = await cdp.send("Runtime.evaluate", {
+        expression: expr,
+        awaitPromise: true,
+        returnByValue: true,
+      });
+      if (res?.exceptionDetails) {
+        throw new Error(`Browser eval failed: ${JSON.stringify(res.exceptionDetails)}`);
+      }
+      return res?.result?.value;
+    };
+
+    // Step 6A: Open AI Worker drawer, expand RoleRoutingPanel, set brief_scriptwriter & visual_director, save
+    const roadmapSaveRes = await evalBrowser(`(async () => {
+      const waitFor = async (fn, msg, timeoutMs = 10000) => {
+        const end = Date.now() + timeoutMs;
+        while (Date.now() < end) {
+          const v = fn();
+          if (v) return v;
+          await new Promise((r) => setTimeout(r, 80));
+        }
+        throw new Error('Timeout waiting for: ' + msg);
+      };
+
+      const setSelectValue = (sel, val) => {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+        setter.call(sel, val);
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+
+      const workerPill = await waitFor(
+        () => {
+          const el = document.querySelector('.worker-status-pill');
+          return el && /sẵn sàng|Online/.test(el.textContent || '') ? el : null;
+        },
+        'worker-status-pill ready'
+      );
+      workerPill.click();
+
+      const drawer = await waitFor(() => document.querySelector('.provider-drawer-panel'), 'provider-drawer-panel');
+      const panel = await waitFor(() => drawer.querySelector('[data-testid="role-routing-panel"]'), 'role-routing-panel');
+      const toggle = panel.querySelector('[data-testid="role-routing-toggle"]');
+      if (!toggle) throw new Error('role-routing-toggle missing');
+
+      const initialPillText = panel.querySelector('[data-testid="role-routing-count-pill"]')?.textContent?.trim() || '';
+      const initiallyCollapsed = !panel.querySelector('[data-testid="role-routing-body"]');
+
+      toggle.click();
+      const body = await waitFor(() => panel.querySelector('[data-testid="role-routing-body"]'), 'role-routing-body');
+      const rows = Array.from(body.querySelectorAll('[data-role]')).map((r) => r.getAttribute('data-role'));
+
+      const writerProvSel = body.querySelector('[data-role-provider="brief_scriptwriter"]');
+      const writerOptions = Array.from(writerProvSel.options).map((o) => ({ value: o.value, text: o.textContent }));
+      const hasAntigravityOpt = writerOptions.some((o) => o.value === 'antigravity');
+      const hasManualOpt = writerOptions.some((o) => o.value === 'manual_web');
+      const firstOptText = writerOptions[0]?.text || '';
+
+      setSelectValue(writerProvSel, 'openai');
+      const writerModelSel = await waitFor(() => {
+        const s = body.querySelector('[data-role-model="brief_scriptwriter"]');
+        return s && Array.from(s.options).some((o) => o.value === 'mock-writer-v1') ? s : null;
+      }, 'openai models populated');
+      setSelectValue(writerModelSel, 'mock-writer-v1');
+
+      const dirProvSel = body.querySelector('[data-role-provider="visual_director"]');
+      setSelectValue(dirProvSel, 'deepseek');
+      const dirModelSel = await waitFor(() => {
+        const s = body.querySelector('[data-role-model="visual_director"]');
+        return s && Array.from(s.options).some((o) => o.value === 'mock-director-v2') ? s : null;
+      }, 'deepseek models populated');
+      setSelectValue(dirModelSel, 'mock-director-v2');
+
+      const saveBtn = body.querySelector('[data-testid="role-routing-save"]');
+      saveBtn.click();
+
+      const feedback = await waitFor(
+        () => panel.querySelector('[data-testid="role-routing-feedback"].is-ok'),
+        'save success feedback'
+      );
+      const savedPillText = panel.querySelector('[data-testid="role-routing-count-pill"]')?.textContent?.trim() || '';
+
+      // Collapse to confirm summary chips stay visible when collapsed
+      toggle.click();
+      await waitFor(() => !panel.querySelector('[data-testid="role-routing-body"]'), 'collapsed after save');
+      const collapsedChips = Array.from(panel.querySelectorAll('.role-routing-chip')).map((c) => c.textContent.trim());
+
+      // Expand again and verify zero horizontal overflow in Roadmap drawer
+      toggle.click();
+      await waitFor(() => panel.querySelector('[data-testid="role-routing-body"]'), 're-expanded');
+      const drawerOverflow = drawer.scrollWidth > drawer.clientWidth + 2;
+      const panelOverflow = panel.scrollWidth > panel.clientWidth + 2;
+
+      return {
+        initialPillText,
+        initiallyCollapsed,
+        rows,
+        hasAntigravityOpt,
+        hasManualOpt,
+        firstOptText,
+        hasReadyOptMarker: writerOptions.some((o) => o.value === 'openai' && o.text.includes('🟢')),
+        hasUnconfiguredOptMarker: writerOptions.some((o) => o.value === 'anthropic' && o.text.includes('⚫')),
+        feedbackText: feedback.textContent.trim(),
+        savedPillText,
+        collapsedChips,
+        drawerOverflow,
+        panelOverflow,
+      };
+    })()`);
+
+    assert.equal(roadmapSaveRes.initialPillText, "Mặc định chung");
+    assert.equal(roadmapSaveRes.initiallyCollapsed, true);
+    assert.deepEqual(roadmapSaveRes.rows, ["outliner", "brief_scriptwriter", "visual_director", "repair"]);
+    assert.equal(roadmapSaveRes.hasAntigravityOpt, false);
+    assert.equal(roadmapSaveRes.hasManualOpt, false);
+    assert.equal(roadmapSaveRes.firstOptText, "Theo mặc định Job / chọn chung");
+    assert.equal(roadmapSaveRes.hasReadyOptMarker, true);
+    assert.equal(roadmapSaveRes.hasUnconfiguredOptMarker, true);
+    assert.equal(roadmapSaveRes.savedPillText, "2/4 tùy chỉnh");
+    assert.equal(roadmapSaveRes.collapsedChips.length, 2);
+    assert.equal(roadmapSaveRes.drawerOverflow, false, "Roadmap drawer must have zero horizontal overflow");
+    assert.equal(roadmapSaveRes.panelOverflow, false, "RoleRoutingPanel must have zero horizontal overflow");
+
+    // Verify persistence in VIDEO_MAKER_AI_PREFERENCES_FILE after UI Save
+    const prefsAfterUiSave = JSON.parse(fs.readFileSync(prefFile, "utf-8"));
+    assert.equal(prefsAfterUiSave.pipeline_routing.outliner, null);
+    assert.deepEqual(prefsAfterUiSave.pipeline_routing.brief_scriptwriter, {
+      provider_id: "openai",
+      model: "mock-writer-v1",
+    });
+    assert.deepEqual(prefsAfterUiSave.pipeline_routing.visual_director, {
+      provider_id: "deepseek",
+      model: "mock-director-v2",
+    });
+    assert.equal(prefsAfterUiSave.pipeline_routing.repair, null);
+
+    // Step 6B: Reset routing from UI -> verify all 4 roles cleared to null on UI & disk
+    const roadmapResetRes = await evalBrowser(`(async () => {
+      const waitFor = async (fn, msg, timeoutMs = 8000) => {
+        const end = Date.now() + timeoutMs;
+        while (Date.now() < end) {
+          const v = fn();
+          if (v) return v;
+          await new Promise((r) => setTimeout(r, 80));
+        }
+        throw new Error('Timeout waiting for: ' + msg);
+      };
+      const panel = document.querySelector('.provider-drawer-panel [data-testid="role-routing-panel"]');
+      const resetBtn = panel.querySelector('[data-testid="role-routing-reset"]');
+      resetBtn.click();
+      await waitFor(
+        () => {
+          const pill = panel.querySelector('[data-testid="role-routing-count-pill"]');
+          return pill && pill.textContent.trim() === 'Mặc định chung' ? pill : null;
+        },
+        'reset pill update'
+      );
+      const providerVals = ['outliner', 'brief_scriptwriter', 'visual_director', 'repair'].map(
+        (r) => panel.querySelector('[data-role-provider="' + r + '"]')?.value
+      );
+      const chipsAfterReset = panel.querySelectorAll('.role-routing-chip').length;
+      return { providerVals, chipsAfterReset };
+    })()`);
+
+    assert.deepEqual(roadmapResetRes.providerVals, ["", "", "", ""]);
+    assert.equal(roadmapResetRes.chipsAfterReset, 0);
+
+    const prefsAfterUiReset = JSON.parse(fs.readFileSync(prefFile, "utf-8"));
+    for (const role of VALID_PIPELINE_ROLES) {
+      assert.equal(prefsAfterUiReset.pipeline_routing[role], null, `Role ${role} must be null after reset`);
+    }
+
+    // Step 6C: Open AiScriptModal in three_stage mode -> compact RoleRoutingPanel inside stage box, zero duplication, zero overflow
+    const modalCheckRes = await evalBrowser(`(async () => {
+      const waitFor = async (fn, msg, timeoutMs = 10000) => {
+        const end = Date.now() + timeoutMs;
+        while (Date.now() < end) {
+          const v = fn();
+          if (v) return v;
+          await new Promise((r) => setTimeout(r, 80));
+        }
+        throw new Error('Timeout waiting for: ' + msg);
+      };
+
+      const setSelectValue = (sel, val) => {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, 'value').set;
+        setter.call(sel, val);
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+      };
+
+      // Close Roadmap provider drawer
+      document.querySelector('.worker-status-pill')?.click();
+      await new Promise((r) => setTimeout(r, 100));
+
+      // Open batch modal (defaults to three_stage mode)
+      const batchBtn = await waitFor(() => document.querySelector('.btn-ai-batch'), 'btn-ai-batch');
+      batchBtn.click();
+
+      const modal = await waitFor(() => document.querySelector('.ai-script-modal'), 'ai-script-modal');
+      const stageBox = await waitFor(() => modal.querySelector('.ai-pipeline-stage-box'), 'ai-pipeline-stage-box');
+      const allPanelsInModal = modal.querySelectorAll('[data-testid="role-routing-panel"]');
+      const stagePanel = stageBox.querySelector('[data-testid="role-routing-panel"]');
+      if (!stagePanel) throw new Error('RoleRoutingPanel missing in AiScriptModal three_stage box');
+
+      const isCompact = stagePanel.classList.contains('is-compact');
+      const initiallyCollapsed = !stagePanel.querySelector('[data-testid="role-routing-body"]');
+
+      stagePanel.querySelector('[data-testid="role-routing-toggle"]').click();
+      const body = await waitFor(() => stagePanel.querySelector('[data-testid="role-routing-body"]'), 'modal role-routing-body');
+      const rows = Array.from(body.querySelectorAll('[data-role]')).map((r) => r.getAttribute('data-role'));
+
+      // Verify custom model input + Enter key guard inside AiScriptModal + saving without submitting outer form
+      const outlinerSel = body.querySelector('[data-role-provider="outliner"]');
+      setSelectValue(outlinerSel, 'openai');
+      const outlinerModelSel = await waitFor(() => {
+        const s = body.querySelector('[data-role-model="outliner"]');
+        return s && Array.from(s.options).some((o) => o.value === 'mock-writer-v1') ? s : null;
+      }, 'modal outliner models');
+      setSelectValue(outlinerModelSel, 'mock-writer-v1');
+
+      const customModelInput = await waitFor(
+        () => body.querySelector('[data-role-custom-model="outliner"]'),
+        'custom model input for outliner'
+      );
+      const inputSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      inputSetter.call(customModelInput, 'custom-outliner-v9');
+      customModelInput.dispatchEvent(new Event('input', { bubbles: true }));
+      customModelInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+      await new Promise((r) => setTimeout(r, 80));
+
+      body.querySelector('[data-testid="role-routing-save"]').click();
+      await waitFor(() => stagePanel.querySelector('[data-testid="role-routing-feedback"].is-ok'), 'modal save feedback');
+
+      const modalStillOpen = Boolean(document.querySelector('.ai-script-modal'));
+      const modalBody = modal.querySelector('.studio-modal-body');
+      const modalOverflow = modalBody ? modalBody.scrollWidth > modalBody.clientWidth + 2 : true;
+      const docOverflow = document.documentElement.scrollWidth > window.innerWidth + 2;
+
+      return {
+        panelCountInModal: allPanelsInModal.length,
+        isCompact,
+        initiallyCollapsed,
+        rows,
+        customModelSelectValue: body.querySelector('[data-role-model="outliner"]')?.value || '',
+        modalStillOpen,
+        modalPillText: stagePanel.querySelector('[data-testid="role-routing-count-pill"]')?.textContent?.trim() || '',
+        modalOverflow,
+        docOverflow,
+      };
+    })()`);
+
+    assert.equal(modalCheckRes.panelCountInModal, 1, "BrandHealthGrid inside AiScriptModal must not render duplicate RoleRoutingPanel");
+    assert.equal(modalCheckRes.isCompact, true);
+    assert.equal(modalCheckRes.initiallyCollapsed, true);
+    assert.deepEqual(modalCheckRes.rows, ["outliner", "brief_scriptwriter", "visual_director", "repair"]);
+    assert.equal(modalCheckRes.customModelSelectValue, "custom-outliner-v9");
+    assert.equal(modalCheckRes.modalStillOpen, true, "Saving RoleRoutingPanel or pressing Enter in custom model input must not submit outer AiScriptModal form");
+    assert.equal(modalCheckRes.modalPillText, "1/4 tùy chỉnh");
+    assert.equal(modalCheckRes.modalOverflow, false, "AiScriptModal must have zero horizontal overflow");
+    assert.equal(modalCheckRes.docOverflow, false, "Document must have zero horizontal overflow");
+
+    const prefsAfterModalSave = JSON.parse(fs.readFileSync(prefFile, "utf-8"));
+    assert.deepEqual(prefsAfterModalSave.pipeline_routing.outliner, {
+      provider_id: "openai",
+      model: "custom-outliner-v9",
+    });
+
+    assert.equal(consoleErrors.length, 0, `Browser console errors: ${consoleErrors.join("; ")}`);
+    assert.equal(pageExceptions.length, 0, `Browser page exceptions: ${pageExceptions.join("; ")}`);
+    console.log("PASS: Phase 3.1 Chrome UI RoleRoutingPanel verified (Roadmap + AiScriptModal, 0 console/page errors).");
+  } finally {
+    if (cdp) {
+      await cdp.send("Browser.close").catch(() => {});
+      cdp.close();
+    }
+    await terminateProcess(chromeProc, "chrome-phase31");
+    try {
+      fs.rmSync(chromeUserDir, { recursive: true, force: true });
+    } catch {
+      // ignore transient Windows file lock
+    }
+  }
+
   console.log("\nALL PHASE 1 TESTS PASSED!");
 } finally {
   if (serverProc && serverProc.exitCode === null) {

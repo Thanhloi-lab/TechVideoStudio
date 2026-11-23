@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { RoleRoutingPanel } from "./RoleRoutingPanel.mjs";
 
 const h = React.createElement;
 
@@ -61,6 +62,7 @@ export function BrandHealthGrid({
   previousBrokenProviderId = "",
   disabled = false,
   compact = false,
+  showRoleRouting = true,
 }) {
   const [internalData, setInternalData] = useState(providersData);
   const [loading, setLoading] = useState(!providersData);
@@ -731,6 +733,22 @@ export function BrandHealthGrid({
                   : null
               )
         )
+      : null,
+
+    showRoleRouting
+      ? h(RoleRoutingPanel, {
+          providersData: effectiveData,
+          disabled,
+          compact,
+          defaultExpanded: false,
+          onRoutingSaved: (nextRouting) => {
+            const base =
+              effectiveData && typeof effectiveData === "object" ? effectiveData : {};
+            const nextData = { ...base, pipeline_routing: nextRouting };
+            setInternalData(nextData);
+            onProvidersLoaded && onProvidersLoaded(nextData);
+          },
+        })
       : null
   );
 }

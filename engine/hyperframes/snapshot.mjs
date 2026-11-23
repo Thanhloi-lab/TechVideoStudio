@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { collectPageErrors, evaluate, launchChrome, navigate, openPage, sleep } from "./cdp.mjs";
 import { compileEpisodeProject } from "./compiler.mjs";
 import { buildRenderBridgeScript, seekExpression, waitForComposition } from "./bridge.mjs";
+import { DEFAULT_QC_CHECKPOINTS, formatLayoutQcSummary, runCompositionLayoutQc } from "./layout_qc.mjs";
 import { ensureStudioServer, fetchEpisodePayload, projectUrl } from "./studio_server.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -64,7 +65,20 @@ const STATE_HASH_EXPRESSION = `(() => {
 })()`;
 
 function parseArgs(argv) {
-  const o = { course: "", episode: "", times: [], scene: null, at: [], out: "", port: 3030, speed: 1, scale: 1 };
+  const o = {
+    course: "",
+    episode: "",
+    times: [],
+    scene: null,
+    at: [],
+    out: "",
+    port: 3030,
+    speed: 1,
+    scale: 1,
+    checkLayout: false,
+    qcStrict: false,
+    qcCheckpoints: [],
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const next = () => argv[++i] ?? "";
@@ -78,7 +92,13 @@ function parseArgs(argv) {
     else if (a === "--speed") o.speed = Number(next()) || 1;
     else if (a === "--scale") o.scale = Math.min(2, Math.max(0.25, Number(next()) || 1));
     else if (a === "--check-determinism") o.checkDeterminism = true;
-    else if (a === "--help" || a === "-h") o.help = true;
+    else if (a === "--check-layout") o.checkLayout = true;
+    else if (a === "--qc-strict") {
+      o.qcStrict = true;
+      o.checkLayout = true;
+    } else if (a === "--qc-checkpoints") {
+      o.qcCheckpoints = next().split(",").map(Number).filter(Number.isFinite);
+    } else if (a === "--help" || a === "-h") o.help = true;
     else throw new Error(`Unknown argument: ${a}`);
   }
   return o;
@@ -98,11 +118,13 @@ export async function captureSnapshots(opts) {
     });
 
     let times = [...opts.times];
+    let targetScenes = manifest.scenes;
     if (opts.scene !== null && opts.scene !== undefined) {
       const sc =
         manifest.scenes.find((s) => String(s.index) === String(opts.scene)) ||
         manifest.scenes.find((s) => s.id === opts.scene);
       if (!sc) throw new Error(`Scene not found: ${opts.scene}`);
+      targetScenes = [sc];
       const marks = opts.at.length ? opts.at : [0.1, 0.35, 0.6, 0.85];
       times.push(...marks.map((p) => Math.round((sc.start + Math.min(0.999, Math.max(0, p)) * sc.duration) * 1000) / 1000));
     }
@@ -176,7 +198,33 @@ export async function captureSnapshots(opts) {
       for (const w of warnings) console.warn(`[snapshot] warning: ${w}`);
       console.log(`[snapshot] determinism check: ${times.length} frame(s) compared after reverse-order seeks`);
     }
-    return { files: written, errors, warnings, manifest };
+
+    let layoutQc = null;
+    const shouldCheckLayout = opts.checkLayout !== undefined ? Boolean(opts.checkLayout) : Boolean(opts.qcStrict);
+    if (shouldCheckLayout) {
+      const qcCheckpoints =
+        Array.isArray(opts.qcCheckpoints) && opts.qcCheckpoints.length ? opts.qcCheckpoints : DEFAULT_QC_CHECKPOINTS;
+      layoutQc = await runCompositionLayoutQc({
+        cdp,
+        sessionId,
+        manifest: { ...manifest, scenes: targetScenes },
+        checkpoints: qcCheckpoints,
+      });
+      console.log(`[snapshot] layout QC: ${formatLayoutQcSummary(layoutQc)}`);
+      for (const f of layoutQc.findings) {
+        const logFn = f.severity === "error" ? console.error : console.warn;
+        logFn(`[snapshot] QC [${f.severity}] ${f.scene_id} @ ${f.timestamp}s (${f.code}) ${f.selector}: ${f.message}`);
+      }
+      if (opts.qcStrict && layoutQc.error_count > 0) {
+        for (const f of layoutQc.findings) {
+          if (f.severity === "error") {
+            errors.push(`[layout-qc] ${f.scene_id} @ ${f.timestamp}s (${f.code}) ${f.selector}: ${f.message}`);
+          }
+        }
+      }
+    }
+
+    return { files: written, errors, warnings, manifest, layoutQc };
   } finally {
     if (chrome) await chrome.close();
     await server.stop();
@@ -188,7 +236,7 @@ if (isMain) {
   const opts = parseArgs(process.argv.slice(2));
   if (opts.help || !opts.course || !opts.episode) {
     console.log(
-      "Usage: node engine/hyperframes/snapshot.mjs --course <COURSE> --episode <EP_ID> [--times 1.5,8] [--scene <index|id> --at 0.1,0.5] [--out <dir>] [--port 3030] [--speed 1] [--scale 0.5]"
+      "Usage: node engine/hyperframes/snapshot.mjs --course <COURSE> --episode <EP_ID> [--times 1.5,8] [--scene <index|id> --at 0.1,0.5] [--out <dir>] [--port 3030] [--speed 1] [--scale 0.5] [--check-determinism] [--check-layout] [--qc-strict]"
     );
     process.exit(opts.help ? 0 : 1);
   }

@@ -4,6 +4,40 @@ Ghi chép các thay đổi đã hoàn thiện và kiểm thử trong `TechVideoS
 
 ---
 
+## [Unreleased / 2026-11-20] — Phase 3: Per-Role Routing UI, Automated DOM Safe-Zone QC Gate & Plugin/Skills Sync
+
+### 1. Per-Role AI Provider Routing UI (Phase 3.1)
+- **`RoleRoutingPanel` (`engine/src/components/ai/RoleRoutingPanel.mjs`, `engine/public/styles.css`):**
+  - Thêm bảng thu gọn **`🧭 Định tuyến AI theo vai trò`** (`data-testid="role-routing-toggle"` / `"role-routing-body"`) hiển thị số vai trò tùy chỉnh (`N/4 tùy chỉnh` / `Mặc định chung`) và chip tóm tắt ngay cả khi thu gọn.
+  - Khám phá động các provider `execution_mode === "builtin"` (loại trừ `antigravity` và `manual_web`, phân biệt trạng thái sẵn sàng vs chưa cấu hình) và danh sách model live từ `/api/ai/providers` cho đủ **4 vai trò** `outliner`, `brief_scriptwriter`, `visual_director`, `repair`, hỗ trợ ô nhập custom model khi `allow_custom_model` bật, nút **`💾 Lưu định tuyến`** và **`↺ Đặt lại mặc định`** gọi `POST /api/ai/preferences/routing` (không gắn cứng tên AI/model mặc định).
+- **Tích hợp Studio (`engine/src/components/ai/BrandHealthGrid.mjs`, `engine/src/components/AiScriptModal.mjs`):**
+  - Gắn `RoleRoutingPanel` vào `BrandHealthGrid` (Roadmap drawer, prop `showRoleRouting = true`) và bản thu gọn bên trong `.ai-pipeline-stage-box` của `AiScriptModal` khi chọn chế độ `three_stage` (`showRoleRouting={false}` trên `BrandHealthGrid` bên trong modal để tránh trùng lặp).
+- **Kiểm thử:** Mở rộng `engine/test_phase1_three_stage.mjs` với headless Chrome CDP UI verification cho cả Roadmap drawer và `AiScriptModal` (`5/5` sections PASS, `0` console/page errors).
+
+### 2. Automated DOM Layout & Safe-Zone QC Gate (Phase 3.2)
+- **Bộ kiểm tra DOM thuần Node + CDP (`engine/hyperframes/layout_qc.mjs`):**
+  - Xuất `DEFAULT_QC_CHECKPOINTS = [0.1, 0.5, 0.9]`, `buildLayoutQcExpression`, `runCompositionLayoutQc`, và `formatLayoutQcSummary`, đảm bảo bind timeline qua `__hfForceTimelineRebind()` trước khi seek kiểm tra.
+  - Thực hiện **6 phép kiểm tra** trên khung 1920×1080 tại mỗi checkpoint: `viewport_overflow`, `stage_overflow` (dùng `stage.getBoundingClientRect()` thực tế với `STAGE_TOLERANCE_PX = 14` để tính cả `creepZoom`, tôn trọng ancestor `overflow: hidden|clip`), `topbar_collision`, `subtitle_collision`, `subtitle_overflow` (kèm đo `Range`), và `clipped_text` (cùng cảnh báo `topbar_title_truncated`). Loại trừ lớp nền/FX/typewriter span/hình học SVG thuần (nhưng giữ SVG `<text>` và `.arch__node`/card) và khử trùng lặp theo `(scene_id, checkpoint, code, selector)`.
+- **Tích hợp CLI & Render Pipeline (`engine/hyperframes/snapshot.mjs`, `verify_video.mjs`, `render.mjs`, `engine/render_video.mjs`):**
+  - `render_video.mjs` & `render.mjs`: Mặc định chạy Layout QC trước bước capture (`--check-layout` bật sẵn, có thể bỏ qua với `--no-check-layout`, hoặc chặn render khi có lỗi bằng `--qc-strict`).
+  - `snapshot.mjs` & `verify_video.mjs`: Bổ sung cờ `--check-layout`, `--qc-strict`, và `--qc-checkpoints`, trả về báo cáo `layoutQc` / `layout_qc` theo từng `scene_id` và timestamp.
+- **Kiểm thử (`engine/test_hyperframes.mjs` — `9/9` checks PASS, không `--skip-render`):**
+  - `HFTEST/ep01-demo` (7 templates, 21 frames) và `HFTEST/ep02-phase2` (4 scenes, 12 frames): **0 errors, 0 warnings**.
+  - Fixture lỗi tổng hợp `ep03-qc-broken`: bắt đủ 6 lỗi (`errors=223, warnings=3`, plus `topbar_collision`) và kích hoạt lỗi `--qc-strict` ở cả `snapshot.mjs` lẫn `renderEpisodeHyperframes`.
+  - Render & kiểm định E2E `hf-e2e.mp4`: `1280×720`, `17.51s`, `audio rms 0.122`, **`-16.02 LUFS`**, `qc scenes=7 errors=0`.
+  - Kiểm tra tập thực tế `REDIS/ep01-redis-in-memory-architecture` qua `snapshot.mjs --check-layout`: **`scenes=5, frames=15, errors=0, warnings=0`**.
+  - *(Lưu ý git staging: `.gitignore` dòng 20 có `/*/hyperframes/`, cần dùng `git add -f engine/hyperframes/layout_qc.mjs` khi stage file mới này.)*
+
+### 3. Plugin, Rules, Skills & Docs Synchronization (Phase 3.3)
+- **Đồng bộ SSOT & Adapter (`AGENTS.md`, `plugin/tech-video-studio/`, `README.md`, `README.en.md`):**
+  - Cập nhật quy trình `mode: "three_stage"` (`brief.json` → `dialogue.json` + `notes.md` → tùy chọn `audio_spine.json` qua `--audio-spine <dialogue.json>` → `script.json`), `pause_after`, `start_from`, `lock_audio_spine`, `ScriptingStageModal`, định tuyến 4 vai trò (`outliner`, `brief_scriptwriter`, `visual_director`, `repair`) qua `RoleRoutingPanel`, Phase 2 metadata (`visual_job`, `world_theme`, `causal_mechanic`, `sfx_cues`, `bgm_file`, `tts_narration`, `tts_beats`), và các cờ QC Gate Phase 3.
+  - Chuẩn hóa đường dẫn `{{WORKSPACE_ROOT}}` / `{{PYTHON_BIN}}` và loại bỏ tên model gắn cứng khỏi các ví dụ runtime trong `studio-worker/SKILL.md` (`<ACTIVE_SESSION_MODEL>` / `"connected-agent"`).
+  - Siết chặt tách bạch **Biên kịch vs Sản xuất (`auto_produce`)** trong `episode-producer/SKILL.md` (Step 2.4) và `studio-worker/SKILL.md` (Step C.3): không bao giờ tự chạy full TTS/Render khi biên kịch trừ khi `auto_produce === true` (và không chạy khi dừng tại cổng `brief`/`dialogue`); `--audio-spine` chỉ chạy khi `lock_audio_spine === true` hoặc được yêu cầu tường minh.
+  - Chạy lại `node setup.mjs --agents all` & `node setup.mjs --check --json` (`ok: true` trên toàn bộ `engine`, `workspace`, `antigravityPlugin`, `agentSkills`, `claudeSkills`, `claudeMcp`).
+  - Xác minh tổng hợp độc lập: `test_phase1_three_stage.mjs` (**5/5**), `test_hyperframes.mjs` (**9/9**), `test_ai_bridge_and_templates.mjs` (**17/17**), `state_cli.mjs validate-diagrams --course REDIS` (**0 errors, 0 warnings**), và Live Studio UI 3 màn hình (`view=projects`, `roadmap` + `RoleRoutingPanel` + `AiScriptModal`, `player`) đạt **0 lỗi console/page**.
+
+---
+
 ## [Unreleased / 2026-11-19] — Decoupled 3-Stage Scripting, Rich SVG Catalog, VieNeu-TTS & HyperFrames Phase 2 Audio/Motion Upgrade
 
 ### 1. Decoupled 3-Stage Scripting & Dynamic Per-Role AI Routing (Phase 1)
@@ -11,7 +45,7 @@ Ghi chép các thay đổi đã hoàn thiện và kiểm thử trong `TechVideoS
   - Thêm chế độ `three_stage` tách biệt **Stage 1 (`brief.json`)** (mục tiêu sư phạm, vấn đề cốt lõi, `visual_job`, `world_theme`) → **Stage 2 (`dialogue.json`)** (kịch bản lời thoại tự nhiên kèm Dual-Text TTS `tts_beats`/`tts_narration`) → *(tùy chọn)* **Audio Spine (`audio_spine.json`)** khóa nhịp giây thật trước khi dựng hình → **Stage 3 (`script.json`)** (biên dịch scene, Visual Template, Motion & Layout).
   - Hỗ trợ tạm dừng duyệt giữa chặng (`pause_after`), tiếp tục từ bước cụ thể (`start_from`), và `lock_audio_spine`.
 - **Dynamic Per-Role Provider Routing (`engine/ai/providers.mjs`):**
-  - Thêm `VALID_PIPELINE_ROLES` (`brief`, `dialogue`, `visual_director`), `savePipelineRouting`, `resolveRoleProvider` và endpoint `POST /api/ai/preferences/routing` — không gắn cứng AI agent/model nào (fallback trung lập `"connected-agent"`).
+  - Thêm `VALID_PIPELINE_ROLES` (`outliner`, `brief_scriptwriter`, `visual_director`, `repair`), `savePipelineRouting`, `resolveRoleProvider` và endpoint `POST /api/ai/preferences/routing` — không gắn cứng AI agent/model nào (fallback trung lập `"connected-agent"`).
 - **Dual-Text TTS & Audio Spine (`engine/tts_pipeline.py`, `engine/server.mjs`, `engine/state_cli.mjs`):**
   - Bổ sung `normalize_vietnamese_tts_text`, hỗ trợ `tts_beats` / `tts_narration` và cờ `--audio-spine` tạo `audio_spine.json` ghi thời lượng audio thật từng câu/từng cảnh trước Stage 3.
   - Thêm endpoint Studio: `GET /api/episodes/scripting-artifacts`, `POST /api/episodes/brief`, `POST /api/episodes/dialogue`, `POST /api/episodes/audio-spine`.

@@ -28,7 +28,8 @@ Every episode's lifecycle is tracked atomically in `<COURSE>/state/<ep-slug>.jso
    - Runs a sequential `/grill-me` onboarding interview (target exam/production goal, `10/20/30` episodes, default voice selection from `engine/voices.json`, lab/CLI depth, and immediate rollout scope).
    - Generates `course.json` (with default TTS voice metadata), a staged `curriculum.md` roadmap, and initializes sharded per-episode state files.
 2. **Conversation 2 — Script Factory (`episode-producer` / Web Studio AI Engine):**
-   - Supports **decoupled 3-stage scripting (`three_stage`: `brief.json` → `dialogue.json` → `audio_spine.json` → `script.json`)** alongside `two_pass`/`single_pass`, with dynamic per-role provider routing (`brief`, `dialogue`, `visual_director`) and a review/edit modal (`ScriptingStageModal`).
+   - Supports **decoupled 3-stage scripting (`mode: "three_stage"`: `brief.json` → `dialogue.json` + `notes.md` → optional `audio_spine.json` via `tts_pipeline.py --audio-spine` → `script.json`)** alongside `two_pass`/`single_pass`/`auto`/`storyboard_only`, with stage gates & resume (`pause_after: "none" | "brief" | "dialogue"`, `start_from: "brief" | "dialogue" | "visual"`, `lock_audio_spine`), **dynamic per-role provider routing (`outliner`, `brief_scriptwriter`, `visual_director`, `repair`)** via `RoleRoutingPanel` (`BrandHealthGrid` / `AiScriptModal`), and an intermediate review/edit modal (`ScriptingStageModal`).
+   - **Strict Scripting vs. Production Separation (`auto_produce`):** Scripting always stops at `script_ready` (or a `pause_after` gate) for Storyboard Preview review and **never auto-runs full TTS/Render** unless `auto_produce === true` (and never when paused at `brief`/`dialogue`). `--audio-spine` runs only when `lock_audio_spine === true` or explicitly requested.
    - Produces single episodes, 3–5 episode waves, or **unlimited multi-select batches (`☑️ Chọn nhiều`)** on a single model, handles open revision tickets, writes `script.json` following the 4-part blueprint (**Real-World Problem `problem` → Animated Architecture `architecture` → Practical Setup & Code `setup` → Exam Tips & Production Traps `exam_tips`**) plus `notes.md`.
    - Automatically validates architecture diagrams against node, label, edge, and zone collisions before advancing to `script_ready`. Rewriting an existing episode from the Player's **`🛠️ Sửa`** tab (**`🔄 Gửi AI Sửa Kịch Bản`**) or batch modal requires explicit change notes and automatically flags `production.stale = true` if prior audio/video existed.
 3. **Conversation 3 — Video Factory (`episode-producer` + `video-renderer`):**
@@ -70,8 +71,8 @@ Built strictly on Python standard library modules (`urllib`, `ssl`, `socket`, `w
 Served by `engine/server.mjs` with live Server-Sent Events (`/api/stream`):
 1. **Project Dashboard (`?view=projects`):** Course cards, segmented progress bars, and open revision ticket counts.
 2. **Episode Roadmap & Live Monitor (`?view=roadmap`):**
-   - Top bar pill **`🤖 AI Worker & Models`** opens **`BrandHealthGrid`** across all 9 AI brands (single active selection `◉` + `✓ Đang chọn`, active selection header chip, unclipped `Online` badge).
-   - Stage-grouped episodes: click any scripted card directly to open Studio Player (clean card footers omit `Mở Studio` / `🔄 Viết lại KB`; unscripted cards keep **`✍️ Biên kịch`**); plus **`✍️ Biên kịch Đợt / Hàng loạt`**, **`☑️ Chọn nhiều`** + **`FloatingBatchBar`** (**`✍️ Biên kịch hàng loạt (1 Model)`**), paused-job **`▶ Tiếp tục (Resume / Đổi Model)`**, `HeaderJobsTray`, `VoiceStudioModal` (`🎙️ Giọng đọc Khóa học`), and `Live Activity`, `🛠️ Yêu cầu sửa`, and `curriculum.md` right tabs.
+   - Top bar pill **`🤖 AI Worker & Models`** opens **`BrandHealthGrid`** + **`RoleRoutingPanel`** (`🧭 Định tuyến AI theo vai trò`) across all 9 AI brands (single active selection `◉` + `✓ Đang chọn`, active selection header chip, unclipped `Online` badge) and dynamic per-role overrides for `outliner`, `brief_scriptwriter`, `visual_director`, and `repair`.
+   - Stage-grouped episodes: click any scripted card directly to open Studio Player (clean card footers omit `Mở Studio` / `🔄 Viết lại KB`; unscripted cards keep **`✍️ Biên kịch`**); `AiScriptModal` defaults to `three_stage` with a compact `RoleRoutingPanel` and `auto_produce` OFF by default, while **`ScriptingStageModal`** lets you inspect/edit `brief.json`, `dialogue.json`, and `audio_spine.json`; plus **`✍️ Biên kịch Đợt / Hàng loạt`**, **`☑️ Chọn nhiều`** + **`FloatingBatchBar`** (**`✍️ Biên kịch hàng loạt (1 Model)`**), paused-job **`▶ Tiếp tục (Resume / Đổi Model)`**, `HeaderJobsTray`, `VoiceStudioModal` (`🎙️ Giọng đọc Khóa học`), and `Live Activity`, `🛠️ Yêu cầu sửa`, and `curriculum.md` right tabs.
 3. **Studio Player (`?view=player`):**
    - Synchronized 16:9 playback, silent **Storyboard Preview Mode**, `&scene=<scene_id>` deep-linking, and per-episode voice override picker.
    - **Multi-Voice A/B Switcher** in the top bar to swap active tracks (`POST /api/episodes/voice-track/activate`) or delete unused tracks (`/api/episodes/voice-track/delete`).
@@ -84,6 +85,9 @@ Served by `engine/server.mjs` with live Server-Sent Events (`/api/stream`):
 - **Phase 2 Motion Grammar & `-16 LUFS` Post-Mix:**
   - Continuous `.tvs-bg-grid` ambient drift + stage `creepZoom` (`1.0 → 1.015`, `force3D: false`), `world_theme` (`dark`/`light`) alternation, smart same-`part` overlaps (with `140ms` dark breathers on `part` changes), `SharpTag` badges, and `causal_mechanic` entrance rotation.
   - WebAudio SFX bus mixing 6 procedural 48kHz WAVs (`engine/assets/sfx/*.wav`, `-33ms` lead), optional looping `bgm_file` (`1800Hz -6dB` peaking EQ carve via `OfflineAudioContext`), and pure-JS **ITU-R BS.1770-4 `-16 LUFS`** normalization + soft limiter (`0.8414` ≈ `-1.5 dBTP`) in `engine/src/audio_dsp.mjs` and `engine/src/hf_encoder.mjs`.
+- **Phase 3 DOM Layout & Safe-Zone QC Gate (`engine/hyperframes/layout_qc.mjs`):**
+  - Automatically inspects the 1920×1080 DOM composition at `[0.1, 0.5, 0.9]` checkpoints for 6 layout defects: `viewport_overflow`, `stage_overflow`, `topbar_collision`, `subtitle_collision`, `subtitle_overflow`, and `clipped_text` (plus `topbar_title_truncated` warnings).
+  - Enabled by default in `render_video.mjs` (`--check-layout`, disable via `--no-check-layout`, fail render on errors via `--qc-strict`), and available standalone via `snapshot.mjs --check-layout [--qc-strict]` and `verify_video.mjs --check-layout [--qc-strict]`.
 - The previous Canvas 2D exporter (`window.__STUDIO_RENDER_OFFLINE__`) remains available via `--engine legacy` or the **Engine render** choice in the **`🎬 Xuất Video ▾`** popover.
 - Configurable resolution (`720p`, `1080p`, `1440p`, `2160p`), FPS (`24`, `30`, `60`), container (`mp4`, `webm`), playback speed (`1x`–`2x`), and hardware mode (`auto`, `gpu`, `cpu`).
 
@@ -191,16 +195,17 @@ node engine/state_cli.mjs resolve-revision --course <COURSE> --ep <EP_ID> --rev 
 
 ```powershell
 python engine/tts_pipeline.py --episode "<COURSE>/episodes/<EP_ID>/script.json" --course "<COURSE>/course.json" --json
-python engine/tts_pipeline.py --audio-spine --episode "<COURSE>/episodes/<EP_ID>/dialogue.json" --course "<COURSE>/course.json" --json
+python engine/tts_pipeline.py --audio-spine "<COURSE>/episodes/<EP_ID>/dialogue.json" --course "<COURSE>/course.json" --json
 python engine/tts_pipeline.py --realign-only --episode "<COURSE>/episodes/<EP_ID>/script.json" [--scene <SCENE_ID>] [--profile <PROFILE_ID>] --json
 python engine/tts_pipeline.py --list-profiles
 python engine/tts_pipeline.py --discover-voicestudio --json
 python engine/tts_pipeline.py --preview --profile edge-hoaimy --text "Xin chào" --out preview.mp3
 
 node engine/scripts/generate_sfx_assets.mjs   # (Optional) regenerate the 6 procedural 48kHz SFX WAVs in engine/assets/sfx/
-node engine/render_video.mjs --course <COURSE> --episode <EP_ID> --port 3030 --format mp4 --codec h264 --resolution 1080p --fps 60 --speed 1 --hardware auto [--output <FILENAME>] [--workers 1..8] [--engine hyperframes|legacy]
+node engine/render_video.mjs --course <COURSE> --episode <EP_ID> --port 3030 --format mp4 --codec h264 --resolution 1080p --fps 60 --speed 1 --hardware auto [--output <FILENAME>] [--workers 1..8] [--engine hyperframes|legacy] [--check-layout|--no-check-layout] [--qc-strict]
 node engine/render_video.mjs --course <COURSE> --episode <EP_ID> --compile-only   # build the HyperFrames project only
-node engine/hyperframes/snapshot.mjs --course <COURSE> --episode <EP_ID> --scene 0 --at 0.1,0.5,0.9 --check-determinism
+node engine/hyperframes/snapshot.mjs --course <COURSE> --episode <EP_ID> --scene 0 --at 0.1,0.5,0.9 --check-determinism [--check-layout] [--qc-strict]
+node engine/hyperframes/verify_video.mjs --course <COURSE> --episode <EP_ID> --file <EP_ID>.mp4 --frames 3,30 [--check-layout] [--qc-strict]
 
 # Run automated 3-Stage Scripting, E2E Chrome UI, and HyperFrames (-16 LUFS) test suites
 node engine/test_phase1_three_stage.mjs
@@ -212,11 +217,11 @@ node engine/test_hyperframes.mjs
 
 | Endpoint | Purpose |
 | :--- | :--- |
-| `GET /api/ai/providers[?force=1]` | Returns all 9 AI brands, auth status (`verified`/`invalid`/`quota_exhausted`/`unconfigured`, etc.), live models, and `last_selection` (zero key leakage). |
+| `GET /api/ai/providers[?force=1]` | Returns all 9 AI brands, auth status (`verified`/`invalid`/`quota_exhausted`/`unconfigured`, etc.), live models, `last_selection`, and `pipeline_routing` (zero key leakage). |
 | `POST /api/ai/providers/credentials` | Saves/updates/clears API keys or custom `base_url` in `engine/.ai_credentials.json` and runs a `$0` handshake. |
 | `POST /api/ai/providers/test` | Re-runs handshake or sends a minimal `ping_one_token: true` probe. |
-| `POST /api/ai/preferences/routing` | Saves dynamic per-role provider routing (`brief`, `dialogue`, `visual_director`) into `engine/.ai_preferences.json`. |
-| `POST /api/ai/jobs` | Dispatches `script_episode` or `script_batch` (supports `mode: "three_stage"`, `pause_after`, `start_from`, `rewrite_notes` / `rewrite_note`, unlimited episodes for built-in providers). |
+| `POST /api/ai/preferences/routing` | Saves dynamic per-role provider routing (`outliner`, `brief_scriptwriter`, `visual_director`, `repair`) into `engine/.ai_preferences.json`. |
+| `POST /api/ai/jobs` | Dispatches `script_episode` or `script_batch` (supports `mode: "three_stage"`, `pause_after`, `start_from`, `lock_audio_spine`, `role_routing`, `auto_produce` default `false`, `rewrite_notes` / `rewrite_note`, unlimited episodes for built-in providers). |
 | `GET /api/episodes/scripting-artifacts` & `POST /api/episodes/{brief,dialogue,audio-spine}` | Inspects/edits `brief.json`, `dialogue.json` and synthesizes pre-visual audio timings (`audio_spine.json`). |
 | `POST /api/ai/jobs/resume` | Resumes a `paused`/`failed` job across remaining episodes (allows switching `provider_id` / `model`). |
 | `POST /api/ai/manual-prompt` & `manual-submit` | Generates a `$0` Prompt Pack and validates/saves pasted script JSON. |
@@ -268,21 +273,21 @@ TechVideoStudio/
 │   ├── state_cli.mjs                 # Sharded state, revision queue & diagram validator
 │   ├── tts_pipeline.py               # Pure-stdlib Multi-Voice A/B TTS, subtitles & Layer 1 alignment
 │   ├── render_video.mjs              # Video render CLI (default HyperFrames, --engine legacy = Canvas 2D)
-│   ├── hyperframes/                  # HyperFrames engine: compiler, 7 DOM+GSAP templates, CDP renderer, snapshot
+│   ├── hyperframes/                  # HyperFrames engine: compiler, 7 DOM+GSAP templates, CDP renderer, snapshot, layout_qc
 │   ├── HYPERFRAMES_ENGINE.md         # HyperFrames engine design & operations notes
 │   ├── UPGRADE_CHECKLIST.md          # 3-phase upgrade checklist & handover state
 │   ├── assets/                       # Rich architecture SVG catalog (svg/) & 48kHz procedural SFX WAVs (sfx/)
 │   ├── scripts/                      # SHA-256 pinned runtime vendor & SFX WAV generator (generate_sfx_assets.mjs)
 │   ├── test_phase1_three_stage.mjs   # Automated tests for 3-stage scripting, dynamic routing & Audio Spine
 │   ├── test_ai_bridge_and_templates.mjs  # 17-section automated E2E & Chrome UI test suite
-│   ├── test_hyperframes.mjs          # HyperFrames engine test suite (determinism, Light/Dark, -16 LUFS)
+│   ├── test_hyperframes.mjs          # HyperFrames engine test suite (determinism, Light/Dark, -16 LUFS, layout QC)
 │   ├── voices.json                   # Voice profile catalog (incl. VieNeu-TTS v3 Turbo)
 │   ├── MOTION_SPEC.md                # V2 motion engine specification
 │   ├── TTS_VOICE_SPEC.md             # Custom TTS provider specification
 │   ├── ai/                           # Multi-provider credentials/handshakes, 3-stage LLM runner, batch queue broker
 │   ├── mcp/                          # Shared JSON-RPC handler (9 tools + 4 resources) for Stdio & HTTP
 │   ├── public/index.html             # Web UI entry point & esm.sh importmap
-│   └── src/                          # Player UI, ScriptingStageModal, 7 templates, audio_dsp (-16 LUFS), exporter
+│   └── src/                          # Player UI, RoleRoutingPanel, ScriptingStageModal, 7 templates, audio_dsp (-16 LUFS), exporter
 └── <COURSE>/                         # Local course workspace created on demand (e.g., AWS/, K8S/ — gitignored)
 ```
 

@@ -18,6 +18,7 @@ import path from "node:path";
 import { collectPageErrors, evaluate, launchChrome, navigate, openPage, sleep } from "./cdp.mjs";
 import { compileEpisodeProject } from "./compiler.mjs";
 import { buildRenderBridgeScript, seekExpression, waitForComposition } from "./bridge.mjs";
+import { DEFAULT_QC_CHECKPOINTS, formatLayoutQcSummary, runCompositionLayoutQc } from "./layout_qc.mjs";
 import { ensureStudioServer, fetchEpisodePayload, projectUrl } from "./studio_server.mjs";
 
 const RESOLUTION_WIDTHS = { "720p": 1280, "1080p": 1920, "1440p": 2560, "2160p": 3840 };
@@ -47,6 +48,9 @@ export async function renderEpisodeHyperframes(opts, { log = console.log, isCanc
     output,
     captureFormat = "jpeg",
     jpegQuality = 92,
+    checkLayout = true,
+    qcStrict = false,
+    qcCheckpoints = DEFAULT_QC_CHECKPOINTS,
   } = opts;
 
   const width = RESOLUTION_WIDTHS[resolution] || 1920;
@@ -165,11 +169,39 @@ export async function renderEpisodeHyperframes(opts, { log = console.log, isCanc
         if (Math.abs(ready.duration - manifest.total_duration) > 1 / fps + 1e-3) {
           throw new Error(`Runtime duration ${ready.duration}s ≠ manifest ${manifest.total_duration}s`);
         }
+        await evaluate(
+          cdp,
+          sid,
+          "typeof window.__hfForceTimelineRebind === 'function' ? (window.__hfForceTimelineRebind(), true) : false"
+        );
         return { k, sid };
       })
     );
     log(`[render] 5% ${workers} capture worker(s) ready; rendering ${totalFrames} frames...`);
     checkCancel();
+
+    let layoutQc = null;
+    if (checkLayout) {
+      layoutQc = await runCompositionLayoutQc({
+        cdp,
+        sessionId: workerPages[0].sid,
+        manifest,
+        checkpoints: Array.isArray(qcCheckpoints) && qcCheckpoints.length ? qcCheckpoints : DEFAULT_QC_CHECKPOINTS,
+      });
+      log(`[render] QC: ${formatLayoutQcSummary(layoutQc)}`);
+      for (const f of layoutQc.findings) {
+        log(`[render] QC [${f.severity}] ${f.scene_id} @ ${f.timestamp}s (${f.code}) ${f.selector}: ${f.message}`);
+      }
+      if (qcStrict && layoutQc.error_count > 0) {
+        const preview = layoutQc.findings
+          .filter((f) => f.severity === "error")
+          .slice(0, 10)
+          .map((f) => `  - ${f.scene_id} @ ${f.timestamp}s (${f.code}) ${f.selector}: ${f.message}`)
+          .join("\n");
+        throw new Error(`Layout QC failed with ${layoutQc.error_count} error(s):\n${preview}`);
+      }
+      checkCancel();
+    }
 
     // ---- Capture → in-order encode -----------------------------------------------------------
     const frames = new Map();
@@ -271,7 +303,7 @@ export async function renderEpisodeHyperframes(opts, { log = console.log, isCanc
     log(`[render] 96% Flushing encoders & muxing...`);
     const result = await evaluate(cdp, enc.sessionId, "window.__TVS_HF_ENCODER__.finish()", { timeoutMs: 300_000 });
     log(`[render] 99% Saved ${result.savedFile} (${(result.bytes / 1024 / 1024).toFixed(2)} MB)`);
-    return { ...result, browserErrors, projectDir, manifest, workers };
+    return { ...result, browserErrors, projectDir, manifest, workers, layoutQc };
   } finally {
     if (chrome) await chrome.close();
     if (server) await server.stop();

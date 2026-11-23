@@ -32,7 +32,7 @@ function sleep(ms) {
 function printUsage() {
   console.log(
     `Usage: node render_video.mjs --course <COURSE> --episode <EP_ID> [--engine hyperframes|legacy] [--port 3030] [--format mp4|webm] [--codec h264|hevc|vp9] [--hardware auto|gpu|cpu] [--resolution 720p|1080p|1440p|2160p] [--fps 24|30|60] [--speed 1|1.25|1.5|2] [--output <filename>] [--timeout-ms 900000]\n` +
-      `       HyperFrames-only: [--workers 1..8] [--capture-format jpeg|png] [--jpeg-quality 50..100] [--compile-only]\n` +
+      `       HyperFrames-only: [--workers 1..8] [--capture-format jpeg|png] [--jpeg-quality 50..100] [--compile-only] [--check-layout|--no-check-layout] [--qc-strict]\n` +
       `       Default engine: hyperframes (or env TVS_RENDER_ENGINE). See engine/HYPERFRAMES_ENGINE.md.`
   );
 }
@@ -88,6 +88,8 @@ function parseArgs(argv) {
     captureFormat: "jpeg",
     jpegQuality: 92,
     compileOnly: false,
+    checkLayout: true,
+    qcStrict: false,
   };
 
   for (let i = 0; i < argv.length; i++) {
@@ -104,6 +106,13 @@ function parseArgs(argv) {
       opts.jpegQuality = Number(argv[++i] || 92);
     } else if (arg === "--compile-only") {
       opts.compileOnly = true;
+    } else if (arg === "--check-layout") {
+      opts.checkLayout = true;
+    } else if (arg === "--no-check-layout") {
+      opts.checkLayout = false;
+    } else if (arg === "--qc-strict") {
+      opts.qcStrict = true;
+      opts.checkLayout = true;
     } else if (arg === "--course") {
       opts.course = argv[++i] || "";
     } else if (arg === "--episode" || arg === "--ep") {
@@ -491,6 +500,8 @@ async function runHyperframesRender(opts, epDir) {
           workers: opts.workers,
           captureFormat: opts.captureFormat,
           jpegQuality: opts.jpegQuality,
+          checkLayout: opts.checkLayout,
+          qcStrict: opts.qcStrict,
         },
         {
           log: (line) => console.log(line),
@@ -517,9 +528,12 @@ async function runHyperframesRender(opts, epDir) {
     const elapsedSec = (Date.now() - startMs) / 1000;
     const sizeMb = (stat.size / (1024 * 1024)).toFixed(2);
     const speedup = result.durationSec > 0 ? (result.durationSec / elapsedSec).toFixed(2) : "N/A";
+    const qcInfo = result.layoutQc
+      ? `, qc_errors=${result.layoutQc.error_count}, qc_warnings=${result.layoutQc.warning_count}`
+      : `, qc=skipped`;
     console.log(`[render] 100% Output saved: ${path.basename(outPath)} (${sizeMb} MB)`);
     console.log(
-      `[render_video] SUCCESS: ${outPath} (${sizeMb} MB / ${stat.size} bytes, engine=hyperframes, format=${result.format}, codec=${opts.codec}, hw=${result.hardwareAcceleration}, res=${result.width}x${result.height}, fps=${result.fps}, speed=${opts.speed}x, frames=${result.frames}, workers=${result.workers}, duration=${result.durationSec}s, elapsed=${elapsedSec.toFixed(2)}s, speedup=${speedup}x)`
+      `[render_video] SUCCESS: ${outPath} (${sizeMb} MB / ${stat.size} bytes, engine=hyperframes, format=${result.format}, codec=${opts.codec}, hw=${result.hardwareAcceleration}, res=${result.width}x${result.height}, fps=${result.fps}, speed=${opts.speed}x, frames=${result.frames}, workers=${result.workers}, duration=${result.durationSec}s, elapsed=${elapsedSec.toFixed(2)}s, speedup=${speedup}x${qcInfo})`
     );
   } finally {
     process.off("SIGINT", onSigInt);

@@ -70,39 +70,44 @@
 ---
 
 ## Phase 3 — Per-Role Routing UI, DOM Safe-Zone QC Gate & Plugin/Skills Sync
-- [ ] **3.1 Per-Role Provider Routing UI:**
-  - [ ] Add compact Per-Role routing selector panel in Web Studio (`BrandHealthGrid` / `AiScriptModal` settings) backed by `POST /api/ai/preferences/routing` + dynamic provider discovery.
-- [ ] **3.2 Automated DOM Layout & Safe-Zone QC Gate (`snapshot.mjs`, `verify_video.mjs`, `render_video.mjs`):**
-  - [ ] Measure `getBoundingClientRect()` at scene checkpoints (`0.1, 0.5, 0.9`) to catch stage overflow, subtitle/topbar collisions, and clipped text.
-  - [ ] Surface structured QC findings per `scene_id` and timestamp in `verify_video.mjs` & `render_video.mjs`.
-- [ ] **3.3 Plugin, Rules & Skills Synchronization:**
-  - [ ] Update `AGENTS.md`, `plugin/tech-video-studio/rules/AGENTS.md`, `episode-producer/SKILL.md`, and `studio-worker/SKILL.md` to enforce the decoupled 3-stage pipeline and `auto_produce` separation.
-  - [ ] Run `node setup.mjs --agents all` & `node setup.mjs --check --json`, and verify live Studio UI (`http://localhost:3030`) with zero console/page errors.
+- [x] **3.1 Per-Role Provider Routing UI:**
+  - [x] Add compact Per-Role routing selector panel in Web Studio (`engine/src/components/ai/RoleRoutingPanel.mjs` inside `BrandHealthGrid.mjs` & `AiScriptModal.mjs` + `.role-routing-*` in `engine/public/styles.css`) backed by `POST /api/ai/preferences/routing` + dynamic provider discovery (`outliner`, `brief_scriptwriter`, `visual_director`, `repair`).
+- [x] **3.2 Automated DOM Layout & Safe-Zone QC Gate (`snapshot.mjs`, `verify_video.mjs`, `render_video.mjs`):**
+  - [x] Measure `getBoundingClientRect()` at scene checkpoints (`0.1, 0.5, 0.9`) in `engine/hyperframes/layout_qc.mjs` to catch `viewport_overflow`, `stage_overflow`, `topbar_collision`, `subtitle_collision`, `subtitle_overflow`, and `clipped_text` (`topbar_title_truncated` warning).
+  - [x] Surface structured QC findings per `scene_id` and timestamp in `snapshot.mjs`, `verify_video.mjs`, `render.mjs`, and `render_video.mjs` (`--check-layout`, `--no-check-layout`, `--qc-strict`).
+- [x] **3.3 Plugin, Rules & Skills Synchronization:**
+  - [x] Update `AGENTS.md`, `plugin/tech-video-studio/rules/AGENTS.md`, `{episode-producer,studio-worker,video-renderer}/SKILL.md`, `plugin/tech-video-studio/README.md`, `README.md`, and `README.en.md` to enforce the decoupled 3-stage pipeline, dynamic per-role routing, Phase 2/3 HyperFrames features, and strict `auto_produce` separation.
+  - [x] Run `node setup.mjs --agents all` & `node setup.mjs --check --json`, and verify live Studio UI (`http://localhost:3030`) with zero console/page errors.
 
 ---
 
 ## Handover Snapshot (Updated After Each Phase)
-- **Current Phase:** Phase 2 COMPLETED (2026-11-19) — Ready for Phase 3
-- **Phase 2 Files Created:**
-  - `engine/scripts/generate_sfx_assets.mjs` (pure-Node 48kHz PCM WAV seeded SFX generator)
-  - `engine/assets/sfx/{whoosh_short,pop,click,typing_fast,impact,chime}.wav` (6 SFX assets normalized to `-6 dBFS`)
-  - `engine/src/audio_dsp.mjs` (`applyKWeighting`, `measureIntegratedLufs` BS.1770-4 gated LUFS, `normalizeLoudnessAndLimit` to `-16 LUFS` + `0.8414` ≈ `-1.5 dBTP` soft limiter)
-- **Phase 2 Files Modified:**
-  - `engine/hyperframes/runtime/tvs-hf.css` (`.tvs-bg-grid`, `.tvs-bg-light`, `.tvs-scene--light`, `.tvs-sharp-tag`)
-  - `engine/hyperframes/runtime/tvs-hf-common.mjs` (`CAUSAL_MECHANICS`, `sharpTag()`, causal-mechanic `reveal()` with zero-duration `filter`/`clipPath` `fromTo` cleanup)
-  - `engine/hyperframes/runtime/tvs-hf-main.mjs` (`.tvs-bg-grid` drift modulo `60px`, `buildWorldThemeLayer()`, `buildTopBar()` `SharpTag`, `creepZoom` `1 -> 1.015`, `buildEnvelope()` causal mechanics + smart same-part overlap vs cross-part dark breather)
-  - `engine/hyperframes/runtime/scenes/{comparison_matrix,timeline_flow,exam_tips,kpi_metrics}.mjs` (`ctx.mechanic` head/element reveals + optional `sharpTag` badges)
-  - `engine/hyperframes/compiler.mjs` (`VALID_SFX_TYPES`, `buildSfxCues()` with `-33ms` lead, `resolveBgmSource()`, `data-slot-duration`/`data-overlap-out`/`data-overlap-in`/`data-world-theme`, `manifest.sfx` & `manifest.bgm`)
-  - `engine/src/hf_encoder.mjs` (`applyVocalCarveEq` `1800Hz -6dB Q=1.4`, `buildAudioMix` SFX + carved BGM + BS.1770 `-16 LUFS` post-mix, `window.__TVS_AUDIO_DSP__`)
-  - `engine/hyperframes/render.mjs` & `engine/hyperframes/verify_video.mjs` (`sfx`/`bgm`/`loudnessTargetLufs: -16` wiring, `window.__TVS_AUDIO_DSP__` wait & LUFS/peak output measurement)
-  - `engine/test_hyperframes.mjs` (added SFX/DSP assertions, overlap HTML checks, mixed Dark/Light + rotated mechanics + SharpTag + BGM determinism check, and E2E MP4 LUFS check)
-- **Phase 2 Verification Results (All Exit Code 0):**
-  - `node "c:\PersonalProject\TechVideoStudio\engine\test_hyperframes.mjs"` → `8 checks passed.` (`hf-e2e.mp4` `1280x720`, `17.51s`, `rms 0.122`, `-16.02 LUFS`; 7/7 template determinism + Light/Dark `ep02-phase2` determinism passed with 0 errors)
-  - `node "c:\PersonalProject\TechVideoStudio\engine\test_phase1_three_stage.mjs"` → `ALL PHASE 1 TESTS PASSED!`
-  - `node "c:\PersonalProject\TechVideoStudio\engine\test_ai_bridge_and_templates.mjs"` → `ALL TESTS PASSED!` (17/17 sections including HyperFrames & Legacy WebM exports)
-  - `node "c:\PersonalProject\TechVideoStudio\engine\state_cli.mjs" validate-diagrams --course REDIS` → `0 errors, 0 warnings` (both episodes)
-- **Next Resume Action (Starting Phase 3):**
-  1. Read `engine/UPGRADE_CHECKLIST.md` Phase 3 items (`3.1`, `3.2`, `3.3`) and inspect `engine/src/components/{BrandHealthGrid,AiScriptModal}.mjs`, `engine/hyperframes/{snapshot,verify_video,render}.mjs`, `AGENTS.md`, `.agents/plugins/tech-video-studio/rules/AGENTS.md`, and `.agents/skills/{episode-producer,studio-worker}/SKILL.md`.
-  2. Implement Phase 3.1 (compact Per-Role Provider Routing selector UI in Studio backed by `POST /api/ai/preferences/routing`).
-  3. Implement Phase 3.2 (automated DOM `getBoundingClientRect()` layout & safe-zone QC gate at checkpoints `0.1, 0.5, 0.9` in `snapshot.mjs` / `verify_video.mjs` / `render_video.mjs`).
-  4. Implement Phase 3.3 (sync `AGENTS.md`, plugin rules, and `SKILL.md` files for 3-stage pipeline + Phase 2 metadata, run `node setup.mjs --agents all` & `node setup.mjs --check --json`, verify live Studio UI `http://localhost:3030` with 0 console/page errors, and update `UPGRADE_CHECKLIST.md` Phase 3 completion snapshot).
+- **Current Phase:** **Phase 3 COMPLETED (2026-11-20)** — All 3 Upgrade Phases Implemented & Independently Verified
+- **Phase 3 Files Created:**
+  - `engine/src/components/ai/RoleRoutingPanel.mjs` (collapsible `🧭 Định tuyến AI theo vai trò` UI for `outliner`, `brief_scriptwriter`, `visual_director`, `repair` via `POST /api/ai/preferences/routing`, dynamic `builtin` provider/model discovery, custom model input, zero hardcoded models)
+  - `engine/hyperframes/layout_qc.mjs` (`DEFAULT_QC_CHECKPOINTS = [0.1, 0.5, 0.9]`, `buildLayoutQcExpression`, `runCompositionLayoutQc`, `formatLayoutQcSummary`, 6 DOM layout/safe-zone checks + `--hfForceTimelineRebind`)
+- **Phase 3 Files Modified:**
+  - *Phase 3.1:* `engine/src/components/ai/BrandHealthGrid.mjs`, `engine/src/components/AiScriptModal.mjs`, `engine/public/styles.css`, `engine/test_phase1_three_stage.mjs`
+  - *Phase 3.2:* `engine/hyperframes/snapshot.mjs`, `engine/hyperframes/verify_video.mjs`, `engine/hyperframes/render.mjs`, `engine/render_video.mjs`, `engine/test_hyperframes.mjs`
+  - *Phase 3.3:* `AGENTS.md`, `plugin/tech-video-studio/rules/AGENTS.md`, `plugin/tech-video-studio/skills/{episode-producer,studio-worker,video-renderer}/SKILL.md`, `plugin/tech-video-studio/README.md`, `README.md`, `README.en.md`, `engine/UPGRADE_CHECKLIST.md`, `CHANGELOG.md` *(plus regenerated gitignored adapters `.agents/` and `.claude/` via `node setup.mjs --agents all`)*
+- **Git Staging Note:** Root `.gitignore` line 20 (`/*/hyperframes/`) ignores untracked files inside `*/hyperframes/`, so **`git add -f engine/hyperframes/layout_qc.mjs`** is required when staging `layout_qc.mjs`.
+- **Phase 3 Verification Results (Independent Verifier, Exit Code 0, Isolated Temp Runs):**
+  - `node engine/test_phase1_three_stage.mjs` → **PASS (`5/5` sections, exit 0)** (includes Phase 3.1 headless Chrome `RoleRoutingPanel` verification in Roadmap + `AiScriptModal`, `0` console/page errors).
+  - `node engine/test_hyperframes.mjs` (full run, no `--skip-render`) → **PASS (`9/9` checks, exit 0)**:
+    - BS.1770 DSP: `-28.64 → -16 LUFS`; `ep03-qc-broken` mix: `-19.24 → -16 LUFS` (`peak 0.4691`).
+    - `HFTEST/ep01-demo`: determinism (7 frames) + strict Layout QC PASS (`scenes=7, frames=21, checkpoints=[0.1,0.5,0.9], errors=0, warnings=0`).
+    - `HFTEST/ep02-phase2`: Light/Dark + `SharpTag` + BGM determinism + strict Layout QC PASS (`scenes=4, frames=12, checkpoints=[0.1,0.5,0.9], errors=0, warnings=0`).
+    - `HFTEST/ep03-qc-broken`: strict Layout QC FAIL (`scenes=2, frames=6, errors=223, warnings=3`, plus direct `topbar_collision` probe) and triggers `qcStrict` failures in both `snapshot.mjs` and `render.mjs`.
+    - `render_video.mjs` + `verifyEpisodeVideo({ checkLayout: true })` on `hf-e2e.mp4`: `1280x720`, `17.51s`, `audio rms 0.122`, **`-16.02 LUFS`**, `qc scenes=7 errors=0`.
+  - `node engine/test_ai_bridge_and_templates.mjs` → **PASS (`17/17` sections, exit 0)**.
+  - `node engine/state_cli.mjs summary --course REDIS` → `Total: 10 | planned: 7 | scripting: 1 | script_ready: 1 | completed: 1`.
+  - `node engine/state_cli.mjs validate-diagrams --course REDIS` → `ep01`, `ep02`, `ep03` all **`0 errors, 0 warnings`**.
+  - Real-Episode DOM Layout QC (`node engine/hyperframes/snapshot.mjs --course REDIS --episode ep01-redis-in-memory-architecture --check-layout`) → **PASS (`scenes=5, frames=15, checkpoints=[0.1,0.5,0.9], errors=0, warnings=0`, `0` console/page errors)**.
+  - `node setup.mjs --check --json` → `engine.ok: true`, `workspace.ok: true` (`fileCount: 9`), `global.ok: true`, `adapters.antigravityPlugin.ok: true`, `agentSkills.ok: true`, `claudeSkills.ok: true`, `claudeMcp.ok: true` (`claudeDesktop.ok: false` — not installed/requested).
+  - Live Studio UI Headless Chrome Smoke Check (`?view=projects`, `?course=REDIS&view=roadmap` w/ `RoleRoutingPanel` save `1/4 tùy chỉnh` + reset `Mặc định chung` & `AiScriptModal` `three_stage` compact panel, `?course=REDIS&ep=ep01-redis-in-memory-architecture&view=player`) → **`0` console/page/log errors across all 3 views**.
+- **Phase 1 & 2 Baseline Artifacts:**
+  - *Phase 2 Created:* `engine/scripts/generate_sfx_assets.mjs`, `engine/assets/sfx/{whoosh_short,pop,click,typing_fast,impact,chime}.wav`, `engine/src/audio_dsp.mjs`
+  - *Minor Pre-Existing Note:* `engine/worker_wait.mjs:29` defaults `args.model || "Gemini 4 Argon"` when `--model` is omitted (`studio-worker/SKILL.md` passes `--model` explicitly).
+- **Next Resume Action (Ready for Release / Commit):**
+  1. Stage modified/new files (using `git add -f engine/hyperframes/layout_qc.mjs` so root `.gitignore`'s `/*/hyperframes/` rule does not skip it).
+  2. Proceed with course production or future feature sprints following `AGENTS.md` and `README.md`.

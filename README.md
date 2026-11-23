@@ -28,7 +28,8 @@ Tiến độ từng tập video được lưu nguyên tử (atomic) tại `<COUR
    - Thực hiện phỏng vấn `/grill-me` từng câu (mục tiêu chứng chỉ/thực chiến, quy mô `10/20/30` tập, giọng đọc mặc định từ `engine/voices.json`, độ sâu Lab/CLI/Code, phạm vi triển khai).
    - Tạo `course.json` (lưu cấu hình giọng mặc định), `curriculum.md` chia theo từng *Chặng*, và khởi tạo file state cho toàn bộ các tập.
 2. **Conversation 2 — Nhà máy Kịch bản (`episode-producer` / Web Studio AI Engine):**
-   - Hỗ trợ **biên kịch tách 3 giai đoạn (`three_stage`: `brief.json` → `dialogue.json` → `audio_spine.json` → `script.json`)** bên cạnh `two_pass`/`single_pass`, với định tuyến provider động theo từng vai trò (`brief`, `dialogue`, `visual_director`) và modal duyệt/sửa trung gian (`ScriptingStageModal`).
+   - Hỗ trợ **biên kịch tách 3 giai đoạn (`mode: "three_stage"`: `brief.json` → `dialogue.json` + `notes.md` → tùy chọn `audio_spine.json` qua `tts_pipeline.py --audio-spine` → `script.json`)** bên cạnh `two_pass`/`single_pass`/`auto`/`storyboard_only`, với cổng dừng/tiếp tục (`pause_after: "none" | "brief" | "dialogue"`, `start_from: "brief" | "dialogue" | "visual"`, `lock_audio_spine`), **định tuyến provider động theo vai trò (`outliner`, `brief_scriptwriter`, `visual_director`, `repair`)** qua `RoleRoutingPanel` (`BrandHealthGrid` / `AiScriptModal`), và modal duyệt/sửa trung gian (`ScriptingStageModal`).
+   - **Tách bạch chặt Biên kịch vs Sản xuất (`auto_produce`):** Biên kịch luôn dừng ở `script_ready` (hoặc cổng `pause_after`) để duyệt Storyboard Preview, **không bao giờ tự chạy full TTS/Render** trừ khi bật `auto_produce === true` (và không chạy khi dừng tại `brief`/`dialogue`). Lệnh `--audio-spine` chỉ chạy khi bật `lock_audio_spine === true` hoặc được yêu cầu tường minh.
    - Viết từng tập, theo đợt 3–5 tập, hoặc **chọn nhiều tập không giới hạn (`☑️ Chọn nhiều`)** để chạy hàng loạt trên 1 model, xử lý ticket sửa lỗi (`revisions`), viết `script.json` theo cấu trúc chuẩn 4 phần (**Bài toán thực tế `problem` → Sơ đồ kiến trúc `architecture` → Thực hành Setup & Code `setup` → Bẫy đề thi & Thực chiến `exam_tips`**) và tài liệu ôn tập `notes.md`.
    - Tự động kiểm tra va chạm node/nhãn/cạnh và phân vùng trong sơ đồ trước khi chuyển trạng thái `script_ready`. Khi viết lại tập đã có kịch bản/audio/video từ tab **`🛠️ Sửa`** (`🔄 Gửi AI Sửa Kịch Bản`) hoặc từ modal batch, hệ thống yêu cầu ghi rõ ghi chú thay đổi và tự đánh dấu `production.stale = true`.
 3. **Conversation 3 — Nhà máy Video (`episode-producer` + `video-renderer`):**
@@ -70,8 +71,8 @@ Viết hoàn toàn bằng thư viện chuẩn Python (`urllib`, `ssl`, `socket`,
 Khởi chạy qua `engine/server.mjs` và đồng bộ real-time bằng Server-Sent Events (`/api/stream`):
 1. **Project Dashboard (`?view=projects`):** Tổng quan tất cả khóa học, thanh tiến độ theo từng giai đoạn, số ticket sửa lỗi đang mở.
 2. **Episode Roadmap & Live Monitor (`?view=roadmap`):**
-   - Pill **`🤖 AI Worker & Models`** ở thanh trên cùng mở ngăn **`BrandHealthGrid`** để cấu hình/chọn nhanh trong 9 brand AI (hiển thị rõ 1 thẻ đang chọn `◉` + `✓ Đang chọn`, badge `Online` sắc nét không cắt chữ).
-   - Danh sách tập theo Chặng: bấm trực tiếp vào thẻ tập đã có kịch bản để mở Studio Player (card gọn gàng, không còn nút `Mở Studio` / `🔄 Viết lại KB` ở chân card; tập chưa có kịch bản giữ nút **`✍️ Biên kịch`**); nút **`✍️ Biên kịch Đợt / Hàng loạt`**, chế độ **`☑️ Chọn nhiều`** + **`FloatingBatchBar`** (**`✍️ Biên kịch hàng loạt (1 Model)`**), banner **`▶ Tiếp tục (Resume / Đổi Model)`**, khay **`HeaderJobsTray`**, **`🎙️ Giọng đọc Khóa học`** (`VoiceStudioModal`), và 3 tab bên phải (`📡 Live Activity`, `🛠️ Yêu cầu sửa`, `🗺️ curriculum.md`).
+   - Pill **`🤖 AI Worker & Models`** ở thanh trên cùng mở ngăn **`BrandHealthGrid`** + **`RoleRoutingPanel`** (`🧭 Định tuyến AI theo vai trò`) để cấu hình/chọn nhanh trong 9 brand AI (hiển thị rõ 1 thẻ đang chọn `◉` + `✓ Đang chọn`, badge `Online` sắc nét không cắt chữ) và gán động provider/model cho 4 vai trò (`outliner`, `brief_scriptwriter`, `visual_director`, `repair`).
+   - Danh sách tập theo Chặng: bấm trực tiếp vào thẻ tập đã có kịch bản để mở Studio Player (card gọn gàng, không còn nút `Mở Studio` / `🔄 Viết lại KB` ở chân card; tập chưa có kịch bản giữ nút **`✍️ Biên kịch`**); `AiScriptModal` mặc định chạy `three_stage` kèm `RoleRoutingPanel` thu gọn và `auto_produce` mặc định TẮT, còn **`ScriptingStageModal`** cho phép duyệt/sửa `brief.json`, `dialogue.json`, `audio_spine.json`; nút **`✍️ Biên kịch Đợt / Hàng loạt`**, chế độ **`☑️ Chọn nhiều`** + **`FloatingBatchBar`** (**`✍️ Biên kịch hàng loạt (1 Model)`**), banner **`▶ Tiếp tục (Resume / Đổi Model)`**, khay **`HeaderJobsTray`**, **`🎙️ Giọng đọc Khóa học`** (`VoiceStudioModal`), và 3 tab bên phải (`📡 Live Activity`, `🛠️ Yêu cầu sửa`, `🗺️ curriculum.md`).
 3. **Studio Player (`?view=player`):**
    - Phát đồng bộ 16:9, chế độ **Storyboard Preview Mode** (xem trước khi chưa có audio), deep-link tới từng cảnh (`&scene=<scene_id>`).
    - **Multi-Voice A/B Switcher** trên topbar cho phép chuyển nhanh giữa các track giọng đã tạo (`POST /api/episodes/voice-track/activate`) hoặc xóa track không dùng (`/api/episodes/voice-track/delete`).
@@ -84,6 +85,9 @@ Khởi chạy qua `engine/server.mjs` và đồng bộ real-time bằng Server-S
 - **Motion Grammar & Post-Mix Âm thanh `-16 LUFS` (Phase 2):**
   - Chuyển động nền `.tvs-bg-grid` liên tục + `creepZoom` (`1.0 → 1.015`, `force3D: false`), chuyển đổi nền Sáng/Tối (`world_theme`), chồng lấn chuyển cảnh thông minh cùng `part` (hoặc `dark breather` `140ms` khi đổi `part`), `SharpTag`, và xoay tua `causal_mechanic`.
   - Mix tự động 6 hiệu ứng âm thanh 48kHz (`engine/assets/sfx/*.wav`, lead `-33ms`), nhạc nền `bgm_file` cắt EQ giọng (`1800Hz -6dB` qua `OfflineAudioContext`), và chuẩn hóa **ITU-R BS.1770-4 `-16 LUFS`** + soft-limiter (`0.8414` ≈ `-1.5 dBTP`) hoàn toàn bằng JS thuần (`engine/src/audio_dsp.mjs`, `engine/src/hf_encoder.mjs`).
+- **DOM Layout & Safe-Zone QC Gate (Phase 3 — `engine/hyperframes/layout_qc.mjs`):**
+  - Tự động quét khung DOM 1920×1080 tại các mốc `[0.1, 0.5, 0.9]` để phát hiện 6 lỗi bố cục: `viewport_overflow`, `stage_overflow`, `topbar_collision`, `subtitle_collision`, `subtitle_overflow`, và `clipped_text` (cùng cảnh báo `topbar_title_truncated`).
+  - Mặc định bật trong `render_video.mjs` (tắt bằng `--no-check-layout`, chặn render khi có lỗi bằng `--qc-strict`), và hỗ trợ chạy độc lập qua `snapshot.mjs --check-layout [--qc-strict]` hoặc `verify_video.mjs --check-layout [--qc-strict]`.
 - Engine Canvas 2D cũ (`window.__STUDIO_RENDER_OFFLINE__`) vẫn dùng được qua `--engine legacy` hoặc lựa chọn **Engine render** trong popover **`🎬 Xuất Video ▾`**.
 - Tùy chọn độ phân giải (`720p`, `1080p`, `1440p`, `2160p`), tốc độ khung hình (`24`, `30`, `60` fps), định dạng (`mp4`, `webm`), tăng tốc (`1x`–`2x`), và chế độ tăng tốc phần cứng (`auto`, `gpu`, `cpu`).
 
@@ -191,16 +195,17 @@ node engine/state_cli.mjs resolve-revision --course <COURSE> --ep <EP_ID> --rev 
 
 ```powershell
 python engine/tts_pipeline.py --episode "<COURSE>/episodes/<EP_ID>/script.json" --course "<COURSE>/course.json" --json
-python engine/tts_pipeline.py --audio-spine --episode "<COURSE>/episodes/<EP_ID>/dialogue.json" --course "<COURSE>/course.json" --json
+python engine/tts_pipeline.py --audio-spine "<COURSE>/episodes/<EP_ID>/dialogue.json" --course "<COURSE>/course.json" --json
 python engine/tts_pipeline.py --realign-only --episode "<COURSE>/episodes/<EP_ID>/script.json" [--scene <SCENE_ID>] [--profile <PROFILE_ID>] --json
 python engine/tts_pipeline.py --list-profiles
 python engine/tts_pipeline.py --discover-voicestudio --json
 python engine/tts_pipeline.py --preview --profile edge-hoaimy --text "Xin chào" --out preview.mp3
 
 node engine/scripts/generate_sfx_assets.mjs   # (Tùy chọn) tạo lại 6 file SFX WAV chuẩn 48kHz trong engine/assets/sfx/
-node engine/render_video.mjs --course <COURSE> --episode <EP_ID> --port 3030 --format mp4 --codec h264 --resolution 1080p --fps 60 --speed 1 --hardware auto [--output <TEN_FILE>] [--workers 1..8] [--engine hyperframes|legacy]
+node engine/render_video.mjs --course <COURSE> --episode <EP_ID> --port 3030 --format mp4 --codec h264 --resolution 1080p --fps 60 --speed 1 --hardware auto [--output <TEN_FILE>] [--workers 1..8] [--engine hyperframes|legacy] [--check-layout|--no-check-layout] [--qc-strict]
 node engine/render_video.mjs --course <COURSE> --episode <EP_ID> --compile-only   # chỉ sinh project HyperFrames
-node engine/hyperframes/snapshot.mjs --course <COURSE> --episode <EP_ID> --scene 0 --at 0.1,0.5,0.9 --check-determinism
+node engine/hyperframes/snapshot.mjs --course <COURSE> --episode <EP_ID> --scene 0 --at 0.1,0.5,0.9 --check-determinism [--check-layout] [--qc-strict]
+node engine/hyperframes/verify_video.mjs --course <COURSE> --episode <EP_ID> --file <EP_ID>.mp4 --frames 3,30 [--check-layout] [--qc-strict]
 
 # Chạy các bộ kiểm thử E2E + UI Headless Chrome, 3-Stage Scripting và HyperFrames (-16 LUFS)
 node engine/test_phase1_three_stage.mjs
@@ -212,11 +217,11 @@ node engine/test_hyperframes.mjs
 
 | Endpoint | Mục đích |
 | :--- | :--- |
-| `GET /api/ai/providers[?force=1]` | Danh sách 9 brand AI, trạng thái auth (`verified`/`invalid`/`quota_exhausted`/`unconfigured`...), model live, `last_selection` (không bao giờ trả về API key). |
+| `GET /api/ai/providers[?force=1]` | Danh sách 9 brand AI, trạng thái auth (`verified`/`invalid`/`quota_exhausted`/`unconfigured`...), model live, `last_selection`, `pipeline_routing` (không bao giờ trả về API key). |
 | `POST /api/ai/providers/credentials` | Lưu/cập nhật/xóa key hoặc `base_url` tùy chỉnh vào `engine/.ai_credentials.json` và chạy handshake `$0`. |
 | `POST /api/ai/providers/test` | Kiểm tra lại kết nối hoặc test `ping_one_token: true`. |
-| `POST /api/ai/preferences/routing` | Lưu cấu hình định tuyến provider động cho từng vai trò (`brief`, `dialogue`, `visual_director`) vào `engine/.ai_preferences.json`. |
-| `POST /api/ai/jobs` | Tạo job `script_episode` hoặc `script_batch` (hỗ trợ `mode: "three_stage"`, `pause_after`, `start_from`, `rewrite_notes` / `rewrite_note`, không giới hạn số tập với built-in AI). |
+| `POST /api/ai/preferences/routing` | Lưu cấu hình định tuyến provider động cho 4 vai trò (`outliner`, `brief_scriptwriter`, `visual_director`, `repair`) vào `engine/.ai_preferences.json`. |
+| `POST /api/ai/jobs` | Tạo job `script_episode` hoặc `script_batch` (hỗ trợ `mode: "three_stage"`, `pause_after`, `start_from`, `lock_audio_spine`, `role_routing`, `auto_produce` mặc định `false`, `rewrite_notes` / `rewrite_note`, không giới hạn số tập với built-in AI). |
 | `GET /api/episodes/scripting-artifacts` & `POST /api/episodes/{brief,dialogue,audio-spine}` | Đọc/sửa `brief.json`, `dialogue.json` và chạy TTS xương sống (`audio_spine.json`) cho từng tập. |
 | `POST /api/ai/jobs/resume` | Tiếp tục job đang `paused`/`failed` trên các tập còn lại (có thể đổi sang `provider_id` / `model` khác). |
 | `POST /api/ai/manual-prompt` & `manual-submit` | Tạo Prompt Pack `$0` và validate/lưu JSON kịch bản dán vào. |
@@ -268,21 +273,21 @@ TechVideoStudio/
 │   ├── state_cli.mjs                 # Quản lý state phân mảnh, revision queue & validate sơ đồ
 │   ├── tts_pipeline.py               # Tổng hợp giọng đọc đa track A/B, subtitles & khớp nhịp Lớp 1 (pure Python stdlib)
 │   ├── render_video.mjs              # CLI render video (mặc định HyperFrames, --engine legacy = Canvas 2D)
-│   ├── hyperframes/                  # Engine HyperFrames: compiler, 7 template DOM+GSAP, renderer CDP, snapshot
+│   ├── hyperframes/                  # Engine HyperFrames: compiler, 7 template DOM+GSAP, renderer CDP, snapshot, layout_qc
 │   ├── HYPERFRAMES_ENGINE.md         # Ghi chép thiết kế & vận hành engine HyperFrames
 │   ├── UPGRADE_CHECKLIST.md          # Checklist nâng cấp 3 pha & trạng thái bàn giao
 │   ├── assets/                       # Kho minh họa kiến trúc SVG (svg/) & hiệu ứng âm thanh SFX 48kHz (sfx/)
 │   ├── scripts/                      # Vendor runtime/GSAP pin SHA-256 & tạo SFX WAV (generate_sfx_assets.mjs)
 │   ├── test_phase1_three_stage.mjs   # Kiểm thử quy trình biên kịch 3 bước, dynamic routing & Audio Spine
 │   ├── test_ai_bridge_and_templates.mjs  # Bộ kiểm thử E2E & Chrome UI 17 phần
-│   ├── test_hyperframes.mjs          # Bộ kiểm thử engine HyperFrames (determinism, Light/Dark, -16 LUFS)
+│   ├── test_hyperframes.mjs          # Bộ kiểm thử engine HyperFrames (determinism, Light/Dark, -16 LUFS, layout QC)
 │   ├── voices.json                   # Danh mục profile giọng đọc (gồm VieNeu-TTS v3 Turbo)
 │   ├── MOTION_SPEC.md                # Đặc tả motion engine V2
 │   ├── TTS_VOICE_SPEC.md             # Đặc tả tích hợp custom TTS provider
 │   ├── ai/                           # Multi-provider credentials/handshake, 3-stage LLM runner, batch queue broker
 │   ├── mcp/                          # Dùng chung JSON-RPC handler (9 tools + 4 resources) cho Stdio & HTTP
 │   ├── public/index.html             # Entry Web UI & importmap esm.sh
-│   └── src/                          # Studio player, ScriptingStageModal, 7 templates, audio_dsp (-16 LUFS), exporter
+│   └── src/                          # Studio player, RoleRoutingPanel, ScriptingStageModal, 7 templates, audio_dsp (-16 LUFS), exporter
 └── <COURSE>/                         # Khóa học cục bộ tạo trên máy (vd: AWS/, K8S/ — đã được .gitignore loại trừ khỏi Git)
 ```
 

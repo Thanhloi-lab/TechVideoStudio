@@ -1,23 +1,7 @@
 {
-  "default_profile": "vieneu-mai-anh",
+  "default_profile": "vieneu-hai-dang",
   "voicestudio_base_url": "http://127.0.0.1:8000",
   "profiles": [
-    {
-      "id": "vieneu-mai-anh",
-      "label": "Mai Anh (Nữ · Bắc · Tin tức — VieNeu-TTS)",
-      "provider": "openai_compat",
-      "voice_id": "Mai Anh",
-      "model": "vieneu-v3-turbo",
-      "endpoint": "http://127.0.0.1:8000/v1/audio/speech",
-      "rate": "1.0",
-      "pitch": "+0Hz",
-      "language": "vi",
-      "gender": "female",
-      "response_format": "wav",
-      "requires_local_server": true,
-      "sample_text": "Xin chào, hôm nay chúng ta sẽ cùng khám phá kiến trúc hệ thống thực chiến.",
-      "notes": "VieNeu-TTS v3 Turbo (48kHz) — Giọng nữ miền Bắc phong cách tin tức, rõ chữ cho bài giảng công nghệ"
-    },
     {
       "id": "vieneu-hai-dang",
       "label": "Hải Đăng (Nam · Bắc · Tự nhiên — VieNeu-TTS)",

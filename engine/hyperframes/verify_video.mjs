@@ -11,7 +11,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { evaluate, launchChrome, navigate, openPage, sleep } from "./cdp.mjs";
-import { ensureStudioServer } from "./studio_server.mjs";
+import { buildRenderBridgeScript, waitForComposition } from "./bridge.mjs";
+import { compileEpisodeProject } from "./compiler.mjs";
+import { DEFAULT_QC_CHECKPOINTS, runCompositionLayoutQc } from "./layout_qc.mjs";
+import { ensureStudioServer, fetchEpisodePayload, projectUrl } from "./studio_server.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const ENGINE_DIR = path.resolve(path.dirname(__filename), "..");
@@ -19,7 +22,18 @@ const WORKSPACE_ROOT = process.env.VIDEO_MAKER_WORKSPACE_ROOT
   ? path.resolve(process.env.VIDEO_MAKER_WORKSPACE_ROOT)
   : path.resolve(ENGINE_DIR, "..");
 
-export async function verifyEpisodeVideo({ port = 3030, course, episode, file, frames = [], outDir = "" }) {
+export async function verifyEpisodeVideo(opts = {}) {
+  const {
+    port = 3030,
+    course,
+    episode,
+    file,
+    frames = [],
+    outDir = "",
+    qcCheckpoints = DEFAULT_QC_CHECKPOINTS,
+  } = opts;
+  const qcStrict = Boolean(opts.qcStrict);
+  const checkLayout = opts.checkLayout !== undefined ? Boolean(opts.checkLayout) : qcStrict;
   const server = await ensureStudioServer(port, { workspaceRoot: WORKSPACE_ROOT, log: () => {} });
   let chrome = null;
   try {
@@ -84,7 +98,53 @@ export async function verifyEpisodeVideo({ port = 3030, course, episode, file, f
       }
     }
     delete info.frames;
-    return { ...info, frameFiles: written };
+
+    let layoutQc = null;
+    if (checkLayout) {
+      const projectDir = path.join(WORKSPACE_ROOT, course, "episodes", episode, "hyperframes");
+      const manifestPath = path.join(projectDir, "composition.json");
+      const indexPath = path.join(projectDir, "index.html");
+      let manifest;
+      if (fs.existsSync(manifestPath) && fs.existsSync(indexPath)) {
+        manifest = JSON.parse(fs.readFileSync(manifestPath, "utf-8"));
+      } else {
+        const epPayload = await fetchEpisodePayload(port, course, episode);
+        ({ manifest } = await compileEpisodeProject({
+          workspaceRoot: WORKSPACE_ROOT,
+          courseId: course,
+          episode: epPayload,
+          speed: 1,
+        }));
+      }
+
+      const qcPage = await openPage(cdp, { isolated: true });
+      const qcSid = qcPage.sessionId;
+      await cdp.send("Runtime.enable", {}, { sessionId: qcSid });
+      await cdp.send("Log.enable", {}, { sessionId: qcSid });
+      await cdp.send(
+        "Emulation.setDeviceMetricsOverride",
+        { width: 1920, height: 1080, deviceScaleFactor: 1, mobile: false },
+        { sessionId: qcSid }
+      );
+      await cdp.send("Page.addScriptToEvaluateOnNewDocument", { source: buildRenderBridgeScript({ fps: 60 }) }, { sessionId: qcSid });
+      await navigate(cdp, qcSid, projectUrl(port, course, episode), 60_000);
+      const ready = await waitForComposition((expr) => evaluate(cdp, qcSid, expr), { sleepFn: sleep });
+      if (ready.buildErrors?.length) {
+        throw new Error(`Composition build errors:\n${ready.buildErrors.join("\n")}`);
+      }
+      layoutQc = await runCompositionLayoutQc({
+        cdp,
+        sessionId: qcSid,
+        manifest,
+        checkpoints: Array.isArray(qcCheckpoints) && qcCheckpoints.length ? qcCheckpoints : DEFAULT_QC_CHECKPOINTS,
+      });
+    }
+
+    return {
+      ...info,
+      frameFiles: written,
+      ...(layoutQc ? { layout_qc: layoutQc } : {}),
+    };
   } finally {
     if (chrome) await chrome.close();
     await server.stop();
@@ -98,6 +158,10 @@ if (isMain) {
     const i = argv.indexOf(flag);
     return i >= 0 ? argv[i + 1] ?? fallback : fallback;
   };
+  const hasFlag = (flag) => argv.includes(flag);
+  const qcStrict = hasFlag("--qc-strict");
+  const checkLayout = hasFlag("--check-layout") || qcStrict;
+  const qcCheckpointsRaw = get("--qc-checkpoints");
   const opts = {
     port: Number(get("--port", "3030")) || 3030,
     course: get("--course"),
@@ -105,10 +169,15 @@ if (isMain) {
     file: get("--file"),
     frames: get("--frames") ? get("--frames").split(",").map(Number).filter(Number.isFinite) : [],
     outDir: get("--out"),
+    checkLayout,
+    qcStrict,
+    ...(qcCheckpointsRaw
+      ? { qcCheckpoints: qcCheckpointsRaw.split(",").map(Number).filter(Number.isFinite) }
+      : {}),
   };
   const expectDuration = Number(get("--expect-duration", "NaN"));
   if (!opts.course || !opts.episode || !opts.file) {
-    console.log("Usage: node engine/hyperframes/verify_video.mjs --course <C> --episode <EP> --file <name.mp4> [--port 3030] [--frames 1.5,20] [--expect-duration 49]");
+    console.log("Usage: node engine/hyperframes/verify_video.mjs --course <C> --episode <EP> --file <name.mp4> [--port 3030] [--frames 1.5,20] [--expect-duration 49] [--check-layout] [--qc-strict]");
     process.exit(1);
   }
   verifyEpisodeVideo(opts)
@@ -121,6 +190,9 @@ if (isMain) {
       }
       if (!res.audio || res.audio.error) problems.push(`audio not decodable: ${res.audio?.error}`);
       else if (!(res.audio.rms > 1e-4)) problems.push("audio track is silent");
+      if (opts.qcStrict && res.layout_qc && res.layout_qc.error_count > 0) {
+        problems.push(`layout QC failed with ${res.layout_qc.error_count} error(s)`);
+      }
       if (problems.length) {
         console.error(`[verify_video] FAIL: ${problems.join("; ")}`);
         process.exitCode = 1;

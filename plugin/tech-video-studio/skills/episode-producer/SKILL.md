@@ -61,13 +61,29 @@ Write `{{WORKSPACE_ROOT}}/<COURSE_CODE>/episodes/<ep-slug>/script.json` matching
 - `"setup"` (`Phần 3: Thực hành Setup & Code`)
 - `"exam_tips"` (`Phần 4: Bẫy đề thi & Thực chiến`)
 
-### Optional V2 Motion & Sync Fields (`script.json`)
+### Optional V2 Motion, Phase 2 Visual/Audio & Dual-Text Fields (`script.json`)
 - `scene.highlight_words` (`string[]`): optional extra keywords accented in V2 box-free subtitles alongside default core keywords.
+- `scene.visual_job` (`"Proof" | "Mechanism" | "Consequence" | "Action" | "Transition"`): optional editorial job badge rendered as `SharpTag` in the HyperFrames topbar.
+- `scene.world_theme` (`"dark" | "light"`): optional dark/light stage background and palette grammar (`"dark"` by default).
+- `scene.causal_mechanic` (`"blur-materialize" | "wire-draw" | "arc-emission" | "width-push" | "squash-drop" | "typographic-strike"`): optional deterministic entrance style (rotate across consecutive scenes for visual variety).
+- `scene.sfx_cues` (`Array<{ type: "whoosh_short"|"pop"|"click"|"typing_fast"|"impact"|"chime", progress?: 0..1, time_sec?: number, frame_offset?: number, volume?: number }>`): optional explicit SFX cues; when omitted, HyperFrames auto-derives up to 4 cues/scene with `-33ms` lead.
+- `bgm_file` (`string`, top-level `script.json` or episode metadata, + optional `bgm_volume`): optional relative path to looping background music bed (automatically vocal-carved at `1800Hz -6dB` and mixed at `-16 LUFS`).
+- `scene.tts_narration` (`string`): optional scene-level phonetic Vietnamese TTS string matching `scene.narration` sentences for Dual-Text TTS safety.
+- `scene.tts_beats` (`Array<{ beat_id?, display_text, tts_text? }>`): optional per-beat Dual-Text pairs separating exact subtitle/UI spelling (`display_text`) from phonetic TTS phrasing (`tts_text`).
 - `flow_step.camera_focus` (`{ x, y, zoom }`): optional explicit 16:9 camera rig pan/zoom (`x`/`y` in `0..100`, `zoom` in `1.0..1.25`) inside `architecture` `flow_steps`.
 - `cue_sentence` (`number`, 1-based) & `cue_text` (`string`): attach to every `flow_step`, `milestone`, `card`, `highlight_phase`, `comparison`, `row`, `terminal_command`, `quiz`, `callout`, `takeaway`, `chart`, and `alert_stamp` so `tts_pipeline.py` locks each component to the exact millisecond that sentence begins in real synthesized audio.
   - **Strict Narration-to-Visual Order:** Write `scene.narration` as crisp sentences in the **exact chronological order** of visual steps (`cue_sentence: 1`, `2`, `3`, ...), and never mention a later step's keywords prematurely in the opening sentence if you want keyword fallback to stay clean.
 - `highlight_phase.code_override` (`string[] | string`): optional updated code lines for `@shikijs/magic-move` smooth code morphing between phases in `code_cli`.
 - `highlight_phase.laser_scan` (`boolean | number[]`): optional red laser scanline sweep and danger emphasis for security vulnerability or error phases in `code_cli`.
+
+### Decoupled 3-Stage Scripting (`mode: "three_stage"`) & Dynamic Per-Role Routing
+- Alongside `"auto" | "two_pass" | "single_pass" | "storyboard_only"`, the Studio AI pipeline (`engine/ai/runner.mjs` & `queue_broker.mjs`) supports `mode: "three_stage"`:
+  1. **Stage 1 (`brief.json`):** Content Brief (`hook_angle`, `narrative_arc`, `teaching_beats`).
+  2. **Stage 2 (`dialogue.json` + `notes.md`):** Spoken Vietnamese beats (`display_text`, phonetic `tts_text`, `on_screen_fact`, `scene_group`).
+  3. **Optional Audio-Spine (`audio_spine.json`):** Synthesizes per-beat durations via `tts_pipeline.py --audio-spine <dialogue.json>` **ONLY** when `lock_audio_spine === true` (with `pause_after === "none"`) or explicitly requested by the user.
+  4. **Stage 3 (`script.json`):** Visual Director & Motion Compiler expands locked dialogue (+ optional `audio_spine.json`) into the 7 visual templates (`normalizeCompiledScript`) with targeted scene repair (`repairInvalidScenes`).
+- **Gates, Resume & Intermediate Review:** `pause_after: "none" | "brief" | "dialogue"` and `start_from: "brief" | "dialogue" | "visual"` let you pause/resume across stages; inspect or edit intermediate files in **`ScriptingStageModal`** (`GET /api/episodes/scripting-artifacts`, `POST /api/episodes/{brief,dialogue,audio-spine}`).
+- **Dynamic Per-Role Routing:** Built-in Studio runs route each role via exact backend keys **`outliner`**, **`brief_scriptwriter`**, **`visual_director`**, and **`repair`** (`POST /api/ai/preferences/routing`), configurable dynamically from **`RoleRoutingPanel`** (`BrandHealthGrid` / `AiScriptModal`) with zero hardcoded model defaults.
 
 ### Mandatory SVG Illustration Check (Before Authoring `architecture` Scenes)
 1. **Always check the rich SVG catalog first:** inspect `{{WORKSPACE_ROOT}}/engine/assets/svg/catalog.json` (or run `node "{{WORKSPACE_ROOT}}/engine/state_cli.mjs" svg-list` / inspect `available_svgs` from `studio_get_context`).
@@ -151,7 +167,11 @@ Write `{{WORKSPACE_ROOT}}/<COURSE_CODE>/episodes/<ep-slug>/script.json` matching
    ```
    *(Fix any reported errors before approving; built-in AI jobs in `runner.mjs` / `queue_broker.mjs` also support 2-Pass Storyboard->Compiler generation and targeted scene-level self-repair `repairInvalidScenes`.)*
 3. Preview the episode silently in **Storyboard Preview Mode** on `http://localhost:3030/?course=<COURSE_CODE>&ep=<ep-slug>&view=player` (available as soon as `script.json` exists, even without audio).
-4. **Automatic Audio & Sync (Do Not Leave Manual Timing to User):** Whenever the local TTS server (e.g. VieNeu-TTS at `127.0.0.1:8000`) is running, run `tts_pipeline.py` right after script approval so `subtitles[]` are built from real sentence audio durations and every visual step is locked via `cue_sentence` / `cue_text` automatically.
+4. **Strict Scripting vs. Production Separation (`auto_produce`):**
+   - Scripting in Conversation 2 MUST stop at `script_ready` (or at an intermediate gate `pause_after: "brief" | "dialogue"`) so the user can review `ScriptingStageModal` and **Storyboard Preview Mode** before committing to audio/video generation.
+   - **NEVER** auto-run full `tts_pipeline.py --episode ...` or `render_video.mjs` during scripting unless `auto_produce === true` (and **NEVER** when paused at `pause_after: "brief" | "dialogue"`).
+   - **Optional Audio-Spine Lock (`--audio-spine`):** Between Stage 2 (`dialogue.json`) and Stage 3 (`script.json`), run `{{PYTHON_BIN}} "{{WORKSPACE_ROOT}}/engine/tts_pipeline.py" --audio-spine "{{WORKSPACE_ROOT}}/<COURSE_CODE>/episodes/<ep-slug>/dialogue.json" --course "{{WORKSPACE_ROOT}}/<COURSE_CODE>/course.json" --json` **ONLY** when `lock_audio_spine === true` (with `pause_after === "none"`) or explicitly requested by the user.
+   - Keep `cue_sentence` and `cue_text` (plus optional `tts_beats` / `tts_narration`) accurate in `script.json`; full TTS synthesis and video rendering belong to **Conversation 3 (`video-renderer`)** or an explicit `auto_produce === true` run.
 5. If fixing tickets from the Revision Queue (`REV-XXX` with `scope: "script"` or `"visual"`), resolve each fixed ticket first, then approve scripting (`state_cli.mjs set --stage scripting --status completed` also runs `validateScriptDiagrams` automatically):
    ```powershell
    node "{{WORKSPACE_ROOT}}/engine/state_cli.mjs" resolve-revision --course <COURSE_CODE> --ep <ep-slug> --rev <REV_ID> --note "<what was fixed>"
@@ -171,4 +191,4 @@ node "{{WORKSPACE_ROOT}}/engine/state_cli.mjs" set --course <COURSE_CODE> --ep <
 ```
 *(Optional: pass `--profile <profile_id>` to test or override a specific voice profile.)*
 
-This writes `audio/<scene_id>.mp3` (or `.wav`) for every scene, writes `subtitles.srt`, and updates `script.json` with `tts_profile`, `tts_voice`, `tts_provider_used`, `tts_fallback_reason` (populated only if Edge TTS falls back to Google TTS, cleared when primary succeeds, and surfaced in `/api/courses`), `duration_sec`, `audio_file`, `subtitles`, and `total_duration_sec`. You can also trigger TTS + Render directly from the Studio Player UI (**`🎙️ Tạo Audio (TTS)`** / **`🎬 Tạo Audio & Render Video`**), or proceed to `video-renderer` (`render_video.mjs`) to generate and verify the final video.
+This writes `audio/<profile_id>/<scene_id>.mp3` (or `.wav`) for every scene, writes `subtitles.srt` + `subtitles.<profile_id>.srt`, preserves existing `voice_tracks` for instant A/B switching, aligns visual cues via Layer 1 (`_base_timings`), and updates `script.json` with `tts_profile`, `tts_voice`, `tts_provider_used`, `tts_fallback_reason` (populated only if Edge TTS falls back to Google TTS, cleared when primary succeeds, and surfaced in `/api/courses`), `duration_sec`, `audio_file`, `subtitles`, and `total_duration_sec`. You can also trigger TTS + Render directly from the Studio Player UI (**`🎙️ Tạo Audio (TTS)`** / **`🎬 Xuất Video ▾`**), or proceed to `video-renderer` (`render_video.mjs`) to generate and verify the final video.

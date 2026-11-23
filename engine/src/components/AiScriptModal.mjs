@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { BrandHealthGrid, isProviderReady } from "./ai/BrandHealthGrid.mjs";
+import { RoleRoutingPanel } from "./ai/RoleRoutingPanel.mjs";
 
 const h = React.createElement;
 
@@ -572,6 +573,7 @@ export function AiScriptModal({
           previousBrokenProviderId,
           disabled: busy || manualBusy,
           compact: true,
+          showRoleRouting: false,
           onSelectProvider: (pid, modelId) => {
             setSelectedProviderId(pid);
             setSelectedModel(modelId || "");
@@ -876,6 +878,23 @@ export function AiScriptModal({
                       )
                     )
                   )
+                : null,
+              generationMode === "three_stage"
+                ? h(RoleRoutingPanel, {
+                    providersData: effectiveProvidersData,
+                    disabled: busy || manualBusy,
+                    compact: true,
+                    defaultExpanded: false,
+                    onRoutingSaved: (nextRouting) => {
+                      const base =
+                        effectiveProvidersData && typeof effectiveProvidersData === "object"
+                          ? effectiveProvidersData
+                          : {};
+                      const nextData = { ...base, pipeline_routing: nextRouting };
+                      setLocalProvidersData(nextData);
+                      onProvidersLoaded && onProvidersLoaded(nextData);
+                    },
+                  })
                 : null
             )
           : null,
