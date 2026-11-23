@@ -52,6 +52,7 @@ export async function renderEpisodeHyperframes(opts, { log = console.log, isCanc
     qcStrict = false,
     qcCheckpoints = DEFAULT_QC_CHECKPOINTS,
   } = opts;
+  const partId = String(opts.partId || opts.part || "").trim();
 
   const width = RESOLUTION_WIDTHS[resolution] || 1920;
   const scale = width / 1920;
@@ -66,9 +67,11 @@ export async function renderEpisodeHyperframes(opts, { log = console.log, isCanc
   try {
     server = await ensureStudioServer(port, { log, workspaceRoot });
     checkCancel();
-    const episode = await fetchEpisodePayload(port, course, episodeId);
-    log(`[render] 1% Compiling HyperFrames composition (${episode.script.scenes.length} scenes, speed ${speed}x)...`);
-    const { manifest, projectDir } = await compileEpisodeProject({ workspaceRoot, courseId: course, episode, speed });
+    const episode = await fetchEpisodePayload(port, course, episodeId, partId);
+    log(`[render] 1% Compiling HyperFrames composition (${episode.script.scenes.length} scenes, speed ${speed}x${partId ? `, part ${partId}` : ""})...`);
+    const compileOpts = { workspaceRoot, courseId: course, episode, speed };
+    if (partId) compileOpts.partId = partId;
+    const { manifest, projectDir } = await compileEpisodeProject(compileOpts);
     const totalFrames = Math.max(1, Math.ceil(manifest.total_duration * fps - 1e-6));
     const workers = Math.max(1, Math.min(8, Number(opts.workers) || defaultWorkerCount(totalFrames)));
     log(
@@ -91,7 +94,7 @@ export async function renderEpisodeHyperframes(opts, { log = console.log, isCanc
       await sleep(100);
     }
     const audio = (manifest.audio || []).map((a) => ({
-      url: projectUrl(port, course, episodeId, a.src),
+      url: projectUrl(port, course, episodeId, a.src, partId),
       start: a.start,
       duration: a.duration,
       media_start: a.media_start,
@@ -99,14 +102,14 @@ export async function renderEpisodeHyperframes(opts, { log = console.log, isCanc
       playback_rate: a.playback_rate,
     }));
     const sfx = (manifest.sfx || []).map((s) => ({
-      url: projectUrl(port, course, episodeId, s.src),
+      url: projectUrl(port, course, episodeId, s.src, partId),
       start: s.start,
       volume: s.volume,
       type: s.type,
     }));
     const bgm = manifest.bgm?.src
       ? {
-          url: projectUrl(port, course, episodeId, manifest.bgm.src),
+          url: projectUrl(port, course, episodeId, manifest.bgm.src, partId),
           volume: manifest.bgm.volume,
           carve_hz: manifest.bgm.carve_hz,
           carve_db: manifest.bgm.carve_db,
@@ -115,6 +118,7 @@ export async function renderEpisodeHyperframes(opts, { log = console.log, isCanc
     const encoderConfig = {
       courseId: course,
       episodeId,
+      ...(partId ? { partId } : {}),
       format,
       codec,
       hardware,
@@ -130,8 +134,9 @@ export async function renderEpisodeHyperframes(opts, { log = console.log, isCanc
       outputFilename: output || "",
     };
     log(`[render] 3% Preparing WebCodecs encoder + mixing ${audio.length} narration clip(s) + ${sfx.length} SFX cue(s)...`);
+    const initTimeoutMs = Math.max(180_000, Math.round(encoderConfig.totalDuration * 1000));
     const profile = await evaluate(cdp, enc.sessionId, `window.__TVS_HF_ENCODER__.init(${JSON.stringify(encoderConfig)})`, {
-      timeoutMs: 180_000,
+      timeoutMs: initTimeoutMs,
     });
     const lufsNote = profile.loudness ? ` [${profile.loudness.outputLufs} LUFS]` : "";
     log(
@@ -146,7 +151,7 @@ export async function renderEpisodeHyperframes(opts, { log = console.log, isCanc
     if (!encoderObjectId) throw new Error("Encoder object not available");
 
     // ---- Worker tabs -------------------------------------------------------------------------
-    const url = projectUrl(port, course, episodeId);
+    const url = projectUrl(port, course, episodeId, "index.html", partId);
     const bridge = buildRenderBridgeScript({ fps });
     const workerPages = await Promise.all(
       Array.from({ length: workers }, async (_, k) => {
@@ -301,7 +306,8 @@ export async function renderEpisodeHyperframes(opts, { log = console.log, isCanc
     checkCancel();
 
     log(`[render] 96% Flushing encoders & muxing...`);
-    const result = await evaluate(cdp, enc.sessionId, "window.__TVS_HF_ENCODER__.finish()", { timeoutMs: 300_000 });
+    const finishTimeoutMs = Math.max(300_000, Math.round(encoderConfig.totalDuration * 1200));
+    const result = await evaluate(cdp, enc.sessionId, "window.__TVS_HF_ENCODER__.finish()", { timeoutMs: finishTimeoutMs });
     log(`[render] 99% Saved ${result.savedFile} (${(result.bytes / 1024 / 1024).toFixed(2)} MB)`);
     return { ...result, browserErrors, projectDir, manifest, workers, layoutQc };
   } finally {

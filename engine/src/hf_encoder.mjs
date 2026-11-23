@@ -17,7 +17,7 @@ import {
   resolveWebCodecsProfile,
   saveVideoToServer,
   timeStretchAudioBuffer,
-} from "./exporter.mjs";
+} from "./video_encode_utils.mjs";
 import { measureIntegratedLufs, normalizeLoudnessAndLimit } from "./audio_dsp.mjs";
 
 const SR = EXPORT_AUDIO_SAMPLE_RATE;
@@ -223,7 +223,7 @@ async function init(config) {
     speed: config.speed,
   });
   if (!profile) {
-    throw new Error("WebCodecs (VideoEncoder/AudioEncoder) không khả dụng trong Chrome này. Dùng --engine legacy.");
+    throw new Error("WebCodecs (VideoEncoder/AudioEncoder) is unavailable in this Chrome build.");
   }
   const Muxer = await loadMuxerModule(profile.format);
   const target = new Muxer.ArrayBufferTarget();
@@ -235,8 +235,10 @@ async function init(config) {
   };
   const muxer = new Muxer.Muxer(profile.format === "mp4" ? { ...common, fastStart: "in-memory" } : common);
 
+  const partId = String(config.partId || config.part_id || "").trim();
   S = {
     config,
+    partId,
     profile,
     muxer,
     target,
@@ -329,11 +331,11 @@ async function finish() {
   S.videoEncoder.close();
   S.audioEncoder.close();
   S.muxer.finalize();
-  const { profile, config, mix } = S;
+  const { profile, config, mix, partId } = S;
   const blob = new Blob([S.target.buffer], { type: profile.mimeType });
-  const filename = resolveOutputFilename(config.outputFilename, config.episodeId, profile.ext);
-  log(`muxed ${S.nextIndex} frames → ${(blob.size / 1024 / 1024).toFixed(2)} MB, saving ${filename}`);
-  const saved = await saveVideoToServer(config.courseId, config.episodeId, profile.ext, blob, profile.mimeType, filename);
+  const filename = resolveOutputFilename(config.outputFilename, partId || config.episodeId, profile.ext);
+  log(`muxed ${S.nextIndex} frames → ${(blob.size / 1024 / 1024).toFixed(2)} MB, saving ${filename}${partId ? ` (part ${partId})` : ""}`);
+  const saved = await saveVideoToServer(config.courseId, config.episodeId, profile.ext, blob, profile.mimeType, filename, partId);
   const result = {
     ok: true,
     path: saved?.path || "",

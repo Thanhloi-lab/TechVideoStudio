@@ -53,8 +53,62 @@ export async function ensureStudioServer(port, { log = console.log, workspaceRoo
   throw new Error(`Timed out waiting for temporary server.mjs on port ${port}`);
 }
 
-/** Fetch the normalized episode payload (as the Studio player sees it). */
-export async function fetchEpisodePayload(port, courseId, episodeId) {
+/** Fetch the normalized episode (or single part) payload as the Studio player sees it. */
+export async function fetchEpisodePayload(port, courseId, episodeId, partId = "") {
+  const cleanPartId = String(partId || "").trim();
+  if (cleanPartId) {
+    const partUrl = `http://127.0.0.1:${port}/api/episodes/part?course=${encodeURIComponent(courseId)}&episode=${encodeURIComponent(episodeId)}&part=${encodeURIComponent(cleanPartId)}`;
+    try {
+      const partData = await httpGetJson(partUrl, 15_000);
+      if (partData?.ok === false) {
+        throw new Error(partData.error || `Part not found: ${courseId}/${episodeId}/${cleanPartId}`);
+      }
+      const script = partData?.script || partData?.episode?.script || null;
+      if (!script?.scenes?.length) {
+        throw new Error(`Part ${courseId}/${episodeId}/${cleanPartId} has no valid script.json scenes`);
+      }
+      const baseEp = partData?.episode && typeof partData.episode === "object" ? partData.episode : {};
+      return {
+        ...baseEp,
+        id: baseEp.id || episodeId,
+        part_id: partData?.part_id || cleanPartId,
+        base_url:
+          baseEp.base_url ||
+          `/courses/${encodeURIComponent(courseId)}/episodes/${encodeURIComponent(episodeId)}/parts/${encodeURIComponent(cleanPartId)}`,
+        script,
+      };
+    } catch (err) {
+      if (!String(err?.message || "").includes("HTTP 404")) {
+        throw err;
+      }
+      // Fallback when /api/episodes/part is not mounted yet: fetch static part script.json + parent episode metadata.
+      const staticScriptUrl = `http://127.0.0.1:${port}/courses/${encodeURIComponent(courseId)}/episodes/${encodeURIComponent(episodeId)}/parts/${encodeURIComponent(cleanPartId)}/script.json`;
+      const partScript = await httpGetJson(staticScriptUrl, 15_000);
+      if (!partScript?.scenes?.length) {
+        throw new Error(`Part ${courseId}/${episodeId}/${cleanPartId} has no valid script.json scenes`);
+      }
+      let parentMeta = {};
+      try {
+        const coursesData = await httpGetJson(`http://127.0.0.1:${port}/api/courses`, 15_000);
+        const course = (coursesData.courses || []).find((c) => c.id === courseId);
+        const ep = (course?.episodes || []).find((e) => e.id === episodeId);
+        if (ep) {
+          const { script: _ignoredScript, ...rest } = ep;
+          parentMeta = rest;
+        }
+      } catch {
+        // Parent metadata lookup is best-effort for fallback
+      }
+      return {
+        ...parentMeta,
+        id: episodeId,
+        part_id: cleanPartId,
+        base_url: `/courses/${encodeURIComponent(courseId)}/episodes/${encodeURIComponent(episodeId)}/parts/${encodeURIComponent(cleanPartId)}`,
+        script: partScript,
+      };
+    }
+  }
+
   const data = await httpGetJson(`http://127.0.0.1:${port}/api/courses`, 15_000);
   const course = (data.courses || []).find((c) => c.id === courseId);
   if (!course) throw new Error(`Course not found: ${courseId}`);
@@ -64,6 +118,11 @@ export async function fetchEpisodePayload(port, courseId, episodeId) {
   return episode;
 }
 
-export function projectUrl(port, courseId, episodeId, file = "index.html") {
-  return `http://127.0.0.1:${port}/courses/${encodeURIComponent(courseId)}/episodes/${encodeURIComponent(episodeId)}/hyperframes/${file}`;
+export function projectUrl(port, courseId, episodeId, file = "index.html", partId = "") {
+  const cleanFile = String(file || "index.html").replace(/^\/+/, "");
+  const cleanPartId = String(partId || "").trim();
+  const base = cleanPartId
+    ? `http://127.0.0.1:${port}/courses/${encodeURIComponent(courseId)}/episodes/${encodeURIComponent(episodeId)}/parts/${encodeURIComponent(cleanPartId)}/hyperframes`
+    : `http://127.0.0.1:${port}/courses/${encodeURIComponent(courseId)}/episodes/${encodeURIComponent(episodeId)}/hyperframes`;
+  return `${base}/${cleanFile}`;
 }
