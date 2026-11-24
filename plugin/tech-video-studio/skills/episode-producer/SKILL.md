@@ -15,6 +15,24 @@ Use this skill to author or revise deep-dive multi-part episode scripts (`brief.
 
 ---
 
+## Automatic Orchestrator + Subagent Wave Mode (No `/teamwork` Required)
+
+When the user asks to author or revise episodes in a normal conversation (even right after designing a 10–30 episode curriculum in the same chat), **automatically act as a lightweight Orchestrator** so the main conversation never overflows its context window:
+
+1. **Delegate 1 Episode = 1 Dedicated Subagent (Waves of 3–5):**
+   - For any request covering multiple episodes — or a deep-dive episode after curriculum design — spawn 1 `self` subagent per episode (up to **3–5 in parallel** per wave, `Workspace: "inherit"` since each episode writes to its own isolated `episodes/<ep-id>/` and `state/<ep-id>.json`).
+   - Give each subagent a self-contained brief naming `<COURSE_CODE>`, `<ep-slug>`, exact artifact paths, and instructions to follow Steps 0–4 below (including spawning its own fresh `content-reviewer` subagent and running `validate-diagrams`).
+   - **Strict Summary-Only Handoff:** Instruct every episode subagent to write all artifacts (`brief.json`, `parts/*`, `script.json`, `notes.md`) directly to disk and reply to the Orchestrator with **ONLY a 5–10 line status summary** (episode ID, parts count, reviewer verdict, `validate-diagrams` result, file paths) — NEVER paste raw JSON or full scripts into the reply.
+2. **Track & Reuse the Exact Same Subagent for Revisions (`send_message`):**
+   - Remember the mapping `<ep-slug> -> subagent conversationId` for every subagent spawned in the current conversation.
+   - If the user asks to **revise or refine an episode** that was authored earlier in this conversation (e.g., *"Sửa lại phần 2 của bài 1"*):
+     - **DO NOT spawn a brand-new subagent** if that episode's subagent `conversationId` is still attached to the current conversation (even if paused/idle or stopped after a server restart — `send_message` automatically revives it with its full prior context intact!).
+     - Call `send_message(Recipient: <ep_subagent_id>, Message: "<exact revision request>")` so the original author subagent edits the files with full context, re-runs `content-reviewer` + `validate-diagrams`, and reports a concise summary back.
+   - Only spawn a fresh subagent (reading existing files from disk + `state_cli.mjs revisions`) if the episode was authored in a *different* earlier conversation or its subagent was explicitly killed.
+   - Leave completed episode subagents idle (do NOT kill them prematurely) so follow-up edits in the same conversation can reuse them at zero idle cost.
+
+---
+
 ## Step 0: State Discovery, Revision Queue & Wave Claiming (Conv 2)
 
 Discover live progress and open revision tickets first, then claim a batch wave of **3–5 episodes**:
@@ -167,7 +185,7 @@ Preserve the locked spoken wording verbatim (`scene.narration` = joined `display
 
 3. **`"code_cli"` (`TerminalAndCode`)**:
    - `layout?` (`"split" | "code" | "terminal"`), `code_title?`, `code_language?` (`json | python | yaml | bash | ...`), `code_lines?: string[]` (<= 18 lines).
-   - `highlight_phases`: `[{ progress_start, progress_end, lines: number[], callout?, annotate_text?, code_override?: string[]|string, laser_scan?: boolean|number[], accent?, cue_sentence?, cue_text? }]`.
+   - `highlight_phases`: `[{ progress_start, progress_end, lines: number[], callout?, annotate_text?, code_override?: string[]|string, accent?, cue_sentence?, cue_text? }]`.
    - `terminal_title?`, `terminal_commands`: `[{ progress_start, command, output_lines?, is_error?, cue_sentence?, cue_text? }]`.
 
 4. **`"exam_tips"` (`ExamTipCard`)**:

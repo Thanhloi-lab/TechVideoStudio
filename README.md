@@ -47,7 +47,7 @@ Hỗ trợ **9 kênh AI** ngay trong Web Studio (`BrandHealthGrid`) thông qua `
 
 ### 1.3. 11 Visual Templates, Visual Variety Guard & Bộ máy Motion V2
 Giao diện trình chiếu (`engine/src/components/` + `engine/src/motion/kernel.mjs` + HyperFrames DOM/GSAP) hỗ trợ **11 mẫu cảnh đối xứng** tỷ lệ 16:9 (xem [`engine/VISUAL_COMPONENTS.md`](engine/VISUAL_COMPONENTS.md) & `engine/src/template_schema.mjs`):
-- **7 mẫu nền tảng:** `architecture` (`zones[]` tối đa 2 cấp, kho SVG `engine/assets/svg/`, `layout_mode: "auto"`, `camera_focus`), `console_setup`, `code_cli` (Shiki Magic Move `code_override` + `laser_scan`), `exam_tips`, `comparison_matrix`, `timeline_flow`, `kpi_metrics`.
+- **7 mẫu nền tảng:** `architecture` (`zones[]` tối đa 2 cấp, kho SVG `engine/assets/svg/`, `layout_mode: "auto"`, `camera_focus`), `console_setup`, `code_cli` (Shiki Magic Move `code_override` + `accent: "danger"`), `exam_tips`, `comparison_matrix`, `timeline_flow`, `kpi_metrics`.
 - **4 mẫu chuyên sâu mới (Deep-Dive):**
   - **`sequence_diagram`**: Trục thời gian gọi hàm / giao thức / RPC / auth giữa `actors[]`, `messages[]`, `highlights[]`.
   - **`memory_layout`**: Trực quan hóa bộ nhớ, stack/heap, buffer, B-tree page với `lanes[]` (`cells[]`) & `steps[]` (`highlight_cells`, `pointers`).
@@ -86,28 +86,37 @@ Khởi chạy qua `engine/server.mjs` và đồng bộ real-time bằng Server-S
 
 ---
 
-## 3. Cài đặt (Setup) sau khi Clone / Pull hoặc qua `npx`
-
-### Cách nhanh nhất trên máy mới (Không cần `git clone`) — `npx`
+## 3. Cài đặt (Setup) & Khởi chạy qua `npx` (Khuyên dùng — Không cần `git clone`)
 
 ```powershell
-# Chạy trực tiếp từ GitHub (hoặc `npx tech-video-studio` nếu đã publish npm)
+# 1) Cài đặt tương tác trên máy mới:
+#    - Tự kiểm tra & hỗ trợ cài thiếu Python / Chrome (winget / brew / apt)
+#    - Tự cài trọn gói VieNeu-TTS v3 Turbo (ONNX, không Docker, cổng 8000) vào ~/.tech-video-studio/vieneu-tts
+#    - Chỉ hiện đúng các AI Agent đang có trên máy để bạn chọn cài plugin & 6 skills
 npx github:Thanhloi-lab/TechVideoStudio
 
-# Chỉ kiểm tra dependencies & danh sách AI Agent hiện có trên máy
-npx github:Thanhloi-lab/TechVideoStudio check
+# 2) Cài tự động không cần hỏi (cài luôn thiếu Python/Chrome + VieNeu-TTS + toàn bộ AI Agent phát hiện được)
+npx github:Thanhloi-lab/TechVideoStudio setup --install-deps --with-vieneu --yes
 
-# Tự động cài thêm Python / Chrome nếu máy chưa có và chọn toàn bộ Agent phát hiện được
-npx github:Thanhloi-lab/TechVideoStudio setup --install-deps --yes
-
-# Mở Web Studio UI tùy chọn (cổng 3030 — không bắt buộc khi tạo lộ trình/kịch bản/render video)
+# 3) Khởi chạy ĐỒNG THỜI Web Studio (port 3030) + VieNeu-TTS (port 8000) chỉ bằng 1 lệnh
 npx github:Thanhloi-lab/TechVideoStudio studio
+
+# (Tùy chọn) Chỉ bật Web Studio port 3030 (không bật VieNeu port 8000):
+npx github:Thanhloi-lab/TechVideoStudio studio --no-tts
+
+# (Tùy chọn) Tự cài nếu thiếu rồi bật riêng VieNeu-TTS port 8000:
+npx github:Thanhloi-lab/TechVideoStudio tts
+
+# (Tùy chọn) Chỉ quét kiểm tra Node/Python/Chrome, VieNeu-TTS & AI Agent có trên máy (không ghi file):
+npx github:Thanhloi-lab/TechVideoStudio check
 ```
 
-- CLI tự động quét các AI Agent phổ biến trên máy (cả bản **App/IDE** lẫn **CLI**: Antigravity App, Antigravity CLI `agy`, Claude Desktop, Claude Code CLI, Codex App/CLI, Gemini CLI, Cursor, Windsurf, VS Code + Copilot, OpenCode CLI) và **chỉ hiển thị đúng những Agent đang tồn tại trên máy** để bạn chọn cài đặt.
-- Khi chạy qua `npx`, runtime `engine/` + `plugin/` sẽ được đồng bộ bền vững vào `~/.tech-video-studio` (hoặc `--install-dir <dir>`), đồng thời kiểm tra & hỗ trợ cài tự động **Python `>= 3.10`** và **Google Chrome** qua `winget` / `brew` / `apt` / `dnf`.
+- **Đóng gói trọn bộ VieNeu-TTS (Không cần tự tìm/pull repo ngoài):** CLI tự động cài `uv` (nếu thiếu), tải & `uv sync` bộ **VieNeu-TTS v3 Turbo** (`ONNX Runtime`, `torch-free`, chạy mượt cả CPU/AMD/Apple Silicon, hoặc thêm `--cuda` nếu dùng GPU NVIDIA) vào `~/.tech-video-studio/vieneu-tts` (hoặc tái sử dụng `D:\VieNeu-TTS` / biến môi trường `VIENEU_DIR` nếu máy đã có sẵn). Khi chạy `studio`, cả cổng **`3030`** và **`8000`** được bật và tắt đồng bộ bằng `Ctrl+C`.
+- **Chọn AI Agent thông minh:** CLI tự quét 11 AI Agent phổ biến (cả bản **App/IDE** lẫn **CLI**: Antigravity App, Antigravity CLI `agy`, Claude Desktop, Claude Code CLI, Codex App/CLI, Gemini CLI, Cursor, Windsurf, VS Code + Copilot, OpenCode CLI) và **chỉ hiển thị đúng những Agent đang tồn tại trên máy** để bạn chọn.
+- **Lưu runtime bền vững:** Khi chạy qua `npx`, `engine/` + `plugin/` được đồng bộ sang `~/.tech-video-studio` (hoặc `--install-dir <dir>`) để đường dẫn MCP & 6 skills luôn ổn định.
+- **Lưu ý về cổng `3030`:** Bạn **không cần** bật sẵn cổng `3030` khi tạo lộ trình, biên kịch, chạy TTS hay render video qua Agent (`render_video.mjs` tự bật tạm và tự tắt server). Chỉ cần chạy lệnh `studio` khi muốn mở giao diện Web UI trên trình duyệt.
 
-### Bước 1: Clone repository về máy (nếu muốn phát triển trực tiếp)
+### Cách khác: Clone repository về máy (nếu muốn phát triển trực tiếp)
 
 ```powershell
 git clone git@github.com:Thanhloi-lab/TechVideoStudio.git

@@ -1394,7 +1394,7 @@ export function buildVisualDirectionPrompt({
     "   - Alternate `world_theme` (`\"dark\"` vs `\"light\"`) cleanly across consecutive scenes.",
     `5. Local SVG Assets ONLY: When using \`node.svg\` in \`architecture\`, pick strictly from: [${svgListStr}]. Always include fallback \`node.icon\`.`,
     `6. Motion Variety & Anti-Static (>3.5s rule): Rotate \`causal_mechanic\` (${CAUSAL_MECHANICS.map((m) => `\`${m}\``).join(", ")}) across consecutive scenes. Populate \`cue_sentence\` (1-based) and \`cue_text\` on every step/message/focus_step/branch/phase/milestone/card/row.`,
-    '7. Optional Visual Fields: Set `sfx_cues` (`[{ progress, type: "whoosh_short"|"pop"|"click"|"typing_fast"|"impact"|"chime" }]`), `camera_focus`, `code_override`, and `laser_scan` where helpful.',
+    '7. Optional Visual Fields: Set `sfx_cues` (`[{ progress, type: "whoosh_short"|"pop"|"click"|"typing_fast"|"impact"|"chime" }]`), `camera_focus`, and `code_override` where helpful.',
     "",
     schemaSpec,
     ...(hasAllElevenInSchema ? [] : ["", "   Additional Deep-Dive Templates (SSOT Contract):", EXTRA_FOUR_TEMPLATES_SPEC]),

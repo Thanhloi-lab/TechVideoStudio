@@ -34,6 +34,7 @@ engine/.ai_credentials.json
 engine/.ai_preferences.json
 .venv/
 .xpu_venv/
+vieneu-tts/
 node_modules/
 .vscode/
 .idea/

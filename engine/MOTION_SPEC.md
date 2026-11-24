@@ -112,8 +112,8 @@ Quan sát chi tiết ở cả 2 video (`V1 12s–26s, 81s–87s`, `V2 49s–56s,
 
 1. **Gõ phím & Lọc danh sách Live (`V1 12s–26s`):**
    - Khung search bo góc đậm chất macOS/Raycast, gõ dần từng nhóm ký tự (`M → Ma → Mar → Mario` / `firmware` / `MCP`), danh sách và bộ đếm số lượng kết quả phía dưới cập nhật ngay theo chuỗi gõ.
-2. **Thanh Quét Laser & Tem Cảnh báo (`V1 81s–87s`):**
-   - Trên pill mã nguồn `firmware.bin` / `API_KEY=sk-live-9f2a...`, một **thanh dọc đỏ phát sáng (`laser scanline`)** quét tuần tự từ trái sang phải qua chuỗi secret key, sau đó tem `"ĐỔI KEY NGAY!"` dập xuống góc trên phải bằng spring.
+2. **Nhấn mạnh Dòng Rủi ro & Tem Cảnh báo (`V1 81s–87s`):**
+   - Trên pill mã nguồn `firmware.bin` / `API_KEY=sk-live-9f2a...`, highlight dòng rủi ro bằng `accent: "danger"` (đã loại bỏ hiệu ứng thanh dọc đỏ quét ngang `laser_scan`), sau đó tem `"ĐỔI KEY NGAY!"` dập xuống góc trên phải bằng spring.
 3. **Tương phản Hai Dòng An toàn vs Nguy hiểm (`V2 104s–109s`):**
    - Xếp chồng sát nhau 2 pill code ngắn cùng cấu trúc để so sánh trực diện:
      - Dòng an toàn: viền xanh ngọc, icon khóa `🔒`, giá trị che mờ `sk-•••••••••••••`.
@@ -202,7 +202,7 @@ Tất cả các thư viện dưới đây đều đã xác minh phục vụ ESM 
 | **`animejs@4.5.0`** | `createTimeline({ autoplay: false })`, `createDrawable`, `createMotionPath`, `createSpring`, `stagger`, `scrambleText` | **Đường nối Sơ đồ, Gói tin & Spring Đóng dấu:** Vẽ đường cong Bézier (`createDrawable` thay `<line>` tĩnh), cho gói tin chạy mượt kèm easing dọc đường cong (`createMotionPath`), kích hoạt vật lý `createSpring` cho tem cảnh báo/Exam card và hiệu ứng số nhảy KPI (`utils.round` / text scramble). |
 | **`motion@14.14.0`** | `<AnimatePresence>`, `motion.div`, `animate()` | **Chuyển trạng thái UI & Micro-interaction trong Studio:** Xử lý morph/layout card (`layoutId`), chuyển tab / chọn đáp án quiz (`ExamTipCard.mjs`), hover & spotlight focus card nổi khối Z. |
 | **`rough-notation@0.5.1`** | `annotate()`, `annotationGroup()` | **Ghi chú Thủ công Đồng bộ Giọng nói:** Khoanh `box`, gạch `underline`, tô `highlight`, đóng ngoặc `bracket` bằng nét vẽ tay SVG lên tiêu đề cảnh, trường console quan trọng, hoặc đáp án đúng/bẫy sai trong `ExamTipCard`. |
-| **`@shikijs/magic-move@4.6.0` + `shiki`** | `codeToKeyedTokens()`, `createMagicMoveMachine()`, `MagicMoveRenderer` | **Highlight & Morph Code Từng Token:** Thay thế danh sách text đơn sắc của `TerminalAndCode.mjs` bằng syntax highlight chuẩn VS Code (JSON/YAML/Bash/Python) + chuyển pha `highlight_phases` có token bay/morph mượt, kết hợp spotlight sáng dòng + laser scan qua secret/API key. |
+| **`@shikijs/magic-move@4.6.0` + `shiki`** | `codeToKeyedTokens()`, `createMagicMoveMachine()`, `MagicMoveRenderer` | **Highlight & Morph Code Từng Token:** Thay thế danh sách text đơn sắc của `TerminalAndCode.mjs` bằng syntax highlight chuẩn VS Code (JSON/YAML/Bash/Python) + chuyển pha `highlight_phases` có token bay/morph mượt, kết hợp spotlight sáng dòng (`accent: "danger"` cho dòng rủi ro). |
 
 ---
 
@@ -227,7 +227,7 @@ Tất cả các thư viện dưới đây đều đã xác minh phục vụ ESM 
 #### D. Nâng cấp `TerminalAndCode.mjs`
 - Dùng `shiki` + `@shikijs/magic-move/renderer` (`MagicMoveRenderer`) cho phần code JSON/YAML/IaC:
   - Cho phép `highlight_phases` truyền thêm `code_override` (tùy chọn) để morph trực tiếp ví dụ `"Effect": "Allow"` sang `"Deny"` hoặc mở rộng thêm block `"Condition"` bằng animation token FLIP mượt.
-  - Dòng không nằm trong `activePhase.lines` giảm `opacity: 0.35, filter: blur(0.6px)`; dòng đang active gắn thanh chỉ thị trái phát sáng + tùy chọn `laser_scan: true` quét qua dòng nhạy cảm (vd hardcoded `AWS_SECRET_ACCESS_KEY`).
+  - Dòng không nằm trong `activePhase.lines` giảm `opacity: 0.35, filter: blur(0.6px)`; dòng đang active gắn thanh chỉ thị trái phát sáng + tùy chọn `accent: "danger"` tô đỏ dòng nhạy cảm (vd hardcoded `AWS_SECRET_ACCESS_KEY`).
 - Terminal CLI nâng cấp: giữ typing mượt theo `progress`, thêm con trỏ khối `#10c0f0` nhấp nháy chu kỳ `450 ms`, kết quả output trượt lên nhẹ từng dòng (`stagger 40 ms`, `translateY: 6px → 0`).
 
 #### E. Nâng cấp `ExamTipCard.mjs` & Hệ thống Phụ đề
@@ -308,7 +308,7 @@ export const MOTION_TOKENS = {
 |---|---|---|---|---|
 | `"architecture"` | `ArchitectureDiagram` | `drawArchitectureScene` | Node/Zone/Edge collision check | Kiến trúc mạng/cloud có zones & gói tin Bézier |
 | `"console_setup"` | `CleanConsoleMockup` | `drawConsoleScene` | Schema cơ bản | Mô phỏng giao diện Console Cloud & Spotlight field |
-| `"code_cli"` | `TerminalAndCode` | `drawCodeCliScene` | Schema cơ bản | Highlight code Shiki Magic Move + Terminal + Laser Scan |
+| `"code_cli"` | `TerminalAndCode` | `drawCodeCliScene` | Schema cơ bản | Highlight code Shiki Magic Move + Terminal + Danger Highlight |
 | `"exam_tips"` | `ExamTipCard` | `drawExamScene` | Schema cơ bản | So sánh bẫy thi vs Best Practice + Quiz đóng dấu spring |
 | `"comparison_matrix"` | `ComparisonMatrix` | `drawComparisonMatrixScene` | `2..4` columns, `1..6` rows | Bảng so sánh nhiều phương án, blur-to-sharp từng hàng + `takeaway` |
 | `"timeline_flow"` | `TimelineFlow` | `drawTimelineFlowScene` | `2..6` milestones, `horizontal`/`vertical` | Chuỗi bước / vòng đời giao thức với thanh tiến độ cyan & `callout` |

@@ -6,9 +6,22 @@ A portable Antigravity plugin and pure-Node/Python Web Studio for building compl
 
 ---
 
-## Single Source of Truth Installation (`setup.mjs`)
+## Single Source of Truth Installation (`npx` or `setup.mjs`)
 
-Run from the root of your cloned repository (`plugin/tech-video-studio/` + `AGENTS.md` are the SSOT):
+Install on any machine without manual `git clone` (auto-detects locally installed AI Agents, optionally installs Python/Chrome & bundled **VieNeu-TTS v3 Turbo** on port `8000` without Docker):
+
+```powershell
+# Interactive setup (detected AI agents + optional Python/Chrome + bundled VieNeu-TTS)
+npx github:Thanhloi-lab/TechVideoStudio
+
+# Non-interactive full setup (including VieNeu-TTS v3 Turbo ONNX on port 8000)
+npx github:Thanhloi-lab/TechVideoStudio setup --install-deps --with-vieneu --yes
+
+# Start Web Studio (port 3030) + VieNeu-TTS (port 8000) together
+npx github:Thanhloi-lab/TechVideoStudio studio
+```
+
+Or run from the root of your cloned repository (`plugin/tech-video-studio/` + `AGENTS.md` are the SSOT):
 
 ```powershell
 # Recommended: Sync Antigravity plugin into workspace + global (~/.gemini/config/plugins)

@@ -9,9 +9,8 @@
 //   • split code | terminal layout; code-only / terminal-only when one side is empty (legacy `layout` honoured)
 //   • adaptive code font (21 → 13px) + token-preserving wrapping, viewport scroll when even 13px overflows
 //   • highlight_phases: active-line highlight bar + dimmed context lines, accent cyan/danger/red/amber/gold/warning,
-//     callout bar with annotate_text annotation (underline gold, box red when laser_scan)
+//     callout bar with annotate_text annotation (underline gold, box red when accent is danger/red)
 //   • code_override → line-level "magic move" morph between Shiki snapshots (kept lines glide, changed lines crossfade)
-//   • laser_scan → red scanline sweep + danger tint on the given lines (or the highlighted lines when `true`)
 //   • terminal: `$` prompt, command typed over type_duration (progress units, default 0.14), output reveal,
 //     red error output (is_error or auto-detected) + hazard banner, finite blinking block cursor, idle prompt
 
@@ -47,13 +46,6 @@ const CSS = `
 .ccli-src { position: absolute; top: 0; white-space: pre; }
 .ccli-hl { position: absolute; left: 6px; right: 6px; top: 0; border-radius: 6px; opacity: 0; visibility: hidden; }
 .ccli-hl__edge { position: absolute; left: 0; top: 0; bottom: 0; width: 5px; border-radius: 3px; }
-.ccli-laser { position: absolute; right: 6px; overflow: hidden; border-radius: 4px; opacity: 0; visibility: hidden; }
-.ccli-laser__tint { position: absolute; inset: 0; background: rgba(239,68,68,0.10); box-shadow: inset 0 0 0 1px rgba(239,68,68,0.28); }
-.ccli-laser__beam { position: absolute; top: 0; bottom: 0; left: 0; width: 140px;
-  background: linear-gradient(90deg, rgba(239,68,68,0) 0%, rgba(239,68,68,0.10) 55%, rgba(239,68,68,0.32) 97%, rgba(239,68,68,0) 97%); }
-.ccli-laser__beam::after { content: ""; position: absolute; right: 2px; top: -2px; bottom: -2px; width: 3px;
-  background: linear-gradient(180deg, rgba(239,68,68,0.2) 0%, #EF4444 22%, #FFFFFF 50%, #EF4444 78%, rgba(239,68,68,0.2) 100%);
-  box-shadow: 0 0 12px #EF4444, 0 0 24px rgba(239,68,68,0.8); }
 .ccli-callouts { position: absolute; left: 0; right: 0; bottom: 0; }
 .ccli-callout { position: absolute; inset: 0; display: flex; align-items: center; gap: 12px; padding: 0 22px;
   border-top: 1.5px solid; opacity: 0; visibility: hidden; }
@@ -131,7 +123,7 @@ function monoCharWidth(fontPx, weight, monoStack) {
 
 function phaseAccent(phase) {
   if (!phase) return ACCENTS.cyan;
-  if (phase.laser_scan || phase.accent === "danger" || phase.accent === "red") return ACCENTS.red;
+  if (phase.accent === "danger" || phase.accent === "red") return ACCENTS.red;
   if (phase.accent === "amber" || phase.accent === "gold" || phase.accent === "warning") return ACCENTS.amber;
   return ACCENTS.cyan;
 }
@@ -454,8 +446,7 @@ export default function buildCodeCli(ctx) {
     const scroll = el("div.ccli-scroll");
     const hlLayer = el("div.ccli-layer");
     const textLayer = el("div.ccli-layer");
-    const laserLayer = el("div.ccli-layer");
-    scroll.append(hlLayer, textLayer, laserLayer);
+    scroll.append(hlLayer, textLayer);
     body.append(gutter, scroll);
     pane.append(head, body, glowRed, glowAmber);
 
@@ -624,31 +615,7 @@ export default function buildCodeCli(ctx) {
         glowState = wantGlow;
       }
 
-      // 6) laser scan over flagged lines (or highlighted lines when laser_scan === true)
-      const ls = phase.laser_scan;
-      const laserLines = Array.isArray(ls) ? ls : typeof ls === "number" ? [ls] : ls ? [...hlSet] : [];
-      lineGroups(laserLines, lines.length).forEach(([a, b], gi) => {
-        const first = lines[a - 1];
-        const last = lines[b - 1];
-        const gy = PAD_T + first.rowStart * lineH;
-        const gh = (last.rowStart + last.rowCount - first.rowStart) * lineH;
-        const laserW = innerW - gw - 6;
-        const beam = el("div.ccli-laser__beam");
-        const box = el("div.ccli-laser", { style: { left: `${gw}px`, top: `${gy}px`, height: `${gh}px` } }, el("div.ccli-laser__tint"), beam);
-        laserLayer.appendChild(box);
-        const tIn = clampT(T + 0.08 + gi * 0.06);
-        const tOut = clampT(ph.tEnd);
-        show(box, tIn, { from: { clipPath: "inset(50% 0% 50% 0%)" }, to: { clipPath: "inset(0% 0% 0% 0%)" }, duration: 0.22 });
-        const sweepStart = tIn + 0.12;
-        const windowLen = Math.max(0.3, tOut - sweepStart);
-        const PERIOD = 1.25;
-        const sweeps = Math.max(1, Math.floor(windowLen / PERIOD));
-        const period = Math.min(PERIOD, windowLen);
-        tl.fromTo(beam, { left: -150 }, { left: laserW + 10, duration: period, ease: "power1.inOut", repeat: sweeps - 1 }, Math.max(t0, Math.min(sweepStart, limit - sweeps * period)));
-        if (ph.tEnd < limit - 0.05) hide(box, tOut, { duration: 0.16 });
-      });
-
-      // 7) callout bar per phase (crossfade) + annotation on the target words
+      // 6) callout bar per phase (crossfade) + annotation on the target words
       const calloutText = String(phase.callout || "").trim();
       if (activeCallout) {
         hide(activeCallout, T, { duration: 0.14 });
@@ -656,10 +623,10 @@ export default function buildCodeCli(ctx) {
       }
       if (calloutText && calloutBox) {
         const parts = splitCallout(calloutText, phase.annotate_text);
-        const laser = Boolean(phase.laser_scan);
+        const isDanger = phase.accent === "danger" || phase.accent === "red";
         const avail = innerW - 44 - 36;
         const twoLines = textWidth(`600 20px ${SANS}`, calloutText) > avail;
-        const target = el("span.ccli-target", { text: parts.target, style: { color: laser ? "#FCA5A5" : "#F0C040" } });
+        const target = el("span.ccli-target", { text: parts.target, style: { color: isDanger ? "#FCA5A5" : "#F0C040" } });
         // rough-notation style mark sized in real px (measureText) so pathLength-normalised dashes draw evenly
         const fsz = twoLines ? 17 : 20;
         const aw = Math.ceil(textWidth(`800 ${fsz}px ${SANS}`, parts.target)) + 10;
@@ -667,11 +634,11 @@ export default function buildCodeCli(ctx) {
         const annot = svg("svg", { class: "ccli-annot", width: aw, height: ah, viewBox: `0 0 ${aw} ${ah}` });
         const f = (n) => n.toFixed(1);
         const path = svg("path", {
-          d: laser
+          d: isDanger
             ? `M ${f(4)} ${f(5)} L ${f(aw - 3)} ${f(3.5)} L ${f(aw - 3.5)} ${f(ah - 3)} L ${f(3)} ${f(ah - 2.5)} L ${f(4.5)} ${f(3)}`
             : `M ${f(2)} ${f(ah - 3)} C ${f(aw * 0.3)} ${f(ah - 1)}, ${f(aw * 0.68)} ${f(ah - 5.5)}, ${f(aw - 1)} ${f(ah - 2.5)}`,
           fill: "none",
-          stroke: laser ? "#EF4444" : "#F0C040",
+          stroke: isDanger ? "#EF4444" : "#F0C040",
           "stroke-width": 2.4,
           "stroke-linecap": "butt",
           "stroke-linejoin": "round",

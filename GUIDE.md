@@ -52,16 +52,21 @@ Khi người dùng yêu cầu làm theo `GUIDE.md`, Agent thực hiện tuần t
 
 ---
 
-## Cách 2: Người dùng tự chạy 1 lệnh (Không cần qua Agent)
+## Cách 2: Người dùng tự chạy 1 lệnh qua `npx` (Không cần `git clone` hay tải VieNeu-TTS riêng)
 
-- **Cài đặt nhanh trên máy mới qua `npx` (tự quét AI Agent đang có trên máy + hỗ trợ cài Python/Chrome):**
-  ```powershell
-  npx github:Thanhloi-lab/TechVideoStudio
-  # hoặc chỉ kiểm tra không ghi file:
-  npx github:Thanhloi-lab/TechVideoStudio check
-  # hoặc tự cài thiếu Python/Chrome qua winget/brew/apt:
-  npx github:Thanhloi-lab/TechVideoStudio setup --install-deps
-  ```
+```powershell
+# Cài đặt tương tác: chọn AI Agent có trên máy + tự cài thiếu Python/Chrome + gói VieNeu-TTS (port 8000)
+npx github:Thanhloi-lab/TechVideoStudio
+
+# Hoặc cài tự động toàn bộ (gồm Python/Chrome + VieNeu-TTS v3 Turbo ONNX, không Docker):
+npx github:Thanhloi-lab/TechVideoStudio setup --install-deps --with-vieneu --yes
+
+# Khởi chạy đồng thời Web Studio (port 3030) + VieNeu-TTS (port 8000):
+npx github:Thanhloi-lab/TechVideoStudio studio
+
+# Chỉ kiểm tra hệ thống, VieNeu-TTS & AI Agent có trên máy (không ghi file):
+npx github:Thanhloi-lab/TechVideoStudio check
+```
 
 Hoặc mở terminal tại thư mục gốc của repo vừa clone và chạy:
 

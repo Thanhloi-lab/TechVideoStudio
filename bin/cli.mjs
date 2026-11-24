@@ -9,6 +9,12 @@ import { fileURLToPath } from "node:url";
 import { detectInstalledAgents } from "../engine/agent_detector.mjs";
 import { checkAllDependencies, getDependencyInstallPlan, runDependencyInstall } from "../engine/dep_installer.mjs";
 import { checkAiEnvKeys, installDetectedAgent } from "../engine/setup_adapters.mjs";
+import {
+  DEFAULT_VIENEU_PORT,
+  inspectVieneuStatus,
+  installVieneuTts,
+  startVieneuServer,
+} from "../engine/vieneu_manager.mjs";
 
 const __filename = fileURLToPath(import.meta.url);
 const PACKAGE_ROOT = path.resolve(path.dirname(__filename), "..");
@@ -42,13 +48,14 @@ function printUsage() {
 Tech Course Video Studio — Universal Installer & CLI (Zero-Dependency)
 
 Usage:
-  npx tech-video-studio [command] [options]
   npx github:Thanhloi-lab/TechVideoStudio [command] [options]
+  npx tech-video-studio [command] [options]
 
 Commands:
-  setup, init          Detect installed AI Agents & dependencies, then install plugin/skills (default)
-  check, detect        Read-only scan of Node/Python/Chrome and locally installed AI Agents
-  studio, serve        Start the 3-screen Web Studio server (http://localhost:3030)
+  setup, init          Detect installed AI Agents & dependencies, install plugin/skills & VieNeu-TTS (default)
+  check, detect        Read-only scan of Node/Python/Chrome, VieNeu-TTS, and locally installed AI Agents
+  studio, serve        Start Web Studio (port 3030) AND bundled VieNeu-TTS (port 8000) together
+  tts                  Start (or install + start) local VieNeu-TTS v3 Turbo API server (port 8000)
   help                 Show this help message
 
 Options:
@@ -56,11 +63,18 @@ Options:
   --install-dir <dir>  Permanent runtime directory (default: ~/.tech-video-studio when run via npx)
   --workspace <dir>    Target workspace directory for workspace-level skills/plugins (default: cwd)
   --no-workspace       Skip workspace-level files; install global user-level configs only
-  --install-deps       Automatically install missing Python / Chrome without prompting
+  --install-deps       Automatically install missing Python / Chrome (and VieNeu-TTS unless --no-vieneu)
   --no-install-deps    Skip installing missing system dependencies
+  --with-vieneu        Install/sync bundled VieNeu-TTS v3 Turbo (ONNX, no Docker) during setup
+  --no-vieneu          Skip installing VieNeu-TTS during setup
+  --vieneu-dir <dir>   Custom directory for VieNeu-TTS (default: ~/.tech-video-studio/vieneu-tts)
+  --cuda               Install VieNeu-TTS with NVIDIA CUDA extra instead of CPU/ONNX
+  --no-tts             For 'studio': start port 3030 only without starting VieNeu-TTS port 8000
+  --with-tts           For 'studio': auto-install VieNeu-TTS if missing, then start 3030 + 8000 together
   --yes, -y            Accept defaults non-interactively (all detected agents)
   --dry-run            Preview planned actions without modifying files or running installers
   --port <num>         Port for 'studio' command (default: 3030)
+  --tts-port <num>     Port for VieNeu-TTS server (default: 8000)
   --json               Output machine-readable JSON summary
   --help, -h           Show help
 `.trim());
@@ -74,9 +88,15 @@ function parseArgs(argv) {
     workspaceDir: "",
     includeWorkspace: true,
     installDeps: null, // null = ask if missing, true = auto-install, false = skip
+    withVieneu: null, // null = ask if missing, true = install, false = skip
+    vieneuDir: "",
+    cuda: false,
+    startTts: true,
+    autoInstallTtsOnStudio: false,
     yes: false,
     dryRun: false,
     port: 3030,
+    ttsPort: DEFAULT_VIENEU_PORT,
     json: false,
     help: false,
   };
@@ -96,6 +116,19 @@ function parseArgs(argv) {
       opts.installDeps = true;
     } else if (arg === "--no-install-deps") {
       opts.installDeps = false;
+    } else if (arg === "--with-vieneu") {
+      opts.withVieneu = true;
+    } else if (arg === "--no-vieneu") {
+      opts.withVieneu = false;
+    } else if (arg === "--vieneu-dir") {
+      opts.vieneuDir = argv[++i] || "";
+    } else if (arg === "--cuda") {
+      opts.cuda = true;
+    } else if (arg === "--no-tts") {
+      opts.startTts = false;
+    } else if (arg === "--with-tts") {
+      opts.startTts = true;
+      opts.autoInstallTtsOnStudio = true;
     } else if (arg === "--no-workspace") {
       opts.includeWorkspace = false;
     } else if (arg === "--agents") {
@@ -110,6 +143,8 @@ function parseArgs(argv) {
       opts.workspaceDir = argv[++i] || "";
     } else if (arg === "--port") {
       opts.port = Number(argv[++i] || 3030) || 3030;
+    } else if (arg === "--tts-port") {
+      opts.ttsPort = Number(argv[++i] || DEFAULT_VIENEU_PORT) || DEFAULT_VIENEU_PORT;
     } else if (!arg.startsWith("-") && !positionalSet) {
       opts.command = arg.toLowerCase();
       positionalSet = true;
@@ -283,23 +318,122 @@ function promptSelectAgents(detectedAgents) {
   });
 }
 
-function runStudioCommand(opts) {
+async function runTtsCommand(opts) {
+  const runtime = materializeRuntime({ ...opts, dryRun: true });
+  let status = await inspectVieneuStatus({
+    installRoot: runtime.installRoot,
+    customDir: opts.vieneuDir,
+    port: opts.ttsPort,
+  });
+
+  if (!status.ready) {
+    console.log(`[tvs] VieNeu-TTS not found yet. Installing into ${status.dir} (no Docker)...`);
+    const installed = installVieneuTts({
+      installRoot: runtime.installRoot,
+      customDir: opts.vieneuDir,
+      cuda: opts.cuda,
+      dryRun: opts.dryRun,
+    });
+    if (!installed.ok) {
+      throw new Error(installed.error || "Failed to install VieNeu-TTS");
+    }
+    if (opts.dryRun) return;
+  }
+
+  const handle = await startVieneuServer({
+    installRoot: runtime.installRoot,
+    customDir: opts.vieneuDir,
+    port: opts.ttsPort,
+  });
+  if (handle.alreadyRunning) return;
+
+  const shutdown = () => {
+    handle.stop();
+    process.exit(0);
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+  handle.child.on("exit", (code) => process.exit(code ?? 0));
+}
+
+async function runStudioCommand(opts) {
   const runtime = materializeRuntime({ ...opts, dryRun: true });
   const serverPath = path.join(runtime.installRoot, "engine", "server.mjs");
   const actualServer = fs.existsSync(serverPath) ? serverPath : path.join(PACKAGE_ROOT, "engine", "server.mjs");
   const workspaceRoot = opts.workspaceDir ? path.resolve(opts.workspaceDir) : process.cwd();
 
+  let ttsHandle = null;
+  if (opts.startTts) {
+    let ttsStatus = await inspectVieneuStatus({
+      installRoot: runtime.installRoot,
+      customDir: opts.vieneuDir,
+      port: opts.ttsPort,
+    });
+    if (!ttsStatus.ready && opts.autoInstallTtsOnStudio) {
+      console.log(`[tvs] Auto-installing bundled VieNeu-TTS into ${ttsStatus.dir}...`);
+      const inst = installVieneuTts({
+        installRoot: runtime.installRoot,
+        customDir: opts.vieneuDir,
+        cuda: opts.cuda,
+        dryRun: opts.dryRun,
+      });
+      if (!inst.ok) {
+        console.warn(`[tvs] WARNING: VieNeu-TTS install failed (${inst.error}). Continuing with Web Studio only.`);
+      } else if (!opts.dryRun) {
+        ttsStatus = await inspectVieneuStatus({
+          installRoot: runtime.installRoot,
+          customDir: opts.vieneuDir,
+          port: opts.ttsPort,
+        });
+      }
+    }
+
+    if (ttsStatus.running) {
+      console.log(`[tvs] VieNeu-TTS already running on http://127.0.0.1:${opts.ttsPort}`);
+    } else if (ttsStatus.ready && !opts.dryRun) {
+      ttsHandle = await startVieneuServer({
+        installRoot: runtime.installRoot,
+        customDir: opts.vieneuDir,
+        port: opts.ttsPort,
+      });
+    } else if (!opts.dryRun) {
+      console.log(
+        `[tvs] VieNeu-TTS not installed yet (Web Studio will still run; use \`--with-tts\` or \`setup --with-vieneu\` to bundle port ${opts.ttsPort}).`
+      );
+    }
+  }
+
   console.log(`[tvs] Starting Web Studio on http://localhost:${opts.port}`);
   console.log(`[tvs] Workspace: ${workspaceRoot}`);
+  if (opts.dryRun) return;
+
   const child = spawn(process.execPath, [actualServer], {
     stdio: "inherit",
     env: {
       ...process.env,
       PORT: String(opts.port),
       VIDEO_MAKER_WORKSPACE_ROOT: workspaceRoot,
+      VOICESTUDIO_BASE_URL: `http://127.0.0.1:${opts.ttsPort}`,
     },
   });
-  child.on("exit", (code) => process.exit(code ?? 0));
+
+  const shutdown = () => {
+    if (ttsHandle) ttsHandle.stop();
+    if (child && !child.killed && child.exitCode === null) {
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        // ignore
+      }
+    }
+    process.exit(0);
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+  child.on("exit", (code) => {
+    if (ttsHandle) ttsHandle.stop();
+    process.exit(code ?? 0);
+  });
 }
 
 async function runCheckCommand(opts) {
@@ -307,12 +441,18 @@ async function runCheckCommand(opts) {
   const agents = detectInstalledAgents();
   const aiEnvKeys = checkAiEnvKeys();
   const runtime = materializeRuntime({ ...opts, dryRun: true });
+  const vieneu = await inspectVieneuStatus({
+    installRoot: runtime.installRoot,
+    customDir: opts.vieneuDir,
+    port: opts.ttsPort,
+  });
 
   const report = {
     mode: "check",
     packageRoot: PACKAGE_ROOT,
     installRoot: runtime.installRoot,
     dependencies: deps,
+    vieneu,
     agents: {
       detectedCount: agents.detected.length,
       detected: agents.detected,
@@ -331,6 +471,9 @@ async function runCheckCommand(opts) {
   console.log(`Node.js        : ${deps.node.version} -> ${deps.node.ok ? "OK" : "NEEDS UPGRADE (>= 22)"}`);
   console.log(`Python         : ${deps.python.version || "Not found"} -> ${deps.python.ok ? "OK" : "MISSING (>= 3.10)"}`);
   console.log(`Google Chrome  : ${deps.chrome.path || "Not found"} -> ${deps.chrome.ok ? "OK" : "MISSING"}`);
+  console.log(
+    `VieNeu-TTS     : ${vieneu.ready ? `OK (${vieneu.dir})` : `Not installed (${vieneu.dir})`} | Port ${vieneu.port}: ${vieneu.running ? "Running" : "Stopped"}`
+  );
   console.log(`\nDetected AI Agents (${agents.detected.length}/${agents.all.length}):`);
   if (agents.detected.length === 0) {
     console.log("  (None detected on this machine)");
@@ -390,6 +533,41 @@ async function runSetupCommand(opts) {
     console.log(
       `\n[runtime] ${opts.dryRun ? "Would sync" : "Synced"} studio engine & plugin SSOT -> ${runtime.installRoot}`
     );
+  }
+
+  // Step 2.5: Bundled VieNeu-TTS v3 Turbo (ONNX, no Docker, port 8000)
+  let vieneuStatus = await inspectVieneuStatus({
+    installRoot: runtime.installRoot,
+    customDir: opts.vieneuDir,
+    port: opts.ttsPort,
+  });
+  let vieneuAction = null;
+  if (!vieneuStatus.ready && opts.withVieneu !== false) {
+    let shouldInstallVieneu = opts.withVieneu === true || opts.installDeps === true;
+    if (opts.withVieneu === null && !shouldInstallVieneu && interactive) {
+      shouldInstallVieneu = await askYesNo(
+        `Install bundled VieNeu-TTS v3 Turbo (local 48kHz Vietnamese TTS on port ${opts.ttsPort}, no Docker) into ${vieneuStatus.dir}?`,
+        true
+      );
+    }
+    if (shouldInstallVieneu) {
+      vieneuAction = installVieneuTts({
+        installRoot: runtime.installRoot,
+        customDir: opts.vieneuDir,
+        cuda: opts.cuda,
+        dryRun: opts.dryRun,
+        log: opts.json ? () => {} : console.log,
+      });
+      if (!opts.dryRun) {
+        vieneuStatus = await inspectVieneuStatus({
+          installRoot: runtime.installRoot,
+          customDir: opts.vieneuDir,
+          port: opts.ttsPort,
+        });
+      }
+    }
+  } else if (!opts.json && vieneuStatus.ready) {
+    console.log(`[vieneu] Ready at ${vieneuStatus.dir} (port ${opts.ttsPort}: ${vieneuStatus.running ? "running" : "stopped"})`);
   }
 
   // Step 3: Detect locally installed AI Agents (strictly ONLY show detected agents)
@@ -473,6 +651,8 @@ async function runSetupCommand(opts) {
     copiedFromPackage: runtime.copiedFromPackage,
     dependencies: deps,
     dependencyActions: depActions,
+    vieneu: vieneuStatus,
+    vieneuAction,
     detectedAgents: scan.detected,
     selectedAgents: selectedAgents.map((a) => a.id),
     installations,
@@ -495,11 +675,21 @@ async function runSetupCommand(opts) {
       console.log(`      - ${r.target}: ${target} (${r.ok ? "OK" : "FAILED"})${r.backupPath ? ` [backup: ${r.backupPath}]` : ""}`);
     }
   }
+  if (vieneuStatus?.ready || vieneuAction) {
+    const label = vieneuAction?.dryRun
+      ? `[dry-run] Would install -> ${vieneuStatus.dir}`
+      : vieneuStatus.ready
+        ? `Ready at ${vieneuStatus.dir}`
+        : `Failed (${vieneuAction?.error || "unknown"})`;
+    console.log(`  ${vieneuStatus.ready || vieneuAction?.dryRun ? "✔" : "✖"} VieNeu-TTS v3 Turbo (port ${opts.ttsPort}): ${label}`);
+  }
 
   console.log("\n=== Next Steps ===");
   console.log("1. Reload or reopen your AI Agent so the new skills, rules & MCP server load.");
-  console.log("2. You do NOT need to start port 3030 to create curricula, scripts, TTS, or render videos.");
-  console.log("3. Optional Web Studio UI: run `npx tech-video-studio studio` (http://localhost:3030).");
+  console.log("2. Start Web Studio (port 3030) + VieNeu-TTS (port 8000) together:");
+  console.log("     npx github:Thanhloi-lab/TechVideoStudio studio");
+  console.log("3. Or start VieNeu-TTS (port 8000) standalone:");
+  console.log("     npx github:Thanhloi-lab/TechVideoStudio tts");
 }
 
 async function main() {
@@ -513,7 +703,11 @@ async function main() {
     return;
   }
   if (opts.command === "studio" || opts.command === "serve") {
-    runStudioCommand(opts);
+    await runStudioCommand(opts);
+    return;
+  }
+  if (opts.command === "tts") {
+    await runTtsCommand(opts);
     return;
   }
   if (opts.command === "setup" || opts.command === "init") {

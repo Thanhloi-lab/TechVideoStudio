@@ -268,12 +268,6 @@ html, body {
   0%, 49% { opacity: 1; }
   50%, 100% { opacity: 0.08; }
 }
-@keyframes laserSweep {
-  0% { left: -4%; opacity: 0; }
-  12% { opacity: 1; }
-  88% { opacity: 1; }
-  100% { left: 102%; opacity: 0; }
-}
 @keyframes clickRipple {
   0% {
     transform: translate(-50%, -50%) scale(0.3);
@@ -324,22 +318,7 @@ html, body {
 .vf-bl { bottom: -3px; left: -3px; border-bottom-width: 2px; border-left-width: 2px; border-bottom-left-radius: 3px; }
 .vf-br { bottom: -3px; right: -3px; border-bottom-width: 2px; border-right-width: 2px; border-bottom-right-radius: 3px; }
 
-/* Laser Scanline & Diagonal Hazard Stripes */
-.laser-scan-wrap {
-  position: relative;
-  overflow: hidden;
-}
-.laser-scanline {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  background: linear-gradient(180deg, transparent 0%, #EF4444 25%, #FFFFFF 50%, #EF4444 75%, transparent 100%);
-  box-shadow: 0 0 12px #EF4444, 0 0 24px rgba(239, 68, 68, 0.8);
-  pointer-events: none;
-  z-index: 8;
-  animation: laserSweep 1.35s var(--ease-reveal) infinite;
-}
+/* Diagonal Hazard Stripes */
 .hazard-stripes {
   background: repeating-linear-gradient(
     -45deg,

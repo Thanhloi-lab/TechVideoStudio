@@ -52,6 +52,9 @@ Work is split into three focused conversation roles connected by `<COURSE_CODE>/
      ```
 
 ### Conversation 2 — Script Factory: Multi-Part Authoring & Independent Review (`episode-producer` + `content-reviewer` skills)
+0. **Automatic Subagent Wave Orchestration & Same-Subagent Revision Reuse (No `/teamwork` Needed):**
+   - To prevent context overflow across 10–30 deep-dive episodes (even when continuing in the same conversation after curriculum design), the main Agent automatically acts as a lightweight **Orchestrator**: spawn **1 dedicated `self` subagent per episode** in parallel waves of **3–5 episodes** (`Workspace: "inherit"`). Each subagent writes all artifacts to disk and returns **ONLY a 5–10 line summary** (never pasting raw scripts into the parent chat).
+   - **Reuse the same subagent for edits:** Keep the `<ep-id> -> subagent conversationId` mapping and leave finished episode subagents idle (0 idle token cost). When the user asks to revise an episode authored earlier in the same conversation, send the revision instructions to that exact subagent via `send_message` (which preserves its context and auto-revives it if idle/restarted) rather than spawning a new subagent. Only spawn a fresh subagent reading from disk if the episode came from another conversation or its subagent was killed.
 1. Discover the next wave of episodes needing scripts or revisions (process in stage/batch waves of **3–5 episodes**):
    ```powershell
    node "{{WORKSPACE_ROOT}}/engine/state_cli.mjs" next --course <COURSE_CODE> --stage scripting --limit 5
@@ -92,7 +95,7 @@ Work is split into three focused conversation roles connected by `<COURSE_CODE>/
    - `bgm_file` (`string`, top-level `script.json` or episode metadata, + optional `bgm_volume`): optional looping background music file carved at `1800Hz -6dB` for vocal clarity.
    - `scene.tts_narration` (`string`) & `scene.tts_beats` (`Array<{ beat_id?, display_text, tts_text? }>`): Dual-Text TTS overrides separating display orthography from phonetic TTS text.
    - `flow_step.camera_focus` (`{ x, y, zoom }`): explicit 16:9 camera rig pan/zoom target (`x`/`y` in `0..100`, `zoom` in `1.0..1.25`) for `architecture` scenes.
-   - `highlight_phase.code_override` (`string[] | string`) & `highlight_phase.laser_scan` (`boolean | number[]`): `@shikijs/magic-move` morphing and red laser scanline alerts in `code_cli` scenes.
+   - `highlight_phase.code_override` (`string[] | string`): `@shikijs/magic-move` morphing in `code_cli` scenes (dùng `accent: "danger"` để highlight đỏ dòng rủi ro; đã bỏ hiệu ứng `laser_scan`).
 5. **11 Visual Templates, Visual Variety Guard & Diagram Rules:**
    - **11 Supported Templates (SSOT in `{{WORKSPACE_ROOT}}/engine/src/template_schema.mjs`):**
      - Core 7: `architecture`, `console_setup`, `code_cli`, `exam_tips`, `comparison_matrix`, `timeline_flow`, `kpi_metrics`

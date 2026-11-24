@@ -30,7 +30,8 @@
   "scripts": {
     "setup": "node bin/cli.mjs setup",
     "check": "node bin/cli.mjs check",
-    "studio": "node engine/server.mjs",
+    "studio": "node bin/cli.mjs studio",
+    "tts": "node bin/cli.mjs tts",
     "test": "node engine/test_phase1_three_stage.mjs && node engine/test_ai_bridge_and_templates.mjs"
   },
   "keywords": [

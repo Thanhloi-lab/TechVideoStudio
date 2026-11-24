@@ -103,7 +103,7 @@ Dùng `layout_mode: "auto"` để kernel tự tính tọa độ DAG không chồ
 ```
 
 ### 3. `code_cli` (`TerminalAndCode`)
-Hỗ trợ Shiki highlighting, `code_override` morphing (`@shikijs/magic-move`), và `laser_scan` trên các dòng rủi ro.
+Hỗ trợ Shiki highlighting, `code_override` morphing (`@shikijs/magic-move`), và `accent: "danger"` trên các dòng rủi ro.
 ```json
 {
   "code_title": "trust-policy.json",

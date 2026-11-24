@@ -563,14 +563,10 @@ export function validateCodeCliData(visualData, sceneTag = "scene") {
       }
     }
 
-    if (Array.isArray(p.laser_scan)) {
-      for (const ln of p.laser_scan) {
-        if (!Number.isInteger(ln) || ln < 1 || activeLineCount === 0 || ln > activeLineCount) {
-          errors.push(
-            `[${sceneTag}] code_cli.highlight_phases[${i}].laser_scan has invalid 1-based line number ${ln} (active snapshot has ${activeLineCount} lines).`
-          );
-        }
-      }
+    if (p.laser_scan !== undefined && p.laser_scan !== false) {
+      errors.push(
+        `[${sceneTag}] code_cli.highlight_phases[${i}].laser_scan is not supported (removed); use accent: "danger" instead.`
+      );
     }
   }
 

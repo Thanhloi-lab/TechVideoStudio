@@ -141,7 +141,7 @@ function getPhaseAccent(phase) {
   if (!phase) {
     return { bar: "#10C0F0", bg: "rgba(16, 192, 240, 0.14)", glow: "rgba(16, 192, 240, 0.28)" };
   }
-  if (phase.laser_scan || phase.accent === "danger" || phase.accent === "red") {
+  if (phase.accent === "danger" || phase.accent === "red") {
     return { bar: "#EF4444", bg: "rgba(239, 68, 68, 0.15)", glow: "rgba(239, 68, 68, 0.34)" };
   }
   if (phase.accent === "amber" || phase.accent === "gold" || phase.accent === "warning") {
@@ -266,6 +266,7 @@ export function TerminalAndCode({ scene, progress }) {
   // Rough Notation annotation on active phase callout keyword (with clean cleanup)
   const calloutTargetRef = useRef(null);
   const annotationRef = useRef(null);
+  const isDangerPhase = activePhase?.accent === "danger" || activePhase?.accent === "red";
 
   useEffect(() => {
     if (annotationRef.current) {
@@ -284,8 +285,8 @@ export function TerminalAndCode({ scene, progress }) {
       if (cancelled || !calloutTargetRef.current) return;
       try {
         const ann = annotate(calloutTargetRef.current, {
-          type: activePhase.laser_scan ? "box" : "underline",
-          color: activePhase.laser_scan ? "#EF4444" : "#F0C040",
+          type: isDangerPhase ? "box" : "underline",
+          color: isDangerPhase ? "#EF4444" : "#F0C040",
           strokeWidth: 2,
           padding: [1, 3],
           iterations: 1,
@@ -310,10 +311,9 @@ export function TerminalAndCode({ scene, progress }) {
         annotationRef.current = null;
       }
     };
-  }, [scene?.id, activePhaseIdx, activePhase?.callout, activePhase?.laser_scan]);
+  }, [scene?.id, activePhaseIdx, activePhase?.callout, isDangerPhase]);
 
   const phaseAccent = getPhaseAccent(activePhase);
-  const laserLineSet = Array.isArray(activePhase?.laser_scan) ? new Set(activePhase.laser_scan) : null;
   const fallbackLines = hasMagicMove ? activeMagicCode.split("\n") : codeLines;
   const calloutParts = splitCalloutHighlight(activePhase?.callout, activePhase?.annotate_text);
 
@@ -342,7 +342,7 @@ export function TerminalAndCode({ scene, progress }) {
           ),
           h(
             "div",
-            { className: `code-body ${hasMagicMove && activePhase?.laser_scan ? "laser-scan-wrap" : ""}` },
+            { className: "code-body" },
             hasMagicMove
               ? h("div", {
                   ref: magicContainerRef,
@@ -350,18 +350,12 @@ export function TerminalAndCode({ scene, progress }) {
                   style: { display: magicReady ? "block" : "none" },
                 })
               : null,
-            hasMagicMove && magicReady && activePhase?.laser_scan
-              ? h("span", { className: "laser-scanline", "aria-hidden": "true" })
-              : null,
             !hasMagicMove || !magicReady
               ? fallbackLines.map((line, idx) => {
                   const lineNo = idx + 1;
                   const isHighlighted = highlightedLines.has(lineNo);
                   const isDimmed = highlightedLines.size > 0 && !isHighlighted;
                   const lineTokens = tokenizedLines?.[idx] || null;
-                  const showLaserOnLine =
-                    Boolean(activePhase?.laser_scan) &&
-                    (laserLineSet ? laserLineSet.has(lineNo) : isHighlighted);
 
                   return h(
                     "div",
@@ -369,7 +363,7 @@ export function TerminalAndCode({ scene, progress }) {
                       key: lineNo,
                       className: `code-line ${isHighlighted ? "is-highlighted" : ""} ${
                         isDimmed ? "is-dimmed" : ""
-                      } ${showLaserOnLine ? "laser-scan-wrap" : ""}`,
+                      }`,
                       style: isHighlighted
                         ? {
                             borderLeft: `3px solid ${phaseAccent.bar}`,
@@ -400,10 +394,7 @@ export function TerminalAndCode({ scene, progress }) {
                             )
                           )
                         : line || " "
-                    ),
-                    showLaserOnLine
-                      ? h("span", { className: "laser-scanline", "aria-hidden": "true" })
-                      : null
+                    )
                   );
                 })
               : null
@@ -430,7 +421,7 @@ export function TerminalAndCode({ scene, progress }) {
                         {
                           ref: calloutTargetRef,
                           style: {
-                            color: activePhase?.laser_scan ? "#FCA5A5" : "#F0C040",
+                            color: isDangerPhase ? "#FCA5A5" : "#F0C040",
                             fontWeight: 800,
                           },
                         },

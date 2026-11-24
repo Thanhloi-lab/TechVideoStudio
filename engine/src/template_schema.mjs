@@ -84,8 +84,6 @@ export const V2_MOTION_FIELDS = Object.freeze({
     "{ x: number (0..100), y: number (0..100), zoom?: number (1.0..1.25) } — 16:9 camera rig pan/zoom target in architecture scenes",
   "highlight_phase.code_override":
     "string[] | string — updated code snapshot per phase for @shikijs/magic-move morphing in code_cli scenes",
-  "highlight_phase.laser_scan":
-    "boolean | number[] — triggers red laser scanline sweep and danger highlight on risk/error lines in code_cli scenes",
 });
 
 export const TEMPLATE_LAYOUT_BUDGETS = Object.freeze({
@@ -284,7 +282,7 @@ export const TEMPLATE_SPECS = Object.freeze({
     label: "Code & CLI Terminal",
     recommended_parts: ["architecture", "setup"],
     description:
-      "Syntax-highlighted code viewer (with Magic Move morphing & laser scan) paired with an animated CLI terminal.",
+      "Syntax-highlighted code viewer (with Magic Move morphing) paired with an animated CLI terminal.",
     fields: {
       code_title: "string (optional, e.g. 'trust-policy.json')",
       code_language: "string (json | python | bash | yaml | javascript | typescript)",
@@ -297,7 +295,6 @@ export const TEMPLATE_SPECS = Object.freeze({
           callout: "string (optional explanation bar)",
           annotate_text: "string (optional exact substring inside callout to annotate)",
           code_override: "string[] | string (optional V2 morph snapshot)",
-          laser_scan: "boolean | number[] (optional V2 red scanline on risk/error lines)",
           accent: "cyan | danger | red | amber | gold | warning (optional)",
         },
       ],
@@ -749,7 +746,7 @@ export function getSchemaPromptSpec({ compact = false, pass = 2 } = {}) {
       lines.push(
         "   - `architecture`: Specify trust/network zones (max 2 nested levels), 2..8 nodes (`id`, `label`, `sublabel`, `icon`, `tone`), directional edges, and progressive `flow_steps`. Set `layout_mode: 'auto'` to let the engine compute collision-free coordinates.",
         "   - `console_setup`: Specify `service_name`, `nav_items`, and 1..6 console steps (`heading`, <=4 fields of type `text|radio|checkbox_row`, `primary_button`, concise `tip`).",
-        "   - `code_cli`: Specify `code_language`, `code_title`, `code_lines` (<=18 lines) and/or `terminal_commands`, plus `highlight_phases` (optional `code_override` morphing and `laser_scan` on risky lines).",
+        "   - `code_cli`: Specify `code_language`, `code_title`, `code_lines` (<=18 lines) and/or `terminal_commands`, plus `highlight_phases` (optional `code_override` morphing and `accent: 'danger'` on risky lines).",
         "   - `exam_tips`: Specify up to 4 `comparisons` (`title`, `wrong`, `right`) and optional `quiz` (`question`, 2..4 `{ key, text }` options, `correct_key`, `explanation`).",
         "   - `comparison_matrix`: Specify 2..4 `columns` (`id`, `title`, `tone`) and 1..6 `rows` (`criterion`, `values[colId]`) plus optional `takeaway`.",
         "   - `timeline_flow`: Specify `orientation` (`horizontal|vertical`), 2..6 `milestones` (`time_label`, `title`, `description`, `icon`, `tone`), and optional `callout`.",
@@ -770,7 +767,7 @@ export function getSchemaPromptSpec({ compact = false, pass = 2 } = {}) {
       `Required scene fields: \`id\` (unique non-empty), \`part\` (${VALID_SCENE_PARTS.join("|")}), \`title\`, \`visual_type\`, \`narration\` (non-empty), \`highlight_words[]\`, \`key_points[]\`, \`visual_data\`.`,
       "- `architecture`: `{ layout_mode?: 'auto'|'manual', orientation?: 'LR'|'TB', zones?: [{ id, label, sublabel?, role: 'client'|'network'|'compute'|'security'|'data'|'danger', parent_zone?, node_ids? }], nodes: [{ id, label, sublabel?, icon?, tone?, x?: 0..100, y?: 0..100, tier? }], edges: [{ id, from, to, label?, style?: 'solid'|'dashed'|'danger', routing?: 'auto'|'straight'|'orthogonal'|'curved' }], flow_steps: [{ progress_start, progress_end, active_nodes[], active_edges[], badge_text?, packet_label?, camera_focus?: { x, y, zoom } }] }` (omit node x/y when `layout_mode:'auto'`).",
       "- `console_setup`: `{ url?, service_name?, nav_items?, active_nav?, steps: [{ step_number, progress_start, progress_end, heading, fields: [{ label, type: 'text'|'radio'|'checkbox_row', value?, options?, selected?, highlight? }], primary_button?, highlight_button?, tip? }] }` (max 4 fields/step, tip <=110 chars).",
-      "- `code_cli`: `{ code_title?, code_language?, code_lines?: string[], highlight_phases?: [{ progress_start, progress_end, lines?: number[] (1-based), callout?, annotate_text?, code_override?: string[]|string, laser_scan?: boolean|number[], accent? }], terminal_badge?, terminal_title?, terminal_commands?: [{ progress_start, type_duration?, command, output_lines?, is_error? }] }` (do NOT emit legacy `layout: 'code_only'`).",
+      "- `code_cli`: `{ code_title?, code_language?, code_lines?: string[], highlight_phases?: [{ progress_start, progress_end, lines?: number[] (1-based), callout?, annotate_text?, code_override?: string[]|string, accent? }], terminal_badge?, terminal_title?, terminal_commands?: [{ progress_start, type_duration?, command, output_lines?, is_error? }] }` (do NOT emit legacy `layout: 'code_only'`).",
       "- `exam_tips`: `{ badge?, comparisons?: [{ title, wrong, right, progress_start? }], quiz?: { show_at_progress?, question, options: [{ key, text }], correct_key, explanation? } }`.",
       "- `comparison_matrix`: `{ badge?, title?, criterion_heading?, columns: (2..4)[{ id, title, subtitle?, tone?, badge? }], rows: (1..6)[{ criterion, progress_start?, values: { [colId]: { text, status?: 'good'|'best'|'warn'|'neutral'|'bad'|'risk' } } }], takeaway?: { label?, text, show_at_progress? } }`.",
       "- `timeline_flow`: `{ orientation?: 'horizontal'|'vertical', badge?, subtitle?, milestones: (2..6)[{ id?, time_label?, title, description?, icon?, tone?, metric_badge?, progress_start, progress_end }], callout?: { title?, text, show_at_progress? } }`.",
@@ -794,8 +791,8 @@ export function getSchemaPromptSpec({ compact = false, pass = 2 } = {}) {
     "     `{ url?, service_name?, nav_items?: string[], active_nav?, steps: [{ step_number: 1..N, progress_start, progress_end, heading, fields: [{ label, type: 'text'|'radio'|'checkbox_row', value?, options?, selected?, highlight? }], primary_button?, highlight_button?, tip? }] }`.",
     "     Budgets: 1..6 steps, <= 4 fields per step, tip <= 110 chars.",
     "   - `code_cli`:",
-    "     `{ code_title?, code_language?, code_lines?: string[], highlight_phases?: [{ progress_start, progress_end, lines?: number[] (1-based), callout?, annotate_text?, code_override?: string[]|string, laser_scan?: boolean|number[], accent? }], terminal_badge?, terminal_title?, terminal_commands?: [{ progress_start, type_duration?, command, output_lines?, is_error? }] }`.",
-    "     Budgets: <= 18 code_lines (avoid truncation), valid 1-based line numbers in `lines` / `laser_scan` against active snapshot (`code_override` or `code_lines`). Do not rely on legacy `layout: 'code_only'`.",
+    "     `{ code_title?, code_language?, code_lines?: string[], highlight_phases?: [{ progress_start, progress_end, lines?: number[] (1-based), callout?, annotate_text?, code_override?: string[]|string, accent? }], terminal_badge?, terminal_title?, terminal_commands?: [{ progress_start, type_duration?, command, output_lines?, is_error? }] }`.",
+    "     Budgets: <= 18 code_lines (avoid truncation), valid 1-based line numbers in `lines` against active snapshot (`code_override` or `code_lines`). Do not rely on legacy `layout: 'code_only'`.",
     "   - `exam_tips`:",
     "     `{ badge?, comparisons?: [{ title, wrong, right, progress_start? }], quiz?: { show_at_progress?, question, options: [{ key, text }], correct_key, explanation? } }`.",
     "     Rules: non-empty `comparisons` (each with `wrong` and `right`, max 4) and/or valid `quiz` (`options` >= 2 with unique `key`, `correct_key` matching an option `key`).",

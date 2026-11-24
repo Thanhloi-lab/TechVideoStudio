@@ -165,7 +165,6 @@ export function buildDemoScenes(sceneSec = 7) {
             lines: [4, 5],
             callout: "Sai lầm: Principal là * cho phép mọi người",
             accent: "danger",
-            laser_scan: [5],
             code_override: [
               "{",
               '  "Version": "2012-10-17",',

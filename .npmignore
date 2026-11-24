@@ -19,6 +19,7 @@ engine/__pycache__/
 !engine/assets/sfx/*.wav
 *.srt
 ref/
+vieneu-tts/
 AWS/
 K8S/
 REDIS/
